@@ -28,6 +28,8 @@ pub enum Icon {
     Dot,
     Plug,
     Terminal,
+    /// Return arrow: "go here" (cd the terminal to the browsed folder).
+    EnterHere,
     Sun,
     Moon,
     /// Window-style "maximize": one square.
@@ -148,6 +150,10 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
             // Crescent: a filled disc with an offset disc in the button colour cut out.
             p.circle_filled(c, 5.5 * u, color);
             p.circle_filled(at(10.5, 5.5), 4.6 * u, crate::theme::bg_base());
+        }
+        Icon::EnterHere => {
+            line(&[(12.5, 3.0), (12.5, 10.0), (4.0, 10.0)]);
+            line(&[(6.8, 7.2), (4.0, 10.0), (6.8, 12.8)]);
         }
         Icon::Terminal => {
             p.rect_stroke(r(2.0, 3.0, 14.0, 13.0), CornerRadius::same(2), st, StrokeKind::Middle);

@@ -526,6 +526,11 @@ impl App {
             }
         }
         let (host, root) = self.side.root.clone().unwrap();
+        // The active terminal can be sent to the browsed folder when it is on
+        // this host and waiting at a prompt.
+        let cd_target = self.active_pane_id().filter(|id| self.panes.get(id).map(|p| p.host == host && p.term.at_prompt()).unwrap_or(false));
+        let cd_prof = self.profile(&host);
+        let mut cd_to: Option<String> = None;
         // Header: host + breadcrumbs.
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
@@ -533,6 +538,14 @@ impl App {
             ui.add_space(12.0);
             ui.label(RichText::new(&host).size(12.0).color(theme::text()));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let tip = match cd_target {
+                    Some(_) => format!("cd the terminal here: {root}"),
+                    None => "cd the terminal here (needs a terminal on this host at a prompt)".to_string(),
+                };
+                let color = if cd_target.is_some() { theme::text_dim() } else { theme::text_faint() };
+                if icons::button_colored(ui, Icon::EnterHere, &tip, color).clicked() && cd_target.is_some() {
+                    cd_to = Some(root.clone());
+                }
                 if icons::button(ui, Icon::Refresh, "refresh (back to the terminal's directory when following)").clicked() {
                     // Following: go back to the terminal's directory even after
                     // browsing elsewhere (Up, breadcrumbs).
@@ -579,11 +592,21 @@ impl App {
                 if r.clicked() {
                     self.set_root(&host, &acc.clone());
                 }
+                let seg = acc.clone();
+                r.on_hover_text("click: browse here \u{00b7} right-click: cd the terminal").context_menu(|ui| {
+                    if ui.add_enabled(cd_target.is_some(), egui::Button::new("cd terminal here")).clicked() {
+                        cd_to = Some(seg.clone());
+                        ui.close_menu();
+                    }
+                });
                 if !last && i > 0 {
                     ui.label(RichText::new(" / ").size(11.5).color(theme::text_faint()));
                 }
             }
         });
+        if let (Some(dir), Some(id)) = (cd_to, cd_target) {
+            self.actions.push(Action::Run(id, cd_prof.cd_command(&dir)));
+        }
         // Filter over everything under the root: fuzzy / glob / regex.
         let mut open_first = false;
         ui.horizontal(|ui| {
