@@ -2,6 +2,7 @@
 //! command palette, connect dialog, toasts and global shortcuts.
 
 use crate::app::*;
+use crate::find::{self, FindMode};
 use crate::highlight;
 use crate::md;
 use crate::host::{ConnStatus, HostKind};
@@ -583,8 +584,26 @@ impl App {
                 }
             }
         });
-        ui.add(TextEdit::singleline(&mut self.side.filter).hint_text("filter (instant, local)").desired_width(f32::INFINITY));
+        // Filter over everything under the root: fuzzy / glob / regex.
+        let mut open_first = false;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            let w = (ui.available_width() - 132.0).max(60.0);
+            let r = ui.add(TextEdit::singleline(&mut self.side.filter).hint_text(self.settings.find_mode.hint()).desired_width(w));
+            open_first = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+            for m in FindMode::ALL {
+                let sel = self.settings.find_mode == m;
+                let label = RichText::new(m.label()).size(11.5).color(if sel { theme::text() } else { theme::text_faint() });
+                if ui.selectable_label(sel, label).on_hover_text(m.hint()).clicked() {
+                    self.settings.find_mode = m;
+                }
+            }
+        });
         ui.add_space(2.0);
+        if !self.side.filter.trim().is_empty() {
+            self.ui_find_results(ui, &host, &root, open_first);
+            return;
+        }
 
         // Flatten the visible tree from the local cache.
         struct TRow {
@@ -939,6 +958,149 @@ impl App {
                 });
             }
         });
+    }
+
+    /// The filter's matches under the root (instead of the tree while typing).
+    fn ui_find_results(&mut self, ui: &mut Ui, host: &str, root: &str, open_first: bool) {
+        let key = (host.to_string(), root.to_string());
+        let stale = self.find_index.get(&key).map(|i| i.at.elapsed() > Duration::from_secs(60)).unwrap_or(true);
+        if stale && !self.find_inflight.contains(&key) {
+            self.find_inflight.insert(key.clone());
+            let req = serde_json::json!({"op": "tree", "path": root, "hidden": self.settings.show_hidden, "max": 20000});
+            self.request(host, req, Pending::Tree { root: root.to_string() });
+        }
+        let Some(index) = self.find_index.get(&key) else {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(RichText::new("indexing names under this folder\u{2026}").size(12.0).color(theme::text_faint()));
+            });
+            return;
+        };
+        let query = self.side.filter.trim().to_string();
+        let mode = self.settings.find_mode;
+        let rkey = (host.to_string(), root.to_string(), query.clone(), mode, index.generation);
+        if self.find_result.as_ref().map(|r| r.key != rkey).unwrap_or(true) {
+            let (hits, total, error) = match find::Matcher::new(mode, &query) {
+                Ok(m) => {
+                    let (h, t) = find::search(&m, &index.entries, 500);
+                    (h, t, None)
+                }
+                Err(e) => (Vec::new(), 0, Some(e)),
+            };
+            self.find_result = Some(FindResult { key: rkey, hits, total, error });
+        }
+        let index = &self.find_index[&key];
+        let Some(res) = self.find_result.as_ref() else { return };
+        let (status, color) = match &res.error {
+            Some(e) => (e.lines().last().unwrap_or(e).to_string(), theme::error()),
+            None => (
+                format!(
+                    "{} {} \u{00b7} {} names{}{}",
+                    res.total,
+                    if res.total == 1 { "match" } else { "matches" },
+                    index.entries.len(),
+                    if index.truncated { " (first 20000)" } else { "" },
+                    if res.total > res.hits.len() { " \u{00b7} first 500 shown" } else { "" }
+                ),
+                theme::text_faint(),
+            ),
+        };
+        ui.label(RichText::new(status).size(11.0).color(color));
+        let selected = self.side.selected.clone();
+        let mut select: Option<String> = None;
+        let mut open: Option<(String, bool)> = None;
+        let mut menu: Option<(String, bool, &'static str)> = None;
+        if open_first {
+            if let Some((i, _)) = res.hits.first() {
+                let (rel, dir) = &index.entries[*i];
+                open = Some((join(root, rel), *dir));
+            }
+        }
+        ScrollArea::vertical().id_salt("find-results").auto_shrink([false, false]).show_rows(ui, 22.0, res.hits.len(), |ui, range| {
+            for (i, pos) in &res.hits[range] {
+                let (rel, dir) = &index.entries[*i];
+                let abs = join(root, rel);
+                let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
+                let p = ui.painter();
+                if selected.as_deref() == Some(abs.as_str()) {
+                    p.rect_filled(rect, CornerRadius::same(4), theme::tint(theme::accent(), 45));
+                } else if resp.hovered() {
+                    p.rect_filled(rect, CornerRadius::same(4), theme::bg_hover());
+                }
+                icons::paint(p, egui::Rect::from_min_size(pos2(rect.left() + 4.0, rect.top() + 3.0), vec2(16.0, 16.0)), if *dir { Icon::Folder } else { Icon::File }, if *dir { theme::ansi(4) } else { theme::text_faint() });
+                // Name first, then its folder; matched characters in the accent color.
+                let chars: Vec<char> = rel.chars().collect();
+                let name_at = chars.iter().rposition(|&c| c == '/').map(|k| k + 1).unwrap_or(0);
+                let mut job = LayoutJob::default();
+                let put = |job: &mut LayoutJob, range: std::ops::Range<usize>, base: Color32, size: f32| {
+                    for k in range {
+                        let hit = pos.contains(&k);
+                        let fmt = egui::TextFormat { font_id: FontId::proportional(size), color: if hit { theme::accent() } else { base }, underline: if hit { Stroke::new(1.0_f32, theme::accent()) } else { Stroke::NONE }, ..Default::default() };
+                        job.append(&chars[k].to_string(), 0.0, fmt);
+                    }
+                };
+                put(&mut job, name_at..chars.len(), if *dir { theme::text() } else { theme::text_dim() }, 13.0);
+                if name_at > 0 {
+                    job.append("   ", 0.0, egui::TextFormat { font_id: FontId::proportional(11.0), ..Default::default() });
+                    put(&mut job, 0..name_at - 1, theme::text_faint(), 11.0);
+                }
+                let galley = ui.fonts(|f| f.layout_job(job));
+                ui.painter().with_clip_rect(rect).galley(pos2(rect.left() + 24.0, rect.center().y - galley.size().y / 2.0), galley, theme::text());
+                if resp.clicked() {
+                    select = Some(abs.clone());
+                }
+                if resp.double_clicked() {
+                    open = Some((abs.clone(), *dir));
+                }
+                let (abs_m, dir_m) = (abs.clone(), *dir);
+                resp.on_hover_text(if *dir { "double-click: show in the tree" } else { "double-click: open in editor" }).context_menu(|ui| {
+                    for (label, act) in [("Open in editor", "open"), ("Show in the tree", "reveal"), ("Insert path at prompt", "insert"), ("Copy path", "copy")] {
+                        if (act != "open" || !dir_m) && ui.button(label).clicked() {
+                            menu = Some((abs_m.clone(), dir_m, act));
+                            ui.close_menu();
+                        }
+                    }
+                });
+            }
+        });
+        if let Some(s) = select {
+            self.side.selected = Some(s);
+        }
+        match open {
+            Some((path, false)) => self.actions.push(Action::OpenFile(host.to_string(), path, 1)),
+            Some((path, true)) => self.reveal(host, root, &path),
+            None => {}
+        }
+        if let Some((path, dir, act)) = menu {
+            match act {
+                "open" => self.actions.push(Action::OpenFile(host.to_string(), path, 1)),
+                "reveal" => self.reveal(host, root, &path),
+                "insert" => {
+                    if let Some(id) = self.active_pane_id() {
+                        let q = self.profile(host).quote_path(&path);
+                        self.actions.push(Action::Send(id, format!("{q} ").into_bytes()));
+                    }
+                }
+                _ => self.actions.push(Action::Copy(path)),
+            }
+            let _ = dir;
+        }
+    }
+
+    /// Clear the filter and show `path` in the tree: its folders expanded, it selected.
+    fn reveal(&mut self, host: &str, root: &str, path: &str) {
+        let rel = path.strip_prefix(root).unwrap_or(path).trim_start_matches('/');
+        let mut acc = root.to_string();
+        let parts: Vec<&str> = rel.split('/').filter(|p| !p.is_empty()).collect();
+        let is_dir = self.find_index.get(&(host.to_string(), root.to_string())).and_then(|i| i.entries.iter().find(|e| e.0 == rel)).map(|e| e.1).unwrap_or(false);
+        let n = if is_dir { parts.len() } else { parts.len().saturating_sub(1) };
+        for part in &parts[..n] {
+            acc = join(&acc, part);
+            self.side.expanded.insert((host.to_string(), acc.clone()));
+            self.actions.push(Action::ListDir(host.to_string(), acc.clone()));
+        }
+        self.side.selected = Some(path.to_string());
+        self.side.filter.clear();
     }
 
     // ---- editor -----------------------------------------------------------------------

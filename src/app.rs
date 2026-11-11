@@ -293,6 +293,9 @@ pub struct Settings {
     pub layout: Layout,
     #[serde(default)]
     pub show_hidden: bool,
+    /// File panel filter: fuzzy, glob or regex.
+    #[serde(default)]
+    pub find_mode: crate::find::FindMode,
     /// The file panel follows the active terminal's directory (OSC 7).
     #[serde(default = "d_true")]
     pub follow_cwd: bool,
@@ -328,7 +331,7 @@ impl Default for Settings {
                 },
             });
         }
-        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, layout: Layout::default(), show_hidden: false, follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, session: Vec::new() }
+        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, layout: Layout::default(), show_hidden: false, find_mode: Default::default(), follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, session: Vec::new() }
     }
 }
 
@@ -697,6 +700,24 @@ pub enum Pending {
     Sys,
     Grep,
     Kill,
+    Tree { root: String },
+}
+
+/// The last filter run: its inputs and the hits (entry index, matched chars).
+pub struct FindResult {
+    pub key: (String, String, String, crate::find::FindMode, u64),
+    pub hits: Vec<(usize, Vec<usize>)>,
+    pub total: usize,
+    pub error: Option<String>,
+}
+
+/// Every name under a folder (agent `tree`), for the file panel filter.
+pub struct FindIndex {
+    /// (relative path, is dir), sorted.
+    pub entries: Vec<(String, bool)>,
+    pub truncated: bool,
+    pub at: Instant,
+    pub generation: u64,
 }
 
 /// Things UI code asks the app to do once drawing is finished.
@@ -754,6 +775,10 @@ pub struct App {
     pub zoom_acc: f32,
     /// Ctrl+Shift+wheel notches not yet turned into a UI scale step.
     pub ui_wheel_acc: f32,
+    /// File filter: name lists per (host, root), and the last result.
+    pub find_index: HashMap<(String, String), FindIndex>,
+    pub find_inflight: HashSet<(String, String)>,
+    pub find_result: Option<FindResult>,
     /// A panel being dragged by its grip to another window edge.
     pub dock_drag: Option<Region>,
     /// Where each panel was drawn this frame (drop targets).
@@ -849,6 +874,9 @@ impl App {
             theme_menu: None,
             zoom_acc: 1.0,
             ui_wheel_acc: 0.0,
+            find_index: HashMap::new(),
+            find_inflight: HashSet::new(),
+            find_result: None,
             dock_drag: None,
             panel_rects: HashMap::new(),
             layout_rect: egui::Rect::NOTHING,
@@ -1549,6 +1577,21 @@ impl App {
                     self.side.grep = Some(r);
                 } else {
                     self.toast(format!("search failed: {err}"), ToastKind::Error);
+                }
+            }
+            Pending::Tree { root } => {
+                self.find_inflight.remove(&(host.to_string(), root.clone()));
+                if ok {
+                    let mut entries: Vec<(String, bool)> = r["entries"]
+                        .as_array()
+                        .map(|a| a.iter().filter_map(|e| Some((e[0].as_str()?.to_string(), e[1].as_bool().unwrap_or(false)))).collect())
+                        .unwrap_or_default();
+                    entries.sort();
+                    let generation = self.find_index.values().map(|i| i.generation).max().unwrap_or(0) + 1;
+                    let truncated = r["truncated"].as_bool().unwrap_or(false);
+                    self.find_index.insert((host.to_string(), root), FindIndex { entries, truncated, at: Instant::now(), generation });
+                } else {
+                    self.toast(format!("file filter: {err}"), ToastKind::Error);
                 }
             }
             Pending::Kill => {

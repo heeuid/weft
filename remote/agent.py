@@ -212,9 +212,44 @@ def op_grep(req):
     return {"root": root, "pattern": pattern, "hits": hits, "truncated": len(hits) >= limit}
 
 
+# Folders listed but not descended into by "tree".
+TREE_SKIP = {".git", "node_modules", "target", "__pycache__", ".venv", "venv", ".cache", ".tox", "dist", "build"}
+
+
+def op_tree(req):
+    # Every name under a folder, for the file panel filter (matching is local).
+    root = _path(req.get("path"))
+    hidden = bool(req.get("hidden"))
+    limit = int(req.get("max", 20000))
+    out = []
+    stack = [""]
+    while stack:
+        rel = stack.pop()
+        try:
+            it = os.scandir(os.path.join(root, rel) if rel else root)
+        except OSError:
+            continue
+        with it:
+            for e in it:
+                if not hidden and e.name.startswith("."):
+                    continue
+                try:
+                    isdir = e.is_dir(follow_symlinks=False)
+                except OSError:
+                    isdir = False
+                r = rel + "/" + e.name if rel else e.name
+                out.append([r, isdir])
+                if len(out) >= limit:
+                    return {"root": root, "entries": out, "truncated": True}
+                if isdir and e.name not in TREE_SKIP:
+                    stack.append(r)
+    return {"root": root, "entries": out, "truncated": False}
+
+
 OPS = {
     "hello": op_hello, "list": op_list, "stat": op_stat, "read": op_read, "write": op_write,
     "complete": op_complete, "procs": op_procs, "kill": op_kill, "sys": op_sys, "grep": op_grep,
+    "tree": op_tree,
 }
 
 

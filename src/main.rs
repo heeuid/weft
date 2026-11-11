@@ -8,6 +8,7 @@
 mod app;
 mod highlight;
 mod host;
+mod find;
 mod icons;
 mod md;
 mod mermaid;

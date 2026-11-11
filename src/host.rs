@@ -649,6 +649,7 @@ fn local_op(req: &Value) -> Value {
             Ok(json!({"dir": dir, "prefix": prefix, "names": names}))
         }
         "grep" => local_grep(&s("path"), &s("pattern"), req.get("icase").and_then(|v| v.as_bool()).unwrap_or(false)),
+        "tree" => Ok(local_tree(&s("path"), req.get("hidden").and_then(|v| v.as_bool()).unwrap_or(false), req.get("max").and_then(|v| v.as_u64()).unwrap_or(20000) as usize)),
         op => Err(format!("'{op}' is only available on remote hosts")),
     })();
     match result {
@@ -658,6 +659,35 @@ fn local_op(req: &Value) -> Value {
         }
         Err(e) => json!({"ok": false, "error": e}),
     }
+}
+
+/// Folders listed but not descended into by "tree" (same set as agent.py).
+const TREE_SKIP: &[&str] = &[".git", "node_modules", "target", "__pycache__", ".venv", "venv", ".cache", ".tox", "dist", "build"];
+
+/// Every name under `root` as [relative path, is dir], for the file filter.
+fn local_tree(root: &str, hidden: bool, limit: usize) -> Value {
+    let mut out = Vec::new();
+    let mut stack = vec![String::new()];
+    while let Some(rel) = stack.pop() {
+        let dir = if rel.is_empty() { PathBuf::from(root) } else { Path::new(root).join(&rel) };
+        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if !hidden && name.starts_with('.') {
+                continue;
+            }
+            let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            let r = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
+            out.push(json!([r, is_dir]));
+            if out.len() >= limit {
+                return json!({"root": root, "entries": out, "truncated": true});
+            }
+            if is_dir && !TREE_SKIP.contains(&name.as_str()) {
+                stack.push(r);
+            }
+        }
+    }
+    json!({"root": root, "entries": out, "truncated": false})
 }
 
 fn local_grep(root: &str, pattern: &str, icase: bool) -> Result<Value, String> {
@@ -750,6 +780,36 @@ mod tests {
         assert_eq!(l["entries"][0]["n"], "a.txt");
         let g = local_op(&json!({"op": "grep", "path": dir.display().to_string(), "pattern": "LL", "icase": true}));
         assert_eq!(g["hits"][0][1], 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The file filter's name list: local (Rust) and remote (agent.py) agree,
+    /// heavy folders are listed but not descended into, dot files skipped.
+    #[test]
+    fn tree_lists_names_like_the_agent() {
+        let dir = std::env::temp_dir().join(format!("weft-tree-{}", std::process::id()));
+        for d in ["src/ui", "node_modules/pkg", ".git"] {
+            std::fs::create_dir_all(dir.join(d)).unwrap();
+        }
+        for f in ["src/main.rs", "src/ui/view.rs", "node_modules/pkg/index.js", ".env", "README.md"] {
+            std::fs::write(dir.join(f), "x").unwrap();
+        }
+        let root = dir.display().to_string().replace('\\', "/");
+        let names = |v: &Value| {
+            let mut n: Vec<String> = v["entries"].as_array().unwrap().iter().map(|e| format!("{}{}", e[0].as_str().unwrap(), if e[1].as_bool().unwrap() { "/" } else { "" })).collect();
+            n.sort();
+            n
+        };
+        let local = names(&local_op(&json!({"op": "tree", "path": root})));
+        assert_eq!(local, ["README.md", "node_modules/", "src/", "src/main.rs", "src/ui/", "src/ui/view.rs"]);
+        // The same op in the agent (its functions, without starting the loop).
+        let script = format!("import json,sys\nsrc=open(r'{}/remote/agent.py',encoding='utf-8').read().split('\\ndef main')[0]\nexec(src)\nprint(json.dumps(op_tree({{'path': sys.argv[1]}})))", env!("CARGO_MANIFEST_DIR"));
+        if let Ok(out) = std::process::Command::new("python").arg("-c").arg(&script).arg(&root).output() {
+            if out.status.success() {
+                let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+                assert_eq!(names(&v), local, "agent.py op_tree");
+            }
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
