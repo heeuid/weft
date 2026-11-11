@@ -1433,7 +1433,8 @@ fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size:
             let job = match cached.job {
                 Some(j) if cached.key == key => j,
                 _ => {
-                    let l = md::layout(text, cursor_line, size, &mut |src: &str| diagram_size(ui.ctx(), src, wrap).map(|(_, s)| s.y));
+                    let mut measure = |t: &str, font: &FontId| ui.fonts(|f| f.layout_no_wrap(t.to_owned(), font.clone(), Color32::WHITE).size().x);
+                    let l = md::layout(text, cursor_line, size, &mut |src: &str| diagram_size(ui.ctx(), src, wrap).map(|(_, s)| s.y), &mut measure);
                     let j = Arc::new(l.job);
                     ui.ctx().memory_mut(|m| m.data.insert_temp(cache_id, MdCache { key, job: Some(j.clone()), decos: Arc::new(l.decos) }));
                     j
@@ -1497,6 +1498,23 @@ fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size:
                 md::Deco::Underline { at: i } => {
                     let y = at(i).bottom() + 3.0;
                     painter.hline(origin.x..=right, y, Stroke::new(1.0_f32, theme::border()));
+                }
+                md::Deco::Table { ref rows, end, ref cols } => {
+                    let (Some(&first), Some(&last_x)) = (rows.first(), cols.last()) else { continue };
+                    let (top, bottom) = (at(first).top(), at(end).bottom());
+                    let x = |c: f32| origin.x + c;
+                    let stroke = Stroke::new(1.0_f32, theme::border());
+                    if let Some(&body) = rows.get(1) {
+                        let header = egui::Rect::from_min_max(pos2(x(0.0), top), pos2(x(last_x), at(body).top()));
+                        back.push(egui::Shape::rect_filled(header, CornerRadius::ZERO, theme::tint(theme::text_faint(), 30)));
+                    }
+                    for &r in rows.iter() {
+                        painter.hline(x(0.0)..=x(last_x), at(r).top(), stroke);
+                    }
+                    painter.hline(x(0.0)..=x(last_x), bottom, stroke);
+                    for &c in cols.iter() {
+                        painter.vline(x(c), top..=bottom, stroke);
+                    }
                 }
                 md::Deco::Diagram { start, end, ref source, collapsed } => {
                     let top = at(start).top();

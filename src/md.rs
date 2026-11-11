@@ -29,6 +29,10 @@ pub enum Deco {
     /// ```mermaid block over chars [start, end]. `collapsed`: the code is hidden
     /// and the block's height reserved for the rendered diagram.
     Diagram { start: usize, end: usize, source: String, collapsed: bool },
+    /// Rendered table: char index of each row start (header first, separator
+    /// row excluded), char index of its end, and the x of each column border
+    /// relative to the text's left edge.
+    Table { rows: Vec<usize>, end: usize, cols: Vec<f32> },
 }
 
 pub struct MdLayout {
@@ -186,6 +190,42 @@ impl Ctx<'_> {
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum Align {
+    Left,
+    Center,
+    Right,
+}
+
+/// A table being laid out (cursor outside it): where its columns start.
+struct Table {
+    header: usize,
+    end: usize,
+    aligns: Vec<Align>,
+    widths: Vec<f32>,
+    col_x: Vec<f32>,
+    cols: Vec<f32>,
+    rows: Vec<usize>,
+}
+
+/// Cells of a `| a | b |` row (outer pipes optional).
+fn table_cells(line: &str) -> Vec<&str> {
+    let t = line.trim();
+    let t = t.strip_prefix('|').unwrap_or(t);
+    let t = t.strip_suffix('|').unwrap_or(t);
+    t.split('|').collect()
+}
+
+fn is_table_separator(line: &str) -> bool {
+    let t = line.trim();
+    t.contains('-') && t.contains('|') && t.chars().all(|c| "|-: ".contains(c))
+}
+
+/// Width of the sections from `from` on, as laid out without wrapping.
+fn sections_width(job: &LayoutJob, from: usize, measure: &mut dyn FnMut(&str, &FontId) -> f32) -> f32 {
+    job.sections[from..].iter().map(|s| s.leading_space + measure(&job.text[s.byte_range.clone()], &s.format.font_id)).sum()
+}
+
 fn heading_level(line: &str) -> Option<(usize, usize)> {
     let hashes = line.bytes().take_while(|&c| c == b'#').count();
     if (1..=6).contains(&hashes) && line.as_bytes().get(hashes).map(|&c| c == b' ').unwrap_or(line.len() == hashes) {
@@ -211,7 +251,9 @@ struct Fence {
 /// Lay out `text` as in-place-rendered markdown. `cursor_line` (0-based) shows
 /// its markup. `diagram` gives the height to reserve for a rendered mermaid
 /// source (None: show it as code).
-pub fn layout(text: &str, cursor_line: Option<usize>, size: f32, diagram: &mut dyn FnMut(&str) -> Option<f32>) -> MdLayout {
+///
+/// `measure` gives the unwrapped width of a text in a font (aligns table columns).
+pub fn layout(text: &str, cursor_line: Option<usize>, size: f32, diagram: &mut dyn FnMut(&str) -> Option<f32>, measure: &mut dyn FnMut(&str, &FontId) -> f32) -> MdLayout {
     let mut job = LayoutJob::default();
     let mut decos = Vec::new();
     let mut char_pos = 0usize; // char index of the current line start
@@ -219,6 +261,7 @@ pub fn layout(text: &str, cursor_line: Option<usize>, size: f32, diagram: &mut d
     let mut fence: Option<Fence> = None;
     let lines: Vec<&str> = text.split_inclusive('\n').collect();
     let soft = soft_breaks(&lines, cursor_line);
+    let mut table: Option<Table> = None;
     for (ln, raw_line) in lines.iter().copied().enumerate() {
         let line = raw_line.strip_suffix('\n').unwrap_or(raw_line);
         let line = line.strip_suffix('\r').unwrap_or(line);
@@ -229,6 +272,44 @@ pub fn layout(text: &str, cursor_line: Option<usize>, size: f32, diagram: &mut d
         let trimmed = line.trim_start();
         let indent = &line[..line.len() - trimmed.len()];
         let char_at = |byte: usize| char_pos + line[..byte].chars().count();
+        let mut tiny_newline = false;
+
+        if fence.is_none() && table.is_none() && trimmed.starts_with('|') && lines.get(ln + 1).map(|l| is_table_separator(l)).unwrap_or(false) {
+            let end = (ln + 2..lines.len()).find(|&i| !lines[i].trim_start().starts_with('|')).unwrap_or(lines.len());
+            if !cursor_line.map(|c| (ln..end).contains(&c)).unwrap_or(false) {
+                let aligns: Vec<Align> = table_cells(lines[ln + 1])
+                    .iter()
+                    .map(|c| {
+                        let c = c.trim();
+                        match (c.starts_with(':'), c.ends_with(':')) {
+                            (true, true) => Align::Center,
+                            (false, true) => Align::Right,
+                            _ => Align::Left,
+                        }
+                    })
+                    .collect();
+                let mut widths = vec![0.0_f32; aligns.len()];
+                for (i, l) in lines[ln..end].iter().enumerate() {
+                    if i == 1 {
+                        continue;
+                    }
+                    let st = if i == 0 { Style { family: Fam::Bold, ..body } } else { body };
+                    for (c, cell) in table_cells(l).iter().enumerate().take(widths.len()) {
+                        let mut scratch = LayoutJob::default();
+                        Ctx { job: &mut scratch, cursor_line: false }.inline(cell.trim(), st);
+                        widths[c] = widths[c].max(sections_width(&scratch, 0, measure));
+                    }
+                }
+                let pad = size * 0.6;
+                let (mut cols, mut col_x) = (vec![0.0_f32], Vec::new());
+                for w in &widths {
+                    let left = *cols.last().unwrap();
+                    col_x.push(left + pad);
+                    cols.push(left + w + 2.0 * pad);
+                }
+                table = Some(Table { header: ln, end, aligns, widths, col_x, cols, rows: Vec::new() });
+            }
+        }
 
         if let Some(f) = fence.as_ref() {
             let collapsed = f.mermaid.as_ref().and_then(|m| m.1);
@@ -322,6 +403,59 @@ pub fn layout(text: &str, cursor_line: Option<usize>, size: f32, diagram: &mut d
             } else {
                 cx.inline(item, body);
             }
+        } else if let Some(t) = table.as_mut() {
+            if ln == t.header + 1 {
+                // The separator row: hidden and (almost) no height.
+                cx.marker(line, body);
+                tiny_newline = true;
+            } else {
+                t.rows.push(char_pos);
+                let st = if ln == t.header { Style { family: Fam::Bold, ..body } } else { body };
+                let row_first = cx.job.sections.len();
+                let lead = line.len() - line.trim_start().len();
+                let inner = line.trim();
+                let has_open = inner.starts_with('|');
+                cx.marker(&line[..lead], body);
+                let mut rest = inner;
+                if has_open {
+                    cx.marker("|", body);
+                    rest = &rest[1..];
+                }
+                let has_close = rest.ends_with('|');
+                if has_close {
+                    rest = &rest[..rest.len() - 1];
+                }
+                let cells = table_cells(line).len();
+                for (c, part) in rest.splitn(cells, '|').enumerate() {
+                    if c > 0 {
+                        cx.marker("|", body);
+                    }
+                    let content = part.trim();
+                    let before = part.len() - part.trim_start().len();
+                    cx.marker(&part[..before], body);
+                    let x_now = sections_width(cx.job, row_first, measure);
+                    let s0 = cx.job.sections.len();
+                    cx.inline(content, st);
+                    if c < t.col_x.len() && cx.job.sections.len() > s0 {
+                        let slack = (t.widths[c] - sections_width(cx.job, s0, measure)).max(0.0);
+                        let off = match t.aligns[c] {
+                            Align::Left => 0.0,
+                            Align::Center => slack / 2.0,
+                            Align::Right => slack,
+                        };
+                        cx.job.sections[s0].leading_space = (t.col_x[c] + off - x_now).max(0.0);
+                    }
+                    cx.marker(&part[before + content.len()..], body);
+                }
+                if has_close {
+                    cx.marker("|", body);
+                }
+                cx.marker(&line[lead + inner.len()..], body);
+            }
+            if ln + 1 == t.end {
+                let t = table.take().unwrap();
+                decos.push(Deco::Table { rows: t.rows, end: char_pos + line_chars, cols: t.cols });
+            }
         } else if trimmed.starts_with('|') {
             // Tables: monospace so columns line up; pipes and the separator row faint.
             let mono = Style { family: Fam::Mono, size: size * 0.92, ..body };
@@ -350,7 +484,9 @@ pub fn layout(text: &str, cursor_line: Option<usize>, size: f32, diagram: &mut d
             // Keep the line's own height for the newline (headings stay tall).
             let collapsed = fence.as_ref().and_then(|f| f.mermaid.as_ref()).and_then(|m| m.1).is_some();
             let st = if fence.is_some() && !collapsed { Style { family: Fam::Mono, ..Style::body(size) } } else { Style::body(size) };
-            if soft[ln] {
+            if tiny_newline {
+                cx.marker(newline, st);
+            } else if soft[ln] {
                 // A single newline inside a paragraph is a space, as in CommonMark
                 // (same char count, so cursor positions still match the source).
                 cx.text(&newline.replace('\n', " "), Style { color: Color32::TRANSPARENT, ..st });
@@ -445,6 +581,10 @@ pub fn is_markdown(path: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn mono(t: &str, f: &FontId) -> f32 {
+        t.chars().count() as f32 * f.size * 0.5
+    }
+
     fn visible(l: &MdLayout) -> String {
         // Concatenate the text of sections that are not invisible markup.
         l.job
@@ -458,40 +598,66 @@ mod tests {
     #[test]
     fn layout_keeps_every_byte_of_the_source() {
         let src = "# 제목\n\n**굵게** 와 *기울임*, `code`, [링크](http://x)\n- [ ] 할 일\n- [x] 끝\n> 인용\n```rs\nfn main() {}\n```\n---\n| a | b |\n";
-        let l = layout(src, None, 14.0, &mut |_| None);
+        let l = layout(src, None, 14.0, &mut |_| None, &mut mono);
         assert_eq!(l.job.text, src, "the editor needs the exact source text");
-        assert_eq!(layout("a\nb", None, 14.0, &mut |_| None).job.text, "a b");
+        assert_eq!(layout("a\nb", None, 14.0, &mut |_| None, &mut mono).job.text, "a b");
         let covered: usize = l.job.sections.iter().map(|s| s.byte_range.len()).sum();
         assert_eq!(covered, src.len());
     }
 
     #[test]
+    fn tables_hide_pipes_and_align_columns() {
+        let src = "| name | n |\n|:--|--:|\n| a | 10 |\n| longer | 2 |\n";
+        let l = layout(src, None, 10.0, &mut |_| None, &mut mono);
+        assert_eq!(l.job.text, src);
+        let Some(Deco::Table { rows, cols, .. }) = l.decos.iter().find(|d| matches!(d, Deco::Table { .. })) else { panic!("no table") };
+        assert_eq!(rows.len(), 3, "header + 2 rows, separator excluded");
+        assert_eq!(cols.len(), 3);
+        // Cell text starts at the same x in every row of a left-aligned column.
+        let x_of = |needle: &str| {
+            let at = src.find(needle).unwrap();
+            let row = src[..at].rfind('\n').map(|i| i + 1).unwrap_or(0);
+            let first = l.job.sections.iter().position(|s| s.byte_range.start >= row).unwrap();
+            let me = l.job.sections.iter().position(|s| s.byte_range.start == at).unwrap();
+            sections_width(&l.job, first, &mut mono) - sections_width(&l.job, me, &mut mono)
+        };
+        assert!((x_of("a ") - x_of("longer")).abs() < 0.01);
+        assert!((x_of("a ") - x_of("name")).abs() < 0.01);
+        // Visible text has no pipes.
+        let shown: String = l.job.sections.iter().filter(|s| s.format.color != Color32::TRANSPARENT).map(|s| &l.job.text[s.byte_range.clone()]).collect();
+        assert!(!shown.contains('|'), "{shown}");
+        // With the cursor inside, the table is raw.
+        let raw = layout(src, Some(2), 10.0, &mut |_| None, &mut mono);
+        assert!(!raw.decos.iter().any(|d| matches!(d, Deco::Table { .. })));
+    }
+
+    #[test]
     fn single_newlines_join_a_paragraph() {
         let src = "one\ntwo  \nthree\n\nfour\n- item\nmore\n# h\nx\n```\na\nb\n```\n";
-        let l = layout(src, None, 14.0, &mut |_| None);
+        let l = layout(src, None, 14.0, &mut |_| None, &mut mono);
         assert_eq!(l.job.text.chars().count(), src.chars().count(), "cursor positions must match the source");
         let lines: Vec<&str> = l.job.text.split('\n').collect();
         assert_eq!(&lines[..6], ["one two  ", "three", "", "four", "- item more", "# h"]);
         assert_eq!(&lines[6..10], ["x", "```", "a", "b"]);
         // The paragraph holding the cursor keeps its lines.
-        let l = layout(src, Some(1), 14.0, &mut |_| None);
+        let l = layout(src, Some(1), 14.0, &mut |_| None, &mut mono);
         assert!(l.job.text.starts_with("one\ntwo  \nthree\n"));
     }
 
     #[test]
     fn markup_hidden_except_on_cursor_line() {
         let src = "## Title **bold**\nnext";
-        let away = visible(&layout(src, Some(1), 14.0, &mut |_| None));
+        let away = visible(&layout(src, Some(1), 14.0, &mut |_| None, &mut mono));
         assert!(!away.contains('#') && !away.contains("**"), "{away}");
         assert!(away.contains("Title") && away.contains("bold"));
-        let here = visible(&layout(src, Some(0), 14.0, &mut |_| None));
+        let here = visible(&layout(src, Some(0), 14.0, &mut |_| None, &mut mono));
         assert!(here.contains("## ") && here.contains("**bold**"), "{here}");
     }
 
     #[test]
     fn decorations_for_blocks() {
         let src = "- a\n- [x] done\n> q\n```\ncode\n```\n---\n# H\n";
-        let l = layout(src, None, 14.0, &mut |_| None);
+        let l = layout(src, None, 14.0, &mut |_| None, &mut mono);
         assert!(l.decos.contains(&Deco::Bullet { at: 0 }));
         let check = l.decos.iter().find_map(|d| match d {
             Deco::Check { byte, checked, .. } => Some((*byte, *checked)),
@@ -512,7 +678,7 @@ mod tests {
         let l = layout(src, Some(0), 14.0, &mut |s: &str| {
             asked.push(s.to_string());
             Some(120.0)
-        });
+        }, &mut mono);
         assert_eq!(asked, vec!["graph TD; A-->B\n".to_string()]);
         assert_eq!(l.job.text, src);
         assert!(!visible(&l).contains("graph"), "code hidden when the diagram is shown");
@@ -523,7 +689,7 @@ mod tests {
         let l = layout(src, Some(2), 14.0, &mut |_| {
             asked += 1;
             Some(120.0)
-        });
+        }, &mut mono);
         assert_eq!(asked, 0);
         assert!(visible(&l).contains("graph"));
         assert!(l.decos.iter().any(|d| matches!(d, Deco::Diagram { collapsed: false, .. })));
@@ -531,7 +697,7 @@ mod tests {
 
     #[test]
     fn snake_case_is_not_italic() {
-        let l = layout("call my_func_name now", None, 14.0, &mut |_| None);
+        let l = layout("call my_func_name now", None, 14.0, &mut |_| None, &mut mono);
         assert!(l.job.sections.iter().all(|s| !s.format.italics));
     }
 }
