@@ -446,12 +446,17 @@ impl App {
             ui.add_space(12.0);
             ui.label(RichText::new(&host).size(12.0).color(theme::text()));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if icons::button(ui, Icon::Refresh, "refresh").clicked() {
-                    self.actions.push(Action::ListDir(host.clone(), root.clone()));
-                    let keys: Vec<_> = self.dir_cache.keys().filter(|(h, _)| h == &host).cloned().collect();
+                if icons::button(ui, Icon::Refresh, "refresh (back to the terminal's directory when following)").clicked() {
+                    // Following: go back to the terminal's directory even after
+                    // browsing elsewhere (Up, breadcrumbs).
+                    let target = self.active_pane().filter(|_| self.side.follow).and_then(|p| p.term.cwd.clone().map(|c| (p.host.clone(), c)));
+                    let (h, dir) = target.unwrap_or_else(|| (host.clone(), root.clone()));
+                    let keys: Vec<_> = self.dir_cache.keys().filter(|(k, _)| k == &h).cloned().collect();
                     for k in keys {
                         self.dir_cache.remove(&k);
                     }
+                    self.side.root = Some((h.clone(), dir.clone()));
+                    self.actions.push(Action::ListDir(h, dir));
                 }
                 if icons::button(ui, Icon::Up, "parent directory").clicked() {
                     self.set_root(&host, &parent(&root));

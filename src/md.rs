@@ -427,6 +427,24 @@ impl Ctx<'_> {
     }
 }
 
+/// A fence opener (```lang / ~~~) whose closing fence exists below: an
+/// unclosed ``` is plain text, not the rest of the document as code.
+fn opens_fence(lines: &[&str], ln: usize) -> Option<String> {
+    let t = lines[ln].trim_start();
+    if !(t.starts_with("```") || t.starts_with("~~~")) {
+        return None;
+    }
+    let marker = t[..3].to_string();
+    lines[ln + 1..].iter().any(|l| closes_fence(l, &marker)).then_some(marker)
+}
+
+/// A closing fence: only the marker characters (at least as many) on the line.
+fn closes_fence(line: &str, marker: &str) -> bool {
+    let t = line.trim();
+    let c = marker.chars().next().unwrap_or('`');
+    t.starts_with(marker) && t.chars().all(|x| x == c)
+}
+
 fn heading_level(line: &str) -> Option<(usize, usize)> {
     let hashes = line.bytes().take_while(|&c| c == b'#').count();
     if (1..=6).contains(&hashes) && line.as_bytes().get(hashes).map(|&c| c == b' ').unwrap_or(line.len() == hashes) {
@@ -519,7 +537,7 @@ pub fn layout(text: &str, cursor_line: Option<usize>, size: f32, diagram: &mut d
 
         if let Some(f) = fence.as_ref() {
             let collapsed = f.mermaid.as_ref().and_then(|m| m.1);
-            if trimmed.starts_with(&f.marker) {
+            if closes_fence(line, &f.marker) {
                 let end = char_pos + line_chars;
                 match collapsed {
                     Some(h) => {
@@ -554,12 +572,11 @@ pub fn layout(text: &str, cursor_line: Option<usize>, size: f32, diagram: &mut d
                 cx.blank(line, body);
                 decos.push(Deco::Rule { at: char_pos });
             }
-        } else if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-            let marker = trimmed[..3].to_string();
+        } else if let Some(marker) = opens_fence(&lines, ln) {
             let lang = trimmed[3..].trim();
             let mut mermaid = None;
             if lang.eq_ignore_ascii_case("mermaid") {
-                let close = lines.iter().enumerate().skip(ln + 1).find(|(_, l)| l.trim_start().starts_with(&marker)).map(|(i, _)| i);
+                let close = lines.iter().enumerate().skip(ln + 1).find(|(_, l)| closes_fence(l, &marker)).map(|(i, _)| i);
                 if let Some(c) = close {
                     let source: String = lines[ln + 1..c].concat();
                     let editing = cursor_line.map(|cl| (ln..=c).contains(&cl)).unwrap_or(false);
@@ -591,7 +608,12 @@ pub fn layout(text: &str, cursor_line: Option<usize>, size: f32, diagram: &mut d
                 cx.marker(&trimmed[..n], body);
             } else {
                 // Keep the width: the quote bar is painted there.
-                cx.blank(&trimmed[..n], body);
+                if ln > 0 && soft[ln - 1] {
+                    // Joined onto the previous line: no gap where the marker was.
+                    cx.marker(&trimmed[..n], body);
+                } else {
+                    cx.blank(&trimmed[..n], body);
+                }
             }
             cx.inline(&trimmed[n..], Style { color: theme::text_dim(), italics: true, ..body });
             decos.push(Deco::Quote { start: char_pos, end: char_pos + line_chars });
@@ -736,17 +758,18 @@ fn soft_breaks(lines: &[&str], cursor_line: Option<usize>) -> Vec<bool> {
     let mut in_comment = false;
     let kinds: Vec<Kind> = lines
         .iter()
-        .map(|raw| {
+        .enumerate()
+        .map(|(ln, raw)| {
             let line = raw.trim_end_matches(['\n', '\r']);
             let t = line.trim_start();
             if let Some(m) = &in_fence {
-                if t.starts_with(m.as_str()) {
+                if closes_fence(line, m) {
                     in_fence = None;
                 }
                 return Kind::Other;
             }
-            if t.starts_with("```") || t.starts_with("~~~") {
-                in_fence = Some(t[..3].to_string());
+            if let Some(m) = opens_fence(lines, ln) {
+                in_fence = Some(m);
                 return Kind::Other;
             }
             if in_comment || (t.starts_with("<!--") && !t[4..].contains("-->")) {
@@ -760,7 +783,12 @@ fn soft_breaks(lines: &[&str], cursor_line: Option<usize>) -> Vec<bool> {
             if t.is_empty() || heading_level(line).is_some() || is_rule(line) || t.starts_with('|') || line.starts_with("    ") || line.starts_with('\t') {
                 Kind::Other
             } else if t.starts_with('>') {
-                Kind::Quote
+                // A bare ">" line separates quoted paragraphs.
+                if t.trim_start_matches(['>', ' ', '\t']).is_empty() {
+                    Kind::Other
+                } else {
+                    Kind::Quote
+                }
             } else if t.starts_with("- ") || t.starts_with("* ") || t.starts_with("+ ") || (ordered > 0 && t[ordered..].starts_with(". ")) {
                 Kind::Item
             } else {
@@ -874,6 +902,29 @@ mod tests {
         // On the cursor line the source is shown as written.
         let raw = layout(src, Some(0), 14.0, &mut |_| None, &mut mono);
         assert!(raw.job.text.starts_with("a <b>bold</b> &amp;"));
+    }
+
+    #[test]
+    fn unclosed_fence_is_plain_text() {
+        let src = "```\n**bold** after\n";
+        let l = layout(src, None, 14.0, &mut |_| None, &mut mono);
+        assert!(!l.decos.iter().any(|d| matches!(d, Deco::Code { .. })));
+        assert!(l.job.sections.iter().any(|s| s.format.font_id.family == FontFamily::Name(BOLD_FONT.into())));
+        // ```rust inside a block does not close it.
+        let src = "```\n```rust\nx\n```\n";
+        let l = layout(src, None, 14.0, &mut |_| None, &mut mono);
+        let codes: Vec<_> = l.decos.iter().filter(|d| matches!(d, Deco::Code { .. })).collect();
+        assert_eq!(codes, [&Deco::Code { start: 0, end: src.chars().count() - 1 }]);
+    }
+
+    #[test]
+    fn quotes_join_lines_and_split_on_bare_marker() {
+        let src = "> a\n> b\n>\n> c\n";
+        let l = layout(src, None, 14.0, &mut |_| None, &mut mono);
+        assert_eq!(l.job.text, "> a > b\n>\n> c\n");
+        // The joined line's second "> " takes no room.
+        let b = l.job.sections.iter().find(|s| s.byte_range.start == 4).unwrap();
+        assert!(b.format.font_id.size <= 1.0);
     }
 
     #[test]
