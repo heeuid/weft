@@ -664,6 +664,7 @@ pub struct EditorFile {
     /// Raw bytes of a non-text file (images are shown, not edited).
     pub bytes: Option<std::sync::Arc<Vec<u8>>>,
     pub image: crate::media::ImageState,
+    pub pdf: crate::media::PdfState,
 }
 
 pub struct EditorState {
@@ -1214,6 +1215,7 @@ impl App {
         self.editor.files.push(EditorFile {
             bytes: None,
             image: Default::default(),
+            pdf: Default::default(),
             host: host.into(),
             path: path.into(),
             text: String::new(),
@@ -1230,13 +1232,14 @@ impl App {
             error: None,
         });
         self.editor.active = self.editor.files.len() - 1;
-        self.request(host, json!({"op": "read", "path": path}), Pending::Open { path: path.into(), line });
+        self.request(host, json!({"op": "read", "path": path, "max": crate::media::read_limit(&path)}), Pending::Open { path: path.into(), line });
     }
 
     pub fn open_scratch(&mut self, title: &str, text: String) {
         self.editor.files.push(EditorFile {
             bytes: None,
             image: Default::default(),
+            pdf: Default::default(),
             host: "scratch".into(),
             path: title.into(),
             text,
@@ -1282,7 +1285,7 @@ impl App {
         f.loading = true;
         f.conflict = false;
         let (host, path) = (f.host.clone(), f.path.clone());
-        self.request(&host, json!({"op": "read", "path": path}), Pending::Open { path, line: 0 });
+        self.request(&host, json!({"op": "read", "path": path, "max": crate::media::read_limit(&path)}), Pending::Open { path, line: 0 });
     }
 
     pub fn toast(&mut self, text: impl Into<String>, kind: ToastKind) {

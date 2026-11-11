@@ -599,7 +599,8 @@ fn local_op(req: &Value) -> Value {
             if md.is_dir() {
                 return Err("IsADirectoryError: is a directory".into());
             }
-            if md.len() > 8 * 1024 * 1024 {
+            let max = req.get("max").and_then(|v| v.as_u64()).unwrap_or(8 * 1024 * 1024);
+            if md.len() > max {
                 return Err(format!("file too large ({} bytes)", md.len()));
             }
             let raw = std::fs::read(&p).map_err(|e| e.to_string())?;

@@ -62,6 +62,8 @@ cargo run --release
   - **mermaid-cli (path)**: 직접 지정한 `mmdc` 경로.
   그린 결과는 `data/cache/mermaid/`에 저장돼 다음부터 바로 뜹니다.
 - 이미지 파일(png, jpg, gif, webp, bmp, ico)은 에디터에서 그림으로 보입니다(Fit / 1:1 / 확대·축소).
+- PDF는 페이지가 세로로 이어져 보입니다(hayro, 순수 Rust). 보이는 페이지만 백그라운드에서 그리고, 확대하면 그 크기로 다시 그립니다.
+  이미지·PDF는 64MB까지 읽습니다(원격도 에이전트가 메모리로만 전달).
 
 ## 화면 구성
 
@@ -159,5 +161,5 @@ src/widgets.rs    인라인 위젯
 src/ui_panels.rs  탭/상태바/사이드 패널/에디터/팔레트/연결/토스트
 src/theme.rs      색 토큰, 폰트 체인        src/icons.rs  벡터 아이콘
 src/md.rs         마크다운 in-place 레이아웃 src/mermaid.rs 다이어그램 렌더링(내장/mmdc)/캐시
-src/find.rs       파일 필터 fuzzy/glob/regex   src/media.rs  이미지 보기
+src/find.rs       파일 필터 fuzzy/glob/regex   src/media.rs  이미지·PDF 보기
 ```

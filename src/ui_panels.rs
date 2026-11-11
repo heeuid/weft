@@ -1376,7 +1376,7 @@ impl App {
                             settings_changed = true;
                         }
                     });
-                } else if !crate::media::is_image(&f.path) {
+                } else if !crate::media::is_image(&f.path) && !crate::media::is_pdf(&f.path) {
                     ui.add(TextEdit::singleline(&mut f.find).hint_text("highlight…").desired_width(140.0));
                 }
                 if f.loading {
@@ -1416,9 +1416,13 @@ impl App {
             self.save_settings();
         }
         let f = &mut self.editor.files[idx];
-        if crate::media::is_image(&f.path) {
+        if crate::media::is_image(&f.path) || crate::media::is_pdf(&f.path) {
             if let Some(bytes) = f.bytes.clone() {
-                crate::media::image_view(ui, &mut f.image, &f.path, &bytes);
+                if crate::media::is_pdf(&f.path) {
+                    crate::media::pdf_view(ui, &mut f.pdf, &f.path, &bytes);
+                } else {
+                    crate::media::image_view(ui, &mut f.image, &f.path, &bytes);
+                }
                 if reload {
                     self.reload_file(idx);
                 }
