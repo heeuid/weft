@@ -492,8 +492,9 @@ impl Drop for Conn {
     fn drop(&mut self) {
         if let Backend::Remote { child, stdin, .. } = &mut self.backend {
             stdin.take();
-            crate::pty::kill_tree(child.id());
-            let _ = child.kill();
+            if !crate::pty::kill_tree(child.id()) {
+                let _ = child.kill();
+            }
         }
     }
 }
@@ -838,6 +839,21 @@ mod loopback {
             10,
         );
         assert!(ok, "wls widget missing; screen {:?}", screen(&t));
+    }
+
+    #[test]
+    #[ignore]
+    fn closing_a_pane_is_quick() {
+        let Some(prof) = profile() else { return };
+        let mut pty = Pty::spawn(&prof.pty_argv(Some("/"), false), None, &[], 80, 24, || {}).unwrap();
+        let mut t = Term::new(80, 24);
+        let mut p = vte::Parser::new();
+        assert!(pump(&mut pty, &mut t, &mut p, |t| t.at_prompt(), 20));
+        let started = Instant::now();
+        drop(pty);
+        let took = started.elapsed();
+        eprintln!("dropping a pane took {took:?}");
+        assert!(took < Duration::from_millis(100), "closing a pane blocked the UI for {took:?}");
     }
 
     #[test]

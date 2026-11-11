@@ -103,29 +103,36 @@ impl Pty {
 /// Kill a process and all its descendants.  On Windows, msys/cygwin `exec`
 /// is emulated with child processes, so killing only the top process would
 /// leave shells (and inherited pipe handles) behind.
-pub fn kill_tree(pid: u32) {
+pub fn kill_tree(pid: u32) -> bool {
+    // Fire and forget: taskkill takes ~0.5 s to walk the process tree, and
+    // waiting for it froze the UI on every pane close (and longer on exit).
+    // It runs on its own, so it finishes even if weft exits first.
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        let _ = std::process::Command::new("taskkill")
+        std::process::Command::new("taskkill")
             .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .creation_flags(0x0800_0000)
-            .status();
+            .spawn()
+            .is_ok()
     }
     #[cfg(not(windows))]
     {
-        let _ = std::process::Command::new("kill").args(["-TERM", &format!("-{pid}")]).status();
+        std::process::Command::new("kill").args(["-TERM", &format!("-{pid}")]).spawn().is_ok()
     }
 }
 
 impl Drop for Pty {
     fn drop(&mut self) {
-        if let Some(pid) = self.child.process_id() {
-            kill_tree(pid);
+        // taskkill /T needs the root alive to find its descendants, so it is
+        // left to end the root too; kill it directly only if that failed.
+        let delegated = self.child.process_id().map(kill_tree).unwrap_or(false);
+        if !delegated {
+            let _ = self.child.kill();
         }
-        let _ = self.child.kill();
         // Closing a pseudo console can block until its output is drained.
         if let Some(m) = self.master.take() {
             thread::spawn(move || drop(m));

@@ -218,6 +218,7 @@ pub fn layout(text: &str, cursor_line: Option<usize>, size: f32, diagram: &mut d
     let mut byte_pos = 0usize;
     let mut fence: Option<Fence> = None;
     let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let soft = soft_breaks(&lines, cursor_line);
     for (ln, raw_line) in lines.iter().copied().enumerate() {
         let line = raw_line.strip_suffix('\n').unwrap_or(raw_line);
         let line = line.strip_suffix('\r').unwrap_or(line);
@@ -349,7 +350,13 @@ pub fn layout(text: &str, cursor_line: Option<usize>, size: f32, diagram: &mut d
             // Keep the line's own height for the newline (headings stay tall).
             let collapsed = fence.as_ref().and_then(|f| f.mermaid.as_ref()).and_then(|m| m.1).is_some();
             let st = if fence.is_some() && !collapsed { Style { family: Fam::Mono, ..Style::body(size) } } else { Style::body(size) };
-            cx.text(newline, Style { color: Color32::TRANSPARENT, ..st });
+            if soft[ln] {
+                // A single newline inside a paragraph is a space, as in CommonMark
+                // (same char count, so cursor positions still match the source).
+                cx.text(&newline.replace('\n', " "), Style { color: Color32::TRANSPARENT, ..st });
+            } else {
+                cx.text(newline, Style { color: Color32::TRANSPARENT, ..st });
+            }
         }
         char_pos += line_chars + newline.chars().count();
         byte_pos += raw_line.len();
@@ -358,6 +365,70 @@ pub fn layout(text: &str, cursor_line: Option<usize>, size: f32, diagram: &mut d
         decos.push(Deco::Code { start: f.start, end: char_pos });
     }
     MdLayout { job, decos }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Kind {
+    Para,
+    Item,
+    Quote,
+    Other,
+}
+
+/// Per line: does its newline join the next line into the same paragraph?
+/// Not for hard breaks (two trailing spaces or a backslash), nor anywhere in
+/// the paragraph holding the cursor, which shows its lines as written.
+fn soft_breaks(lines: &[&str], cursor_line: Option<usize>) -> Vec<bool> {
+    let mut in_fence: Option<String> = None;
+    let kinds: Vec<Kind> = lines
+        .iter()
+        .map(|raw| {
+            let line = raw.trim_end_matches(['\n', '\r']);
+            let t = line.trim_start();
+            if let Some(m) = &in_fence {
+                if t.starts_with(m.as_str()) {
+                    in_fence = None;
+                }
+                return Kind::Other;
+            }
+            if t.starts_with("```") || t.starts_with("~~~") {
+                in_fence = Some(t[..3].to_string());
+                return Kind::Other;
+            }
+            let ordered = t.bytes().take_while(|c| c.is_ascii_digit()).count();
+            if t.is_empty() || heading_level(line).is_some() || is_rule(line) || t.starts_with('|') || line.starts_with("    ") || line.starts_with('\t') {
+                Kind::Other
+            } else if t.starts_with('>') {
+                Kind::Quote
+            } else if t.starts_with("- ") || t.starts_with("* ") || t.starts_with("+ ") || (ordered > 0 && t[ordered..].starts_with(". ")) {
+                Kind::Item
+            } else {
+                Kind::Para
+            }
+        })
+        .collect();
+    let mut soft: Vec<bool> = (0..lines.len())
+        .map(|i| {
+            let Some(&next) = kinds.get(i + 1) else { return false };
+            let line = lines[i].trim_end_matches(['\n', '\r']);
+            let hard = line.ends_with("  ") || line.ends_with('\\');
+            !hard && kinds[i] != Kind::Other && (next == Kind::Para || (kinds[i] == Kind::Quote && next == Kind::Quote))
+        })
+        .collect();
+    if let Some(c) = cursor_line.filter(|&c| c < lines.len()) {
+        let mut a = c;
+        while a > 0 && soft[a - 1] {
+            a -= 1;
+        }
+        let mut b = c;
+        while b < lines.len() && soft[b] {
+            b += 1;
+        }
+        for v in &mut soft[a..b.min(lines.len())] {
+            *v = false;
+        }
+    }
+    soft
 }
 
 /// Byte offset of `line` (0-based) and the 0-based line of a char index.
@@ -389,8 +460,22 @@ mod tests {
         let src = "# 제목\n\n**굵게** 와 *기울임*, `code`, [링크](http://x)\n- [ ] 할 일\n- [x] 끝\n> 인용\n```rs\nfn main() {}\n```\n---\n| a | b |\n";
         let l = layout(src, None, 14.0, &mut |_| None);
         assert_eq!(l.job.text, src, "the editor needs the exact source text");
+        assert_eq!(layout("a\nb", None, 14.0, &mut |_| None).job.text, "a b");
         let covered: usize = l.job.sections.iter().map(|s| s.byte_range.len()).sum();
         assert_eq!(covered, src.len());
+    }
+
+    #[test]
+    fn single_newlines_join_a_paragraph() {
+        let src = "one\ntwo  \nthree\n\nfour\n- item\nmore\n# h\nx\n```\na\nb\n```\n";
+        let l = layout(src, None, 14.0, &mut |_| None);
+        assert_eq!(l.job.text.chars().count(), src.chars().count(), "cursor positions must match the source");
+        let lines: Vec<&str> = l.job.text.split('\n').collect();
+        assert_eq!(&lines[..6], ["one two  ", "three", "", "four", "- item more", "# h"]);
+        assert_eq!(&lines[6..10], ["x", "```", "a", "b"]);
+        // The paragraph holding the cursor keeps its lines.
+        let l = layout(src, Some(1), 14.0, &mut |_| None);
+        assert!(l.job.text.starts_with("one\ntwo  \nthree\n"));
     }
 
     #[test]

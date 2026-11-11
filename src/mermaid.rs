@@ -51,11 +51,56 @@ pub fn key(source: &str, dark: bool) -> u64 {
 }
 
 /// mermaid-cli on PATH (npm installs `mmdc.cmd` on Windows).
-pub fn mmdc() -> Option<&'static PathBuf> {
-    static FOUND: OnceLock<Option<PathBuf>> = OnceLock::new();
-    FOUND
-        .get_or_init(|| ["mmdc.cmd", "mmdc.exe", "mmdc"].iter().find_map(|n| crate::host::which(n)))
-        .as_ref()
+fn mmdc(ctx: &egui::Context) -> Option<PathBuf> {
+    // Found once and kept. While missing (and only while a diagram asks for
+    // it), look again in a background thread at most every 5 s, so installing
+    // it takes effect without restarting weft and the UI never waits on disk.
+    static FOUND: Mutex<(Option<PathBuf>, Option<std::time::Instant>)> = Mutex::new((None, None));
+    let mut f = FOUND.lock().unwrap();
+    if f.0.is_none() && f.1.map(|t| t.elapsed() > std::time::Duration::from_secs(5)).unwrap_or(true) {
+        // Far future while the search runs, so only one runs at a time.
+        f.1 = Some(std::time::Instant::now() + std::time::Duration::from_secs(3600));
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let found = mmdc_candidates().into_iter().next();
+            let mut f = FOUND.lock().unwrap();
+            f.1 = Some(std::time::Instant::now());
+            if found.is_some() {
+                f.0 = found;
+                GENERATION.fetch_add(1, Ordering::Relaxed);
+                ctx.request_repaint();
+            }
+        });
+    }
+    f.0.clone()
+}
+
+/// PATH first, then npm's global folder and the Node.js folder: a weft started
+/// with an old PATH (opened before the install) would otherwise miss mmdc.
+fn mmdc_candidates() -> Vec<PathBuf> {
+    let names = ["mmdc.cmd", "mmdc.exe", "mmdc"];
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(appdata) = std::env::var_os("APPDATA") {
+        dirs.push(PathBuf::from(appdata).join("npm"));
+    }
+    if let Some(node) = crate::host::which("node.exe").or_else(|| crate::host::which("node")) {
+        if let Some(d) = node.parent() {
+            dirs.push(d.to_path_buf());
+        }
+    }
+    if let Some(pf) = std::env::var_os("ProgramFiles") {
+        dirs.push(PathBuf::from(pf).join("nodejs"));
+    }
+    let mut out: Vec<PathBuf> = names.iter().filter_map(|n| crate::host::which(n)).collect();
+    for d in dirs {
+        for n in names {
+            let p = d.join(n);
+            if p.is_file() {
+                out.push(p);
+            }
+        }
+    }
+    out
 }
 
 pub const INSTALL_HINT: &str = "need mermaid-cli";
@@ -102,7 +147,7 @@ pub fn status(ctx: &egui::Context, cache_dir: &Path, source: &str, dark: bool) -
         st.entries.insert(k, entry);
         return status;
     }
-    let Some(mmdc) = mmdc().cloned() else { return Status::Unavailable };
+    let Some(mmdc) = mmdc(ctx) else { return Status::Unavailable };
     st.entries.insert(k, Entry::Rendering);
     let (dir, src, ctx2) = (cache_dir.to_path_buf(), source.to_string(), ctx.clone());
     std::thread::spawn(move || {
