@@ -273,6 +273,8 @@ pub struct Pane {
     pub search: Option<SearchState>,
     pub bell_at: Option<Instant>,
     pub preedit: String,
+    /// Caret position last reported to the IME (kept while composing).
+    pub ime_rect: Option<Rect>,
     pub hist_seen: u64,
     pub flash_block: Option<(u64, Instant)>,
 }
@@ -296,6 +298,7 @@ impl Pane {
             search: None,
             bell_at: None,
             preedit: String::new(),
+            ime_rect: None,
             hist_seen: 0,
             flash_block: None,
         }

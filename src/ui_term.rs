@@ -270,6 +270,75 @@ pub fn key_bytes(key: Key, m: Modifiers, app_cursor: bool) -> Option<Vec<u8>> {
     })
 }
 
+/// Bytes for the PTY from this frame's text, IME and key events.
+///
+/// IME composition (Hangul etc.) needs care. While a syllable is being
+/// composed, keys belong to the IME:
+/// * Backspace edits the syllable; passing it on deleted the committed text
+///   too ("거야" + Backspace left only "ㅇ");
+/// * Enter, Tab, arrows... make the IME commit the syllable and then deliver
+///   the key again; passing the first copy on sent Enter before the syllable
+///   ("거" submitted, then "야" submitted separately).
+/// So keys pressed while composing are dropped (as egui's TextEdit does), and
+/// the rare text event that arrives mid-composition is held until the commit.
+pub fn typed_bytes(events: &[Event], preedit: &mut String, mods: Modifiers, app_cursor: bool) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut held = Vec::new();
+    // The preedit was just emptied by the IME (last jamo deleted): the
+    // Backspace that did it may arrive after the update in the same frame.
+    let mut emptied_by_ime = false;
+    for ev in events {
+        let composing = !preedit.is_empty();
+        match ev {
+            Event::Ime(ImeEvent::Preedit(s)) => {
+                emptied_by_ime = composing && s.is_empty();
+                *preedit = s.clone();
+            }
+            Event::Ime(ImeEvent::Commit(s)) => {
+                out.extend_from_slice(s.as_bytes());
+                preedit.clear();
+                emptied_by_ime = false;
+                out.append(&mut held);
+            }
+            Event::Ime(ImeEvent::Disabled) => {
+                preedit.clear();
+                out.append(&mut held);
+            }
+            Event::Text(s) => {
+                if mods.ctrl == mods.alt {
+                    if composing {
+                        held.extend_from_slice(s.as_bytes());
+                    } else {
+                        out.extend_from_slice(s.as_bytes());
+                    }
+                }
+            }
+            Event::Key { key, pressed: true, modifiers, .. } => {
+                if composing || (emptied_by_ime && matches!(key, Key::Backspace | Key::Delete)) {
+                    continue;
+                }
+                emptied_by_ime = false;
+                if let Some(b) = key_bytes(*key, *modifiers, app_cursor) {
+                    out.extend_from_slice(&b);
+                }
+            }
+            _ => {}
+        }
+    }
+    out.append(&mut held);
+    out
+}
+
+/// Where to tell the IME the caret is: frozen while composing, otherwise the
+/// cursor cell, else the last known spot, else `fallback`. Never "nowhere".
+pub fn ime_anchor(composing: bool, last: Option<Rect>, cursor: Option<Rect>, fallback: Rect) -> Rect {
+    if composing {
+        last.or(cursor).unwrap_or(fallback)
+    } else {
+        cursor.or(last).unwrap_or(fallback)
+    }
+}
+
 fn mouse_seq(sgr: bool, code: u8, col: usize, row: usize, pressed: bool) -> Vec<u8> {
     if sgr {
         format!("\x1b[<{};{};{}{}", code, col + 1, row + 1, if pressed { 'M' } else { 'm' }).into_bytes()
@@ -486,19 +555,13 @@ impl App {
 
             // Keyboard (only when this pane owns focus).
             if focused {
+                if p.exited && events.iter().any(|e| matches!(e, Event::Key { key: Key::Enter, pressed: true, .. })) {
+                    acts.push(Action::Restart(id));
+                } else {
+                    out.extend(typed_bytes(&events, &mut p.preedit, mods, p.term.app_cursor));
+                }
                 for ev in &events {
                     match ev {
-                        Event::Text(s) => {
-                            if mods.ctrl == mods.alt {
-                                out.extend_from_slice(s.as_bytes());
-                            }
-                        }
-                        Event::Ime(ImeEvent::Commit(s)) => {
-                            out.extend_from_slice(s.as_bytes());
-                            p.preedit.clear();
-                        }
-                        Event::Ime(ImeEvent::Preedit(s)) => p.preedit = s.clone(),
-                        Event::Ime(ImeEvent::Disabled) => p.preedit.clear(),
                         Event::Paste(s) => acts.push(Action::Paste(id, s.clone())),
                         Event::Copy => match p.sel {
                             Some(sel) => {
@@ -509,15 +572,6 @@ impl App {
                             None => {}
                         },
                         Event::Cut => out.push(0x18),
-                        Event::Key { key, pressed: true, modifiers, .. } => {
-                            if p.exited && *key == Key::Enter {
-                                acts.push(Action::Restart(id));
-                                continue;
-                            }
-                            if let Some(b) = key_bytes(*key, *modifiers, p.term.app_cursor) {
-                                out.extend_from_slice(&b);
-                            }
-                        }
                         _ => {}
                     }
                 }
@@ -890,11 +944,6 @@ impl App {
                 painter.hline(pr.x_range(), pr.bottom() - 1.0, Stroke::new(1.0_f32, theme::accent()));
             }
         }
-        if focused {
-            if let Some(r) = cursor_rect {
-                ui.ctx().output_mut(|o| o.ime = Some(egui::output::IMEOutput { rect: inner, cursor_rect: r }));
-            }
-        }
 
         // Scroll position indicator.
         if !t.alt_active && p.scroll > 0 && !all.is_empty() {
@@ -994,6 +1043,18 @@ impl App {
                 ui.close_menu();
             }
         });
+
+        // IME position. Every focused frame must report one: a frame without it
+        // makes egui disable the IME, and Windows then commits the syllable being
+        // composed ("돼" typed as "ㄷ" + "ㅙ"). While composing, the position stays
+        // put even if the app redraws and moves the cursor around.
+        if focused {
+            let pm = self.panes.get_mut(&id).unwrap();
+            let fallback = Rect::from_min_size(inner.min, vec2(cw, ch));
+            let r = ime_anchor(!pm.preedit.is_empty(), pm.ime_rect, cursor_rect, fallback);
+            pm.ime_rect = Some(r);
+            ui.ctx().output_mut(|o| o.ime = Some(egui::output::IMEOutput { rect: r, cursor_rect: r }));
+        }
 
         // 5. mutable overlays: widgets, composer, search
         for (wi, r) in widget_slots {
@@ -1258,6 +1319,67 @@ mod tests {
         assert_eq!(key_bytes(Key::ArrowLeft, Modifiers::CTRL, false), Some(b"\x1b[1;5D".to_vec()));
         assert_eq!(key_bytes(Key::B, Modifiers::ALT, false), Some(b"\x1bb".to_vec()));
         assert_eq!(key_bytes(Key::A, Modifiers::NONE, false), None);
+    }
+
+    fn key(k: Key) -> Event {
+        Event::Key { key: k, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE }
+    }
+    fn pre(s: &str) -> Event {
+        Event::Ime(ImeEvent::Preedit(s.into()))
+    }
+    fn commit(s: &str) -> Event {
+        Event::Ime(ImeEvent::Commit(s.into()))
+    }
+
+    #[test]
+    fn hangul_backspace_edits_the_syllable_not_the_app() {
+        // "거" already committed, "야" composing; Backspace -> IME leaves "ㅇ".
+        let mut preedit = "야".to_string();
+        let out = typed_bytes(&[key(Key::Backspace), pre("ㅇ")], &mut preedit, Modifiers::NONE, false);
+        assert!(out.is_empty(), "Backspace leaked to the app: {out:?}");
+        assert_eq!(preedit, "ㅇ");
+        // The last jamo deleted: preedit becomes empty in the same frame.
+        let out = typed_bytes(&[pre(""), key(Key::Backspace)], &mut preedit, Modifiers::NONE, false);
+        assert!(out.is_empty());
+        // Nothing composing any more: Backspace goes to the app.
+        let out = typed_bytes(&[key(Key::Backspace)], &mut preedit, Modifiers::NONE, false);
+        assert_eq!(out, vec![0x7f]);
+    }
+
+    #[test]
+    fn enter_during_composition_is_sent_once_after_the_syllable() {
+        // Windows Korean IME: Enter while composing -> commit, then Enter again.
+        let mut preedit = "야".to_string();
+        let out = typed_bytes(&[key(Key::Enter), commit("야"), key(Key::Enter)], &mut preedit, Modifiers::NONE, false);
+        assert_eq!(String::from_utf8(out).unwrap(), "야\r");
+        // Same, with the re-delivered Enter in the next frame.
+        let mut preedit = "야".to_string();
+        let a = typed_bytes(&[key(Key::Enter), commit("야")], &mut preedit, Modifiers::NONE, false);
+        let b = typed_bytes(&[key(Key::Enter)], &mut preedit, Modifiers::NONE, false);
+        assert_eq!(String::from_utf8([a, b].concat()).unwrap(), "야\r");
+    }
+
+    #[test]
+    fn ime_position_is_never_missing_and_frozen_while_composing() {
+        let at = |x: f32| Rect::from_min_size(pos2(x, 0.0), vec2(8.0, 16.0));
+        let fallback = at(0.0);
+        // Cursor not found this frame: keep the last spot instead of reporting nothing.
+        assert_eq!(ime_anchor(false, Some(at(40.0)), None, fallback), at(40.0));
+        assert_eq!(ime_anchor(false, None, None, fallback), fallback);
+        // Not composing: follow the cursor.
+        assert_eq!(ime_anchor(false, Some(at(40.0)), Some(at(48.0)), fallback), at(48.0));
+        // Composing: the app redrew and the cursor jumped; the IME stays put.
+        assert_eq!(ime_anchor(true, Some(at(40.0)), Some(at(200.0)), fallback), at(40.0));
+    }
+
+    #[test]
+    fn text_during_composition_follows_the_commit() {
+        let mut preedit = "야".to_string();
+        let out = typed_bytes(&[Event::Text(" ".into()), commit("야")], &mut preedit, Modifiers::NONE, false);
+        assert_eq!(String::from_utf8(out).unwrap(), "야 ");
+        let mut preedit = String::new();
+        let out = typed_bytes(&[commit("거"), pre("ㅇ"), pre("야"), commit("야"), Event::Text("!".into())], &mut preedit, Modifiers::NONE, false);
+        assert_eq!(String::from_utf8(out).unwrap(), "거야!");
     }
 
     #[test]
