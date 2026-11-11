@@ -19,10 +19,19 @@ mod ui_term;
 mod widgets;
 
 use app::App;
-use std::time::Duration;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
+
+/// Process start, for the startup timings in weft.log.
+static STARTED: OnceLock<Instant> = OnceLock::new();
+
+pub fn since_start() -> String {
+    format!("{} ms", STARTED.get().map(|t| t.elapsed().as_millis()).unwrap_or(0))
+}
 
 struct WeftApp {
     app: App,
+    first_frame: bool,
 }
 
 impl eframe::App for WeftApp {
@@ -77,6 +86,10 @@ impl eframe::App for WeftApp {
         if ctx.input(|i| i.viewport().close_requested()) {
             app.save_settings();
         }
+        if self.first_frame {
+            self.first_frame = false;
+            self.app.data.log(&format!("startup: first frame built at {}", since_start()));
+        }
     }
 }
 
@@ -114,6 +127,7 @@ fn confirm_host_key(_text: &str) -> bool {
 }
 
 fn main() -> eframe::Result<()> {
+    STARTED.get_or_init(Instant::now);
     let args: Vec<String> = std::env::args().collect();
     // ssh invokes SSH_ASKPASS as `weft.exe "<prompt>"` with our secret in the environment.
     let as_askpass = args.get(1).map(|a| a == "--askpass").unwrap_or(false)
@@ -132,10 +146,14 @@ fn main() -> eframe::Result<()> {
         "weft",
         options,
         Box::new(|cc| {
+            let window = since_start();
             theme::install_fonts(&cc.egui_ctx);
+            let fonts = since_start();
             theme::apply(&cc.egui_ctx, 0);
             cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
-            Ok(Box::new(WeftApp { app: App::new(cc.egui_ctx.clone()) }))
+            let app = App::new(cc.egui_ctx.clone());
+            app.data.log(&format!("startup: window+GL {window}, fonts read {fonts}, app+panes {}", since_start()));
+            Ok(Box::new(WeftApp { app, first_frame: true }))
         }),
     )
 }

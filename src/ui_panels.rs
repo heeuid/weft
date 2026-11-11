@@ -1430,7 +1430,8 @@ fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size:
     let diagram_size = |ctx: &egui::Context, source: &str, wrap: f32| -> Option<(egui::TextureId, egui::Vec2)> {
         match crate::mermaid::status(ctx, cache_dir, source, dark) {
             crate::mermaid::Status::Ready(tex, px) => {
-                let pt = px / 2.0;
+                // Grows with the editor font (Ctrl+= / Ctrl+-), 1:1 at the default size.
+                let pt = px / 2.0 * (size / 14.5);
                 let scale = (wrap / pt.x).min(1.0);
                 Some((tex, pt * scale))
             }

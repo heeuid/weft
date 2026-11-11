@@ -264,6 +264,8 @@ pub struct InlineWidget {
 }
 
 pub struct Pane {
+    /// Startup timing logged: first output, first prompt.
+    pub seen: (bool, bool),
     pub id: usize,
     pub host: String,
     pub term: Term,
@@ -314,6 +316,7 @@ impl Pane {
             pending_size: None,
             sized: false,
             hist_seen: 0,
+            seen: (false, false),
             flash_block: None,
         }
     }
@@ -1017,12 +1020,21 @@ impl App {
     pub fn poll(&mut self) {
         let mut events: Vec<(usize, TermEvent)> = Vec::new();
         let mut new_history: Vec<(String, String)> = Vec::new();
+        let mut timings: Vec<String> = Vec::new();
         for (id, pane) in self.panes.iter_mut() {
             if let Some(pty) = pane.pty.as_mut() {
                 let bytes = pty.read();
                 if !bytes.is_empty() {
                     let before = pane.term.end_line();
                     pane.term.feed(&mut pane.parser, &bytes);
+                    if !pane.seen.0 {
+                        pane.seen.0 = true;
+                        timings.push(format!("startup: pane {id} [{}] first output at {}", pane.host, crate::since_start()));
+                    }
+                    if !pane.seen.1 && !pane.term.blocks.is_empty() {
+                        pane.seen.1 = true;
+                        timings.push(format!("startup: pane {id} [{}] first prompt at {}", pane.host, crate::since_start()));
+                    }
                     let replies = std::mem::take(&mut pane.term.replies);
                     pty.write(&replies);
                     if pane.scroll > 0 {
@@ -1046,6 +1058,9 @@ impl App {
                     }
                 }
             }
+        }
+        for t in timings {
+            self.data.log(&t);
         }
         for (host, cmd) in new_history {
             self.record_history(&host, cmd);
