@@ -220,7 +220,10 @@ function global:prompt {
     $loc = Get-Location
     $osc7 = ''
     if ($loc.Provider.Name -eq 'FileSystem') { $osc7 = "$e]7;file://$env:COMPUTERNAME/" + ($loc.ProviderPath -replace '\\', '/') + $b }
-    "$e]133;D;$code$b$osc7$e]133;A$b" + (& $global:__weft_prompt) + "$e]133;B$b"
+    # End the block now: the user's own prompt (starship, oh-my-posh) can take
+    # 50-150 ms and must not count as the command's duration.
+    [Console]::Write("$e]133;D;$code$b$osc7")
+    "$e]133;A$b" + (& $global:__weft_prompt) + "$e]133;B$b"
 }
 if (Get-Module PSReadLine) {
     Set-PSReadLineKeyHandler -Key Enter -ScriptBlock {
@@ -853,6 +856,48 @@ mod loopback {
             std::thread::sleep(Duration::from_millis(30));
         }
         false
+    }
+
+    /// A command's block time is the command, not the user's prompt: starship
+    /// (or oh-my-posh) takes 50-150 ms per prompt and used to be counted in.
+    /// Uses the real local PowerShell with the user's profile.
+    #[test]
+    #[ignore]
+    #[cfg(windows)]
+    fn powershell_block_time_is_the_command_only() {
+        let home = std::env::var("USERPROFILE").unwrap();
+        let mut pty = Pty::spawn(&local_shell_argv(), Some(&home), &[], 120, 30, || {}).expect("spawn");
+        let mut t = Term::new(120, 30);
+        let mut p = vte::Parser::new();
+        // Read often: the block times are taken when the bytes are parsed.
+        let mut pump = |pty: &mut Pty, t: &mut Term, until: &dyn Fn(&Term) -> bool, secs: u64| {
+            let end = Instant::now() + Duration::from_secs(secs);
+            while Instant::now() < end {
+                let b = pty.read();
+                if !b.is_empty() {
+                    t.feed(&mut p, &b);
+                    let r = std::mem::take(&mut t.replies);
+                    pty.write(&r);
+                }
+                if until(t) {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            false
+        };
+        assert!(pump(&mut pty, &mut t, &|t| !t.blocks.is_empty(), 30), "first prompt");
+        pump(&mut pty, &mut t, &|_| false, 1);
+        let mut times = Vec::new();
+        for _ in 0..3 {
+            let done = t.blocks.iter().filter(|b| b.duration.is_some()).count();
+            pty.write(b"cd .\r");
+            assert!(pump(&mut pty, &mut t, &|t| t.blocks.iter().filter(|b| b.duration.is_some()).count() > done, 10), "command finished");
+            times.push(t.blocks.iter().rev().find_map(|b| b.duration).unwrap());
+            pump(&mut pty, &mut t, &|_| false, 1);
+        }
+        println!("cd block times: {times:?}");
+        assert!(times.iter().all(|d| *d < Duration::from_millis(50)), "{times:?}");
     }
 
     fn screen(t: &Term) -> Vec<String> {
