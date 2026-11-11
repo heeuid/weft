@@ -1001,7 +1001,7 @@ impl App {
         let items: Vec<(Cmd, &str, &str)> = COMMANDS.iter().copied().filter(|(_, l, _)| q.is_empty() || l.to_lowercase().contains(&q)).collect();
         let mut run = None;
         let mut keep = true;
-        egui::Area::new(Id::new("palette")).anchor(Align2::CENTER_TOP, vec2(0.0, 70.0)).order(egui::Order::Foreground).show(ctx, |ui| {
+        let area = egui::Area::new(Id::new("palette")).anchor(Align2::CENTER_TOP, vec2(0.0, 70.0)).order(egui::Order::Foreground).show(ctx, |ui| {
             egui::Frame::popup(ui.style()).fill(theme::BG_RAISED).corner_radius(CornerRadius::same(8)).inner_margin(8.0).show(ui, |ui| {
                 ui.set_width(460.0);
                 let id = Id::new("palette-q");
@@ -1017,7 +1017,14 @@ impl App {
                 if take_key(ui, Key::Escape, |_| true) {
                     keep = false;
                 }
-                let r = ui.add(TextEdit::singleline(&mut st.query).id(id).hint_text("type a command").desired_width(f32::INFINITY));
+                let mut r = None;
+                ui.horizontal(|ui| {
+                    r = Some(ui.add(TextEdit::singleline(&mut st.query).id(id).hint_text("type a command").desired_width(ui.available_width() - 28.0)));
+                    if icons::button(ui, Icon::Cross, "close (Esc)").clicked() {
+                        keep = false;
+                    }
+                });
+                let r = r.unwrap();
                 r.request_focus();
                 if r.changed() {
                     st.sel = 0;
@@ -1036,6 +1043,9 @@ impl App {
                 }
             });
         });
+        if clicked_outside(ctx, area.response.rect) {
+            keep = false;
+        }
         if let Some(c) = run {
             self.palette = None;
             self.focus_term = true;
@@ -1051,10 +1061,17 @@ impl App {
         let Some(mut st) = self.connect.take() else { return };
         let mut open: Option<String> = None;
         let mut keep = true;
-        egui::Area::new(Id::new("connect")).anchor(Align2::CENTER_TOP, vec2(0.0, 70.0)).order(egui::Order::Foreground).show(ctx, |ui| {
+        let area = egui::Area::new(Id::new("connect")).anchor(Align2::CENTER_TOP, vec2(0.0, 70.0)).order(egui::Order::Foreground).show(ctx, |ui| {
             egui::Frame::popup(ui.style()).fill(theme::BG_RAISED).corner_radius(CornerRadius::same(8)).inner_margin(12.0).show(ui, |ui| {
                 ui.set_width(480.0);
-                ui.label(RichText::new("Connect").size(15.0).color(theme::TEXT));
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Connect").size(15.0).color(theme::TEXT));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if icons::button(ui, Icon::Cross, "close (Esc)").clicked() {
+                            keep = false;
+                        }
+                    });
+                });
                 ui.label(RichText::new("Terminals run over `ssh -tt`. Files, editor, search and procs use a python agent fed through `ssh -T` stdin — nothing is copied to or installed on the host.").size(11.5).color(theme::TEXT_FAINT));
                 ui.add_space(6.0);
                 if take_key(ui, Key::Escape, |_| true) {
@@ -1118,6 +1135,9 @@ impl App {
                 });
             });
         });
+        if clicked_outside(ctx, area.response.rect) {
+            keep = false;
+        }
         if let Some(target) = open {
             let host = if self.settings.profiles.iter().any(|p| p.name == target) || target == "local" {
                 target
@@ -1160,7 +1180,7 @@ impl App {
         let Some((host, mut password)) = self.auth_prompt.take() else { return };
         let mut submit = false;
         let mut keep = true;
-        egui::Area::new(Id::new("auth")).anchor(Align2::CENTER_TOP, vec2(0.0, 90.0)).order(egui::Order::Foreground).show(ctx, |ui| {
+        let area = egui::Area::new(Id::new("auth")).anchor(Align2::CENTER_TOP, vec2(0.0, 90.0)).order(egui::Order::Foreground).show(ctx, |ui| {
             egui::Frame::popup(ui.style()).fill(theme::BG_RAISED).corner_radius(CornerRadius::same(8)).inner_margin(12.0).show(ui, |ui| {
                 ui.set_width(420.0);
                 ui.label(RichText::new(format!("Password for {host}")).size(15.0).color(theme::TEXT));
@@ -1190,6 +1210,9 @@ impl App {
                 });
             });
         });
+        if clicked_outside(ctx, area.response.rect) {
+            keep = false;
+        }
         if submit {
             self.set_password(&host, password);
             self.focus_term = true;
@@ -1221,6 +1244,15 @@ impl App {
             }
         });
     }
+}
+
+/// A mouse press this frame that started outside `rect` (closes popups).
+/// A press released in the same frame is ignored: that is the click that
+/// opened the popup (e.g. the toolbar button), not a click away from it.
+fn clicked_outside(ctx: &egui::Context, rect: egui::Rect) -> bool {
+    ctx.input(|i| {
+        i.pointer.any_pressed() && !i.pointer.any_released() && i.pointer.press_origin().map(|p| !rect.contains(p)).unwrap_or(false)
+    })
 }
 
 fn replace_leaf(n: Node, target: usize, new_id: usize) -> Node {
