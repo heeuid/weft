@@ -293,6 +293,9 @@ pub struct Settings {
     pub layout: Layout,
     #[serde(default)]
     pub show_hidden: bool,
+    /// Who draws mermaid diagrams: built-in, mermaid-cli on PATH, or at a path.
+    #[serde(default)]
+    pub mermaid: crate::mermaid::Renderer,
     /// File panel filter: fuzzy, glob or regex.
     #[serde(default)]
     pub find_mode: crate::find::FindMode,
@@ -331,7 +334,7 @@ impl Default for Settings {
                 },
             });
         }
-        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, layout: Layout::default(), show_hidden: false, find_mode: Default::default(), follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, session: Vec::new() }
+        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, layout: Layout::default(), show_hidden: false, find_mode: Default::default(), mermaid: Default::default(), follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, session: Vec::new() }
     }
 }
 

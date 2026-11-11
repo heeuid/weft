@@ -55,9 +55,13 @@ cargo run --release
   GitHub PR 본문/댓글처럼 한 번 개행도 줄바꿈으로 보려면 `data/settings.json`의 `"markdown_breaks": true`
   또는 팔레트 `Markdown: toggle line breaks`.
 - 커서가 있는 줄만 원문 기호(`#`, `**`, `[]()` …)가 흐리게 보여 그 자리에서 고칩니다. 나머지 줄은 기호가 숨겨집니다.
-- ```` ```mermaid ```` 블록은 그림으로 보입니다(커서를 넣으면 코드로 바뀜). 로컬의 mermaid-cli(`mmdc`)로 그리며,
-  없으면 블록에 `need mermaid-cli`가 표시됩니다. 설치하면 재시작 없이 잡힙니다(PATH, `%APPDATA%\npm`, Node.js 폴더 검색).
+- ```` ```mermaid ```` 블록은 그림으로 보입니다(커서를 넣으면 코드로 바뀜). 그리는 프로그램은 에디터 툴바 `Diagrams`에서 고릅니다
+  (`settings.json`의 `"mermaid"`):
+  - **built-in**(기본): weft에 들어 있는 렌더러(mermaid-svg + resvg). 설치할 것 없음, 시퀀스·플로차트·클래스·상태·간트·파이 등.
+  - **mermaid-cli (PATH)**: PATH에 있는 `mmdc` (공식 mermaid와 똑같은 모양, Node.js 필요). 설치 후 재시작 없이 잡힘.
+  - **mermaid-cli (path)**: 직접 지정한 `mmdc` 경로.
   그린 결과는 `data/cache/mermaid/`에 저장돼 다음부터 바로 뜹니다.
+- 이미지 파일(png, jpg, gif, webp, bmp, ico)은 에디터에서 그림으로 보입니다(Fit / 1:1 / 확대·축소).
 
 ## 화면 구성
 
@@ -154,5 +158,6 @@ src/ui_term.rs    그리드 렌더링 + 블록 크롬 + 입력 + 컴포저/검�
 src/widgets.rs    인라인 위젯
 src/ui_panels.rs  탭/상태바/사이드 패널/에디터/팔레트/연결/토스트
 src/theme.rs      색 토큰, 폰트 체인        src/icons.rs  벡터 아이콘
-src/md.rs         마크다운 in-place 레이아웃 src/mermaid.rs mmdc 렌더링/캐시
+src/md.rs         마크다운 in-place 레이아웃 src/mermaid.rs 다이어그램 렌더링(내장/mmdc)/캐시
+src/find.rs       파일 필터 fuzzy/glob/regex   src/media.rs  이미지 보기
 ```

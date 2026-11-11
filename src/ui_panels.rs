@@ -1326,6 +1326,7 @@ impl App {
         let mut save = false;
         let mut reload = false;
         let mut force = false;
+        let mut settings_changed = false;
         {
             let f = &mut self.editor.files[idx];
             ui.horizontal(|ui| {
@@ -1348,6 +1349,33 @@ impl App {
                     if ui.selectable_label(!f.rich, RichText::new("Source").size(12.5)).on_hover_text("plain markdown source").clicked() {
                         f.rich = false;
                     }
+                    // Who draws ```mermaid blocks. The menu stays open while choosing.
+                    let m = &mut self.settings.mermaid;
+                    ui.menu_button(RichText::new(format!("Diagrams: {}", m.label())).size(12.5), |ui| {
+                        use crate::mermaid::Renderer;
+                        let before = m.clone();
+                        if ui.radio(*m == Renderer::Builtin, "built-in (nothing to install)").clicked() {
+                            *m = Renderer::Builtin;
+                        }
+                        if ui.radio(*m == Renderer::System, "mermaid-cli from PATH").clicked() {
+                            *m = Renderer::System;
+                        }
+                        let is_path = matches!(m, Renderer::Path(_));
+                        if ui.radio(is_path, "mermaid-cli at a path").clicked() && !is_path {
+                            *m = Renderer::Path(String::new());
+                        }
+                        if let Renderer::Path(p) = m {
+                            ui.add(TextEdit::singleline(p).hint_text("C:\\…\\npm\\mmdc.cmd").desired_width(280.0));
+                            let ok = std::path::Path::new(p.trim()).is_file();
+                            let (t, c) = if p.trim().is_empty() { ("", theme::text_faint()) } else if ok { ("found", theme::success()) } else { ("not found", theme::error()) };
+                            if !t.is_empty() {
+                                ui.label(RichText::new(t).size(11.5).color(c));
+                            }
+                        }
+                        if *m != before {
+                            settings_changed = true;
+                        }
+                    });
                 } else if !crate::media::is_image(&f.path) {
                     ui.add(TextEdit::singleline(&mut f.find).hint_text("highlight…").desired_width(140.0));
                 }
@@ -1384,6 +1412,9 @@ impl App {
         }
         let font = FontId::monospace(self.settings.font_size - 1.0);
         let row_h = ui.fonts(|f| f.row_height(&font));
+        if settings_changed {
+            self.save_settings();
+        }
         let f = &mut self.editor.files[idx];
         if crate::media::is_image(&f.path) {
             if let Some(bytes) = f.bytes.clone() {
@@ -1400,7 +1431,8 @@ impl App {
             let size = self.settings.font_size + 0.5;
             let cache_dir = self.data.path("cache/mermaid");
             let breaks = self.settings.markdown_breaks;
-            let changed = markdown_body(ui, f, edit_id, size, breaks, readonly, goto, &cache_dir);
+            let renderer = self.settings.mermaid.clone();
+            let changed = markdown_body(ui, f, edit_id, size, breaks, &renderer, readonly, goto, &cache_dir);
             if changed && !f.scratch {
                 f.dirty = true;
             }
@@ -1842,7 +1874,7 @@ struct MdCache {
 /// backgrounds and rules are painted at the galley positions afterwards.
 /// Returns whether the text changed.
 #[allow(clippy::too_many_arguments)]
-fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size: f32, breaks: bool, readonly: bool, goto: Option<usize>, cache_dir: &std::path::Path) -> bool {
+fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size: f32, breaks: bool, renderer: &crate::mermaid::Renderer, readonly: bool, goto: Option<usize>, cache_dir: &std::path::Path) -> bool {
     let ctx = ui.ctx().clone();
     let focused = ui.memory(|m| m.has_focus(edit_id));
     // The cursor's line shows its markup (from last frame's cursor).
@@ -1852,11 +1884,11 @@ fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size:
         None
     };
     let cache_id = edit_id.with("md");
-    let style_key = format!("{cursor_line:?}|{size}|{breaks}|{}|{}", theme::active(), crate::mermaid::generation());
+    let style_key = format!("{cursor_line:?}|{size}|{breaks}|{renderer:?}|{}|{}", theme::active(), crate::mermaid::generation());
     let dark = !theme::is_light();
     // Rendered diagram size in points: mmdc renders at scale 2; never wider than the editor.
     let diagram_size = |ctx: &egui::Context, source: &str, wrap: f32| -> Option<(egui::TextureId, egui::Vec2)> {
-        match crate::mermaid::status(ctx, cache_dir, source, dark) {
+        match crate::mermaid::status(ctx, cache_dir, source, dark, renderer) {
             crate::mermaid::Status::Ready(tex, px) => {
                 // Grows with the editor font (Ctrl+= / Ctrl+-), 1:1 at the default size.
                 let pt = px / 2.0 * (size / 14.5);
@@ -1967,9 +1999,9 @@ fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size:
                             painter.image(tex, r, egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
                         }
                     } else {
-                        let note = match crate::mermaid::status(&ctx, cache_dir, source, dark) {
+                        let note = match crate::mermaid::status(&ctx, cache_dir, source, dark, renderer) {
                             crate::mermaid::Status::Rendering => Some(("rendering diagram…".to_string(), theme::text_faint())),
-                            crate::mermaid::Status::Unavailable => Some((crate::mermaid::INSTALL_HINT.to_string(), theme::text_faint())),
+                            crate::mermaid::Status::Unavailable(hint) => Some((hint, theme::text_faint())),
                             crate::mermaid::Status::Failed(e) => Some((e, theme::error())),
                             crate::mermaid::Status::Ready(..) => None,
                         };

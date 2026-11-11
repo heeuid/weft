@@ -1,8 +1,9 @@
-//! Mermaid diagrams for the markdown editor.  Rendered locally by
-//! mermaid-cli (`mmdc`, the same tool nvim-editor uses) in a background
-//! thread and cached as PNG files under data/cache/mermaid, so a diagram is
-//! rendered once per source+theme.  Without mmdc the block stays code and the
-//! editor shows how to enable diagrams.
+//! Mermaid diagrams for the markdown editor, rendered in a background thread
+//! and cached as PNG files under data/cache/mermaid (once per source, theme
+//! and renderer). The renderer is a setting:
+//! * built-in: compiled into weft, nothing to install;
+//! * mermaid-cli (`mmdc`) found on PATH;
+//! * mermaid-cli at a given path.
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -15,8 +16,38 @@ pub enum Status {
     Ready(egui::TextureId, egui::Vec2),
     Rendering,
     Failed(String),
-    /// mmdc is not installed.
-    Unavailable,
+    /// The chosen renderer isn't there (the text says what's missing).
+    Unavailable(String),
+}
+
+/// Which program draws the diagrams (settings.json "mermaid").
+#[derive(serde::Serialize, serde::Deserialize, Clone, PartialEq, Debug, Default)]
+#[serde(tag = "kind", content = "path", rename_all = "lowercase")]
+pub enum Renderer {
+    #[default]
+    Builtin,
+    /// mermaid-cli found on PATH.
+    System,
+    /// mermaid-cli at this path (mmdc.cmd / mmdc.exe / mmdc).
+    Path(String),
+}
+
+impl Renderer {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Renderer::Builtin => "built-in",
+            Renderer::System => "mermaid-cli (PATH)",
+            Renderer::Path(_) => "mermaid-cli (path)",
+        }
+    }
+
+    /// Built-in and mermaid-cli draw differently: separate cache entries.
+    fn engine(&self) -> &'static str {
+        match self {
+            Renderer::Builtin => "builtin",
+            _ => "mmdc",
+        }
+    }
 }
 
 enum Entry {
@@ -43,10 +74,14 @@ pub fn generation() -> u64 {
     GENERATION.load(Ordering::Relaxed)
 }
 
-pub fn key(source: &str, dark: bool) -> u64 {
+pub fn key(source: &str, dark: bool, engine: &str) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     source.trim().hash(&mut h);
     dark.hash(&mut h);
+    if engine != "mmdc" {
+        // mmdc keys stay as before, so existing caches remain valid.
+        engine.hash(&mut h);
+    }
     h.finish()
 }
 
@@ -103,33 +138,11 @@ fn fresh_path() -> std::ffi::OsString {
     std::env::join_paths(dirs).unwrap_or_default()
 }
 
-/// PATH first, then npm's global folder and the Node.js folder.
+/// mmdc on PATH (the current system/user PATH, see `fresh_path`).
 fn mmdc_candidates() -> Vec<PathBuf> {
-    let names = ["mmdc.cmd", "mmdc.exe", "mmdc"];
     let path = fresh_path();
-    let mut dirs: Vec<PathBuf> = Vec::new();
-    if let Some(appdata) = std::env::var_os("APPDATA") {
-        dirs.push(PathBuf::from(appdata).join("npm"));
-    }
-    if let Some(d) = node_in(&path).and_then(|n| n.parent().map(|d| d.to_path_buf())) {
-        dirs.push(d);
-    }
-    if let Some(pf) = std::env::var_os("ProgramFiles") {
-        dirs.push(PathBuf::from(pf).join("nodejs"));
-    }
-    let mut out: Vec<PathBuf> = names.iter().filter_map(|n| which_in(&path, n)).collect();
-    for d in dirs {
-        for n in names {
-            let p = d.join(n);
-            if p.is_file() {
-                out.push(p);
-            }
-        }
-    }
-    out
+    ["mmdc.cmd", "mmdc.exe", "mmdc"].iter().filter_map(|n| which_in(&path, n)).collect()
 }
-
-pub const INSTALL_HINT: &str = "need mermaid-cli";
 
 fn load_png(ctx: &egui::Context, path: &Path, name: &str) -> Result<(egui::TextureHandle, egui::Vec2), String> {
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
@@ -141,8 +154,8 @@ fn load_png(ctx: &egui::Context, path: &Path, name: &str) -> Result<(egui::Textu
 }
 
 /// The diagram for `source`: starts rendering it on first use.
-pub fn status(ctx: &egui::Context, cache_dir: &Path, source: &str, dark: bool) -> Status {
-    let k = key(source, dark);
+pub fn status(ctx: &egui::Context, cache_dir: &Path, source: &str, dark: bool, renderer: &Renderer) -> Status {
+    let k = key(source, dark, renderer.engine());
     let mut st = store().lock().unwrap();
     // Collect finished renders.
     for (fk, res) in std::mem::take(&mut st.finished) {
@@ -173,11 +186,27 @@ pub fn status(ctx: &egui::Context, cache_dir: &Path, source: &str, dark: bool) -
         st.entries.insert(k, entry);
         return status;
     }
-    let Some(mmdc) = mmdc(ctx) else { return Status::Unavailable };
+    let cli = match renderer {
+        Renderer::Builtin => None,
+        Renderer::System => match mmdc(ctx) {
+            Some(p) => Some(p),
+            None => return Status::Unavailable("need mermaid-cli on PATH".into()),
+        },
+        Renderer::Path(p) => {
+            let p = PathBuf::from(p.trim());
+            if !p.is_file() {
+                return Status::Unavailable(format!("mmdc not found: {}", p.display()));
+            }
+            Some(p)
+        }
+    };
     st.entries.insert(k, Entry::Rendering);
     let (dir, src, ctx2) = (cache_dir.to_path_buf(), source.to_string(), ctx.clone());
     std::thread::spawn(move || {
-        let res = render(&mmdc, &dir, k, &src, dark);
+        let res = match &cli {
+            Some(mmdc) => render(mmdc, &dir, k, &src, dark),
+            None => render_builtin(&dir, k, &src, dark),
+        };
         store().lock().unwrap().finished.push((k, res));
         GENERATION.fetch_add(1, Ordering::Relaxed);
         ctx2.request_repaint();
@@ -190,10 +219,10 @@ fn render(mmdc: &Path, dir: &Path, k: u64, source: &str, dark: bool) -> Result<P
     let input = dir.join(format!("{k:016x}.mmd"));
     let output = dir.join(format!("{k:016x}.png"));
     std::fs::write(&input, source).map_err(|e| e.to_string())?;
-    // npm's mmdc.cmd runs `node`: find it the same way, next to mmdc as a fallback.
+    // npm's mmdc.cmd runs `node`: from PATH, or next to mmdc (portable installs).
     let mut path = fresh_path();
     if node_in(&path).is_none() {
-        let extra: Vec<PathBuf> = [mmdc.parent().map(|d| d.to_path_buf()), std::env::var_os("ProgramFiles").map(|p| PathBuf::from(p).join("nodejs"))].into_iter().flatten().collect();
+        let extra: Vec<PathBuf> = mmdc.parent().map(|d| d.to_path_buf()).into_iter().collect();
         let joined = std::env::join_paths(extra.iter().cloned().chain(std::env::split_paths(&path))).unwrap_or(path.clone());
         if node_in(&joined).is_none() {
             let _ = std::fs::remove_file(&input);
@@ -222,6 +251,67 @@ fn render(mmdc: &Path, dir: &Path, k: u64, source: &str, dark: bool) -> Result<P
         let line = err.lines().find(|l| !l.trim().is_empty()).unwrap_or("render failed");
         return Err(format!("mermaid: {}", line.trim()));
     }
+    Ok(output)
+}
+
+/// SVG options with the system fonts, built once (loading them takes ~30 ms,
+/// over a second on a cold first run, so never on the UI thread).
+fn svg_options() -> &'static resvg::usvg::Options<'static> {
+    use resvg::usvg;
+    static OPT: OnceLock<usvg::Options<'static>> = OnceLock::new();
+    OPT.get_or_init(|| {
+        let mut opt = usvg::Options::default();
+        let db = opt.fontdb_mut();
+        db.load_system_fonts();
+        // mermaid-svg asks for "sans-serif".
+        db.set_sans_serif_family("Segoe UI");
+        db.set_monospace_family("Cascadia Mono");
+        opt.font_family = "Segoe UI".into();
+        // Hangul: Malgun Gothic, not the first face that has the glyph (Batang, serif).
+        let default_fallback = usvg::FontResolver::default_fallback_selector();
+        opt.font_resolver.select_fallback = Box::new(move |c, exclude, db| {
+            let weight = exclude.first().and_then(|id| db.face(*id)).map(|f| f.weight).unwrap_or_default();
+            let q = usvg::fontdb::Query { families: &[usvg::fontdb::Family::Name("Malgun Gothic")], weight, ..Default::default() };
+            if let Some(id) = db.query(&q) {
+                if !exclude.contains(&id) {
+                    return Some(id);
+                }
+            }
+            default_fallback(c, exclude, db)
+        });
+        opt
+    })
+}
+
+/// Mermaid -> RGBA at `scale` with the built-in renderer (mermaid-svg + resvg).
+pub fn builtin_rgba(source: &str, dark: bool, scale: f32) -> Result<(u32, u32, Vec<u8>), String> {
+    use resvg::{tiny_skia, usvg};
+    let theme = if dark { mermaid_svg::Theme::dark() } else { mermaid_svg::Theme::default_theme() };
+    let svg = mermaid_svg::render_with(source, &theme).map_err(|e| format!("mermaid: {e:?}"))?;
+    let tree = usvg::Tree::from_str(&svg, svg_options()).map_err(|e| format!("mermaid svg: {e}"))?;
+    let s = tree.size();
+    let (w, h) = (((s.width() * scale).ceil() as u32).max(1), ((s.height() * scale).ceil() as u32).max(1));
+    let mut pix = tiny_skia::Pixmap::new(w, h).ok_or("diagram too large")?;
+    resvg::render(&tree, tiny_skia::Transform::from_scale(scale, scale), &mut pix.as_mut());
+    let rgba = pix
+        .pixels()
+        .iter()
+        .flat_map(|p| {
+            let c = p.demultiply();
+            [c.red(), c.green(), c.blue(), c.alpha()]
+        })
+        .collect();
+    Ok((w, h, rgba))
+}
+
+/// The built-in renderer: Mermaid -> SVG -> PNG in-process, nothing to install.
+/// Scale 2, like mmdc above, so both cache the same pixel density.
+fn render_builtin(dir: &Path, k: u64, source: &str, dark: bool) -> Result<PathBuf, String> {
+    let (w, h, rgba) = builtin_rgba(source, dark, 2.0)?;
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let output = dir.join(format!("{k:016x}.png"));
+    let img = image::RgbaImage::from_raw(w, h, rgba).ok_or("bad pixel buffer")?;
+    img.save_with_format(&output, image::ImageFormat::Png).map_err(|e| e.to_string())?;
     Ok(output)
 }
 
@@ -327,6 +417,27 @@ mod tests {
         let png = res.expect("render with the registry PATH");
         assert_eq!(std::fs::read_to_string(png).unwrap(), "png");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The built-in renderer draws real diagrams (the user's sequence diagram,
+    /// Hangul labels) with nothing installed, and caches a PNG.
+    #[test]
+    fn builtin_renders_without_mermaid_cli() {
+        let seq = "sequenceDiagram\n    participant App\n    participant Device as VdsDevice\n    App->>Device: SendMessage(msg)\n    Note over Device: reaper coroutine, one per ring\n    Device-->>App: recv handler\n";
+        let flow = "flowchart TD; A[시작] --> B{조건?}; B -->|예| C[처리하기]; B -->|아니오| D[끝]; C --> D";
+        for (src, dark) in [(seq, true), (flow, false)] {
+            let (w, h, rgba) = super::builtin_rgba(src, dark, 2.0).unwrap();
+            assert!(w > 100 && h > 100, "{w}x{h}");
+            assert_eq!(rgba.len(), (w * h * 4) as usize);
+            let opaque = rgba.chunks(4).filter(|p| p[3] > 0).count();
+            assert!(opaque > (w * h / 50) as usize, "something was drawn");
+        }
+        let dir = std::env::temp_dir().join(format!("weft-mermaid-{}", std::process::id()));
+        let png = super::render_builtin(&dir, 7, flow, true).unwrap();
+        assert!(image::open(&png).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+        // Garbage gives an error or a (blank) picture, never a panic.
+        let _ = super::builtin_rgba("not a diagram at all", true, 1.0);
     }
 
     #[test]
