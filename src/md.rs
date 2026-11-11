@@ -177,6 +177,24 @@ impl Ctx<'_> {
                     self.marker(">", st);
                     handled = Some(e + 1);
                 }
+            } else if rest.starts_with("<!--") {
+                if let Some(e) = rest.find("-->") {
+                    self.text(&s[plain_start..i], st);
+                    self.marker(&rest[..e + 3], st);
+                    handled = Some(e + 3);
+                }
+            } else if let Some(tag) = html_tag(rest) {
+                self.text(&s[plain_start..i], st);
+                handled = Some(self.html(rest, &tag, st));
+            } else if rest.starts_with('&') && !self.cursor_line {
+                if let Some((n, c)) = entity(rest) {
+                    // The entity shows as its character: same char count, so
+                    // cursor positions still match the source.
+                    self.text(&s[plain_start..i], st);
+                    self.job.append(c.encode_utf8(&mut [0; 4]), 0.0, st.format());
+                    self.marker(&rest[1..n], st);
+                    handled = Some(n);
+                }
             }
             match handled {
                 Some(n) => {
@@ -226,6 +244,189 @@ fn sections_width(job: &LayoutJob, from: usize, measure: &mut dyn FnMut(&str, &F
     job.sections[from..].iter().map(|s| s.leading_space + measure(&job.text[s.byte_range.clone()], &s.format.font_id)).sum()
 }
 
+/// HTML tags rendered inside markdown (others stay text, so `Vec<T>` is safe).
+const HTML_TAGS: &[&str] = &[
+    "a", "abbr", "article", "b", "big", "blockquote", "br", "center", "cite", "code", "dd", "del", "details", "dfn", "div", "dl", "dt", "em", "font", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "i", "img", "ins", "kbd", "li", "mark", "ol", "p", "picture", "pre", "q", "s", "samp", "section", "small", "source", "span", "strike", "strong", "sub", "summary", "sup", "table", "tbody", "td", "th", "thead", "tr", "tt", "u", "ul", "var", "wbr",
+];
+
+struct Tag<'a> {
+    len: usize,
+    name: String,
+    closing: bool,
+    attrs: &'a str,
+}
+
+/// A known HTML tag at the start of `s`.
+fn html_tag(s: &str) -> Option<Tag<'_>> {
+    let b = s.as_bytes();
+    if b.first() != Some(&b'<') {
+        return None;
+    }
+    let closing = b.get(1) == Some(&b'/');
+    let start = if closing { 2 } else { 1 };
+    let mut i = start;
+    while i < b.len() && b[i].is_ascii_alphanumeric() {
+        i += 1;
+    }
+    if i == start || !b[start].is_ascii_alphabetic() || !matches!(b.get(i), Some(b'>' | b'/' | b' ' | b'\t')) {
+        return None;
+    }
+    let name = s[start..i].to_ascii_lowercase();
+    if !HTML_TAGS.contains(&name.as_str()) {
+        return None;
+    }
+    let end = i + s[i..].find('>')?;
+    if s[i..end].contains(['<', '\n']) {
+        return None;
+    }
+    Some(Tag { len: end + 1, name, closing, attrs: &s[i..end] })
+}
+
+/// Byte range of attribute `key`'s quoted value inside `attrs`.
+fn attr_value(attrs: &str, key: &str) -> Option<(usize, usize)> {
+    let lower = attrs.to_ascii_lowercase();
+    let at = lower.match_indices(key).map(|(i, _)| i).find(|&i| (i == 0 || attrs.as_bytes()[i - 1].is_ascii_whitespace()) && attrs[i + key.len()..].trim_start().starts_with('='))?;
+    let after = &attrs[at + key.len()..];
+    let eq = after.find('=')?;
+    let val = after[eq + 1..].trim_start();
+    let quote = val.chars().next().filter(|c| *c == '"' || *c == '\'')?;
+    let start = attrs.len() - val.len() + 1;
+    let end = start + val[1..].find(quote)?;
+    Some((start, end))
+}
+
+/// `&name;` / `&#123;` / `&#x1F;`: its length and character.
+fn entity(s: &str) -> Option<(usize, char)> {
+    let end = s.bytes().take(12).position(|c| c == b';')?;
+    let name = &s[1..end];
+    if name.is_empty() || !name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'#') {
+        return None;
+    }
+    let c = match name {
+        "lt" => '<',
+        "gt" => '>',
+        "amp" => '&',
+        "quot" => '"',
+        "apos" => '\'',
+        "nbsp" => '\u{a0}',
+        "copy" => '©',
+        "reg" => '®',
+        "trade" => '™',
+        "mdash" => '—',
+        "ndash" => '–',
+        "hellip" => '…',
+        "middot" => '·',
+        "times" => '×',
+        "deg" => '°',
+        "larr" => '←',
+        "rarr" => '→',
+        "uarr" => '↑',
+        "darr" => '↓',
+        _ => {
+            let n = name.strip_prefix('#')?;
+            let v = match n.strip_prefix(['x', 'X']) {
+                Some(h) => u32::from_str_radix(h, 16).ok()?,
+                None => n.parse().ok()?,
+            };
+            char::from_u32(v).filter(|c| !c.is_control())?
+        }
+    };
+    Some((end + 1, c))
+}
+
+/// The style an HTML element gives its content.
+fn html_style(name: &str, st: Style) -> Style {
+    match name {
+        "b" | "strong" | "summary" | "th" | "dt" => Style { family: Fam::Bold, ..st },
+        "i" | "em" | "cite" | "var" | "dfn" | "q" => Style { italics: true, ..st },
+        "u" | "ins" => Style { underline: true, ..st },
+        "s" | "del" | "strike" => Style { strike: true, color: theme::text_dim(), ..st },
+        "code" | "kbd" | "samp" | "tt" => Style { family: Fam::Mono, size: st.size * 0.92, background: theme::tint(theme::text_faint(), 45), ..st },
+        "mark" => Style { background: theme::tint(theme::warn(), 70), ..st },
+        "a" => Style { color: theme::accent(), underline: true, ..st },
+        "sub" | "sup" | "small" => Style { size: st.size * 0.8, ..st },
+        "big" => Style { size: st.size * 1.15, ..st },
+        "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
+            let level = name.as_bytes()[1] - b'1';
+            Style { family: Fam::Bold, size: st.size * [1.8, 1.5, 1.3, 1.15, 1.05, 1.0][level as usize], ..st }
+        }
+        _ => st,
+    }
+}
+
+/// A line made only of HTML tags and comments (wrappers like `<div align=center>`).
+fn html_only(t: &str) -> bool {
+    let mut rest = t.trim();
+    let mut any = false;
+    while !rest.is_empty() {
+        let n = if rest.starts_with("<!--") { rest.find("-->").map(|e| e + 3) } else { html_tag(rest).filter(|g| !matches!(g.name.as_str(), "br" | "img" | "hr")).map(|g| g.len) };
+        match n {
+            Some(n) => {
+                rest = rest[n..].trim_start();
+                any = true;
+            }
+            None => return false,
+        }
+    }
+    any
+}
+
+fn is_html_rule(t: &str) -> bool {
+    html_tag(t.trim()).map(|g| g.name == "hr" && !g.closing && g.len == t.trim().len()).unwrap_or(false)
+}
+
+impl Ctx<'_> {
+    /// An HTML tag at the start of `rest`: hide the tag, style its content.
+    /// Returns the bytes consumed.
+    fn html(&mut self, rest: &str, tag: &Tag, st: Style) -> usize {
+        let open = &rest[..tag.len];
+        if tag.closing {
+            self.marker(open, st);
+            return tag.len;
+        }
+        match tag.name.as_str() {
+            "br" => {
+                if self.cursor_line {
+                    self.marker(open, st);
+                } else {
+                    // A real line break in place of `<` (same char count).
+                    let f = TextFormat { font_id: FontId::new(1.0, FontFamily::Proportional), color: Color32::TRANSPARENT, ..Default::default() };
+                    self.job.append("\n", 0.0, f);
+                    self.marker(&open[1..], st);
+                }
+                return tag.len;
+            }
+            "img" => {
+                let off = tag.attrs.as_ptr() as usize - rest.as_ptr() as usize;
+                match attr_value(tag.attrs, "alt").filter(|(a, b)| b > a) {
+                    Some((a, b)) => {
+                        self.marker(&open[..off + a], st);
+                        self.text(&open[off + a..off + b], Style { italics: true, color: theme::text_dim(), ..st });
+                        self.marker(&open[off + b..], st);
+                    }
+                    None => self.marker(open, st),
+                }
+                return tag.len;
+            }
+            "hr" | "wbr" | "source" => {
+                self.marker(open, st);
+                return tag.len;
+            }
+            _ => {}
+        }
+        let close = format!("</{}>", tag.name);
+        if let Some(e) = rest[tag.len..].to_ascii_lowercase().find(&close) {
+            let e = tag.len + e;
+            self.marker(open, st);
+            self.inline(&rest[tag.len..e], html_style(&tag.name, st));
+            self.marker(&rest[e..e + close.len()], st);
+            return e + close.len();
+        }
+        self.marker(open, st);
+        tag.len
+    }
+}
+
 fn heading_level(line: &str) -> Option<(usize, usize)> {
     let hashes = line.bytes().take_while(|&c| c == b'#').count();
     if (1..=6).contains(&hashes) && line.as_bytes().get(hashes).map(|&c| c == b' ').unwrap_or(line.len() == hashes) {
@@ -262,6 +463,7 @@ pub fn layout(text: &str, cursor_line: Option<usize>, size: f32, diagram: &mut d
     let lines: Vec<&str> = text.split_inclusive('\n').collect();
     let soft = soft_breaks(&lines, cursor_line);
     let mut table: Option<Table> = None;
+    let mut in_comment = false;
     for (ln, raw_line) in lines.iter().copied().enumerate() {
         let line = raw_line.strip_suffix('\n').unwrap_or(raw_line);
         let line = line.strip_suffix('\r').unwrap_or(line);
@@ -273,6 +475,10 @@ pub fn layout(text: &str, cursor_line: Option<usize>, size: f32, diagram: &mut d
         let indent = &line[..line.len() - trimmed.len()];
         let char_at = |byte: usize| char_pos + line[..byte].chars().count();
         let mut tiny_newline = false;
+        let comment_line = fence.is_none() && (in_comment || (trimmed.starts_with("<!--") && !trimmed[4..].contains("-->")));
+        if comment_line {
+            in_comment = if in_comment { !line.contains("-->") } else { true };
+        }
 
         if fence.is_none() && table.is_none() && trimmed.starts_with('|') && lines.get(ln + 1).map(|l| is_table_separator(l)).unwrap_or(false) {
             let end = (ln + 2..lines.len()).find(|&i| !lines[i].trim_start().starts_with('|')).unwrap_or(lines.len());
@@ -336,6 +542,17 @@ pub fn layout(text: &str, cursor_line: Option<usize>, size: f32, diagram: &mut d
                 cx.marker(line, body);
             } else {
                 cx.text(line, Style { family: Fam::Mono, size: size * 0.92, ..body });
+            }
+        } else if comment_line || html_only(trimmed) {
+            // HTML comments and wrapper-tag lines take no room.
+            cx.marker(line, body);
+            tiny_newline = !cx.cursor_line;
+        } else if is_html_rule(trimmed) {
+            if cx.cursor_line {
+                cx.marker(line, body);
+            } else {
+                cx.blank(line, body);
+                decos.push(Deco::Rule { at: char_pos });
             }
         } else if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
             let marker = trimmed[..3].to_string();
@@ -516,6 +733,7 @@ enum Kind {
 /// the paragraph holding the cursor, which shows its lines as written.
 fn soft_breaks(lines: &[&str], cursor_line: Option<usize>) -> Vec<bool> {
     let mut in_fence: Option<String> = None;
+    let mut in_comment = false;
     let kinds: Vec<Kind> = lines
         .iter()
         .map(|raw| {
@@ -529,6 +747,13 @@ fn soft_breaks(lines: &[&str], cursor_line: Option<usize>) -> Vec<bool> {
             }
             if t.starts_with("```") || t.starts_with("~~~") {
                 in_fence = Some(t[..3].to_string());
+                return Kind::Other;
+            }
+            if in_comment || (t.starts_with("<!--") && !t[4..].contains("-->")) {
+                in_comment = if in_comment { !line.contains("-->") } else { true };
+                return Kind::Other;
+            }
+            if html_only(t) || is_html_rule(t) {
                 return Kind::Other;
             }
             let ordered = t.bytes().take_while(|c| c.is_ascii_digit()).count();
@@ -547,7 +772,8 @@ fn soft_breaks(lines: &[&str], cursor_line: Option<usize>) -> Vec<bool> {
         .map(|i| {
             let Some(&next) = kinds.get(i + 1) else { return false };
             let line = lines[i].trim_end_matches(['\n', '\r']);
-            let hard = line.ends_with("  ") || line.ends_with('\\');
+            let lower = line.trim_end().to_ascii_lowercase();
+            let hard = line.ends_with("  ") || line.ends_with('\\') || lower.ends_with("<br>") || lower.ends_with("<br/>") || lower.ends_with("<br />");
             !hard && kinds[i] != Kind::Other && (next == Kind::Para || (kinds[i] == Kind::Quote && next == Kind::Quote))
         })
         .collect();
@@ -629,6 +855,25 @@ mod tests {
         // With the cursor inside, the table is raw.
         let raw = layout(src, Some(2), 10.0, &mut |_| None, &mut mono);
         assert!(!raw.decos.iter().any(|d| matches!(d, Deco::Table { .. })));
+    }
+
+    #[test]
+    fn inline_html_renders() {
+        let src = "a <b>bold</b> &amp; <kbd>K</kbd><!-- note --> x<br>y\n<div align=\"center\">\n<img src=\"p.png\" alt=\"pic\">\n</div>\n<hr>\nVec<T> &nope; a < b\n";
+        let l = layout(src, None, 14.0, &mut |_| None, &mut mono);
+        assert_eq!(l.job.text.chars().count(), src.chars().count());
+        let v = visible(&l);
+        assert!(v.contains("a bold & K x"), "{v}");
+        assert!(v.contains("pic") && v.contains("Vec<T> &nope; a < b"), "{v}");
+        for hidden in ["<b>", "</b>", "note", "<div", "src=", "<hr>", "amp;"] {
+            assert!(!v.contains(hidden), "{hidden} in {v}");
+        }
+        assert!(l.job.text.contains(" x\nbr>y"), "<br> breaks the line");
+        assert!(l.decos.iter().any(|d| matches!(d, Deco::Rule { .. })));
+        assert!(l.job.sections.iter().any(|s| s.format.font_id.family == FontFamily::Name(BOLD_FONT.into()) && &l.job.text[s.byte_range.clone()] == "bold"));
+        // On the cursor line the source is shown as written.
+        let raw = layout(src, Some(0), 14.0, &mut |_| None, &mut mono);
+        assert!(raw.job.text.starts_with("a <b>bold</b> &amp;"));
     }
 
     #[test]

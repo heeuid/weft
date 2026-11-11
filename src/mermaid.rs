@@ -75,23 +75,49 @@ fn mmdc(ctx: &egui::Context) -> Option<PathBuf> {
     f.0.clone()
 }
 
-/// PATH first, then npm's global folder and the Node.js folder: a weft started
-/// with an old PATH (opened before the install) would otherwise miss mmdc.
+fn which_in(path: &std::ffi::OsStr, exe: &str) -> Option<PathBuf> {
+    std::env::split_paths(path).map(|d| d.join(exe)).find(|p| p.is_file())
+}
+
+fn node_in(path: &std::ffi::OsStr) -> Option<PathBuf> {
+    which_in(path, "node.exe").or_else(|| which_in(path, "node"))
+}
+
+/// PATH as the system and user environment have it now (registry), then our
+/// own: weft may have been started before Node.js or mermaid-cli were installed.
+fn fresh_path() -> std::ffi::OsString {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    #[cfg(windows)]
+    {
+        for (root, key) in [(win::HKLM, "SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment"), (win::HKCU, "Environment")] {
+            if let Some(v) = win::reg_string(root, key, "Path") {
+                dirs.extend(std::env::split_paths(&v));
+            }
+        }
+    }
+    if let Some(p) = std::env::var_os("PATH") {
+        dirs.extend(std::env::split_paths(&p));
+    }
+    let mut seen = std::collections::HashSet::new();
+    dirs.retain(|d| !d.as_os_str().is_empty() && seen.insert(d.to_string_lossy().to_lowercase()));
+    std::env::join_paths(dirs).unwrap_or_default()
+}
+
+/// PATH first, then npm's global folder and the Node.js folder.
 fn mmdc_candidates() -> Vec<PathBuf> {
     let names = ["mmdc.cmd", "mmdc.exe", "mmdc"];
+    let path = fresh_path();
     let mut dirs: Vec<PathBuf> = Vec::new();
     if let Some(appdata) = std::env::var_os("APPDATA") {
         dirs.push(PathBuf::from(appdata).join("npm"));
     }
-    if let Some(node) = crate::host::which("node.exe").or_else(|| crate::host::which("node")) {
-        if let Some(d) = node.parent() {
-            dirs.push(d.to_path_buf());
-        }
+    if let Some(d) = node_in(&path).and_then(|n| n.parent().map(|d| d.to_path_buf())) {
+        dirs.push(d);
     }
     if let Some(pf) = std::env::var_os("ProgramFiles") {
         dirs.push(PathBuf::from(pf).join("nodejs"));
     }
-    let mut out: Vec<PathBuf> = names.iter().filter_map(|n| crate::host::which(n)).collect();
+    let mut out: Vec<PathBuf> = names.iter().filter_map(|n| which_in(&path, n)).collect();
     for d in dirs {
         for n in names {
             let p = d.join(n);
@@ -164,6 +190,17 @@ fn render(mmdc: &Path, dir: &Path, k: u64, source: &str, dark: bool) -> Result<P
     let input = dir.join(format!("{k:016x}.mmd"));
     let output = dir.join(format!("{k:016x}.png"));
     std::fs::write(&input, source).map_err(|e| e.to_string())?;
+    // npm's mmdc.cmd runs `node`: find it the same way, next to mmdc as a fallback.
+    let mut path = fresh_path();
+    if node_in(&path).is_none() {
+        let extra: Vec<PathBuf> = [mmdc.parent().map(|d| d.to_path_buf()), std::env::var_os("ProgramFiles").map(|p| PathBuf::from(p).join("nodejs"))].into_iter().flatten().collect();
+        let joined = std::env::join_paths(extra.iter().cloned().chain(std::env::split_paths(&path))).unwrap_or(path.clone());
+        if node_in(&joined).is_none() {
+            let _ = std::fs::remove_file(&input);
+            return Err("mermaid-cli needs Node.js: node not found".into());
+        }
+        path = joined;
+    }
     let mut cmd = if mmdc.extension().map(|e| e.eq_ignore_ascii_case("cmd")).unwrap_or(false) {
         let mut c = std::process::Command::new("cmd");
         c.arg("/C").arg(mmdc);
@@ -171,6 +208,7 @@ fn render(mmdc: &Path, dir: &Path, k: u64, source: &str, dark: bool) -> Result<P
     } else {
         std::process::Command::new(mmdc)
     };
+    cmd.env("PATH", &path);
     cmd.arg("-i").arg(&input).arg("-o").arg(&output).args(["-b", "transparent", "-s", "2", "-t"]).arg(if dark { "dark" } else { "default" });
     #[cfg(windows)]
     {
@@ -180,9 +218,87 @@ fn render(mmdc: &Path, dir: &Path, k: u64, source: &str, dark: bool) -> Result<P
     let out = cmd.output().map_err(|e| format!("mmdc: {e}"))?;
     let _ = std::fs::remove_file(&input);
     if !out.status.success() || !output.is_file() {
-        let err = String::from_utf8_lossy(&out.stderr);
+        let err = decode(if out.stderr.iter().any(|c| !c.is_ascii_whitespace()) { &out.stderr } else { &out.stdout });
         let line = err.lines().find(|l| !l.trim().is_empty()).unwrap_or("render failed");
         return Err(format!("mermaid: {}", line.trim()));
     }
     Ok(output)
+}
+
+/// Console output: UTF-8, else the OEM code page (cmd.exe messages, e.g. CP949).
+fn decode(bytes: &[u8]) -> String {
+    if let Ok(s) = std::str::from_utf8(bytes) {
+        return s.to_string();
+    }
+    #[cfg(windows)]
+    if let Some(s) = win::oem_to_string(bytes) {
+        return s;
+    }
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+#[cfg(windows)]
+mod win {
+    use std::ffi::{c_void, OsString};
+    use std::os::windows::ffi::OsStringExt;
+
+    pub const HKLM: isize = 0x8000_0002_u32 as i32 as isize;
+    pub const HKCU: isize = 0x8000_0001_u32 as i32 as isize;
+
+    #[link(name = "advapi32")]
+    extern "system" {
+        fn RegGetValueW(key: isize, sub: *const u16, value: *const u16, flags: u32, ty: *mut u32, data: *mut c_void, len: *mut u32) -> i32;
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn MultiByteToWideChar(cp: u32, flags: u32, src: *const u8, src_len: i32, dst: *mut u16, dst_len: i32) -> i32;
+    }
+
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(Some(0)).collect()
+    }
+
+    /// A string value, REG_EXPAND_SZ expanded.
+    pub fn reg_string(root: isize, key: &str, value: &str) -> Option<OsString> {
+        const RRF_RT_REG_SZ: u32 = 0x2;
+        let (k, v) = (wide(key), wide(value));
+        let mut len = 0u32;
+        // SAFETY: valid NUL-terminated strings; the first call only asks for the size.
+        unsafe {
+            if RegGetValueW(root, k.as_ptr(), v.as_ptr(), RRF_RT_REG_SZ, std::ptr::null_mut(), std::ptr::null_mut(), &mut len) != 0 {
+                return None;
+            }
+            let mut buf = vec![0u16; (len as usize).div_ceil(2) + 1];
+            len = (buf.len() * 2) as u32;
+            if RegGetValueW(root, k.as_ptr(), v.as_ptr(), RRF_RT_REG_SZ, std::ptr::null_mut(), buf.as_mut_ptr().cast(), &mut len) != 0 {
+                return None;
+            }
+            let n = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+            Some(OsString::from_wide(&buf[..n]))
+        }
+    }
+
+    pub fn oem_to_string(bytes: &[u8]) -> Option<String> {
+        const CP_OEMCP: u32 = 1;
+        let len = i32::try_from(bytes.len()).ok()?;
+        // SAFETY: lengths match the buffers passed.
+        unsafe {
+            let n = MultiByteToWideChar(CP_OEMCP, 0, bytes.as_ptr(), len, std::ptr::null_mut(), 0);
+            if n <= 0 {
+                return None;
+            }
+            let mut buf = vec![0u16; n as usize];
+            MultiByteToWideChar(CP_OEMCP, 0, bytes.as_ptr(), len, buf.as_mut_ptr(), n);
+            Some(String::from_utf16_lossy(&buf))
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn reads_the_registry_path() {
+            let p = super::reg_string(super::HKLM, "SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment", "Path").expect("system PATH");
+            assert!(p.to_string_lossy().to_lowercase().contains("system32"), "expanded: {p:?}");
+        }
+    }
 }
