@@ -58,6 +58,7 @@ impl eframe::App for WeftApp {
 
         app.ui_palette(ctx);
         app.ui_connect(ctx);
+        app.ui_auth(ctx);
         app.ui_toasts(ctx);
         app.apply_actions();
 
@@ -72,7 +73,47 @@ impl eframe::App for WeftApp {
     }
 }
 
+/// `weft --askpass PROMPT`: ssh runs this (SSH_ASKPASS) when weft supplied a
+/// password. Host key questions are shown to the user, never auto-accepted.
+fn askpass(prompt: &str) -> i32 {
+    match host::askpass_answer(prompt, std::env::var(host::ASKPASS_SECRET_VAR).ok()) {
+        host::AskpassAnswer::Secret(s) => {
+            println!("{s}");
+            0
+        }
+        host::AskpassAnswer::ConfirmHostKey => {
+            println!("{}", if confirm_host_key(prompt) { "yes" } else { "no" });
+            0
+        }
+        host::AskpassAnswer::Refuse => 1,
+    }
+}
+
+#[cfg(windows)]
+fn confirm_host_key(text: &str) -> bool {
+    #[link(name = "user32")]
+    extern "system" {
+        fn MessageBoxW(hwnd: *mut std::ffi::c_void, text: *const u16, caption: *const u16, flags: u32) -> i32;
+    }
+    let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
+    let (t, c) = (wide(text), wide("weft — ssh host key"));
+    // MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND | MB_TOPMOST; IDYES = 6
+    unsafe { MessageBoxW(std::ptr::null_mut(), t.as_ptr(), c.as_ptr(), 0x4 | 0x20 | 0x10000 | 0x40000) == 6 }
+}
+
+#[cfg(not(windows))]
+fn confirm_host_key(_text: &str) -> bool {
+    false
+}
+
 fn main() -> eframe::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    // ssh invokes SSH_ASKPASS as `weft.exe "<prompt>"` with our secret in the environment.
+    let as_askpass = args.get(1).map(|a| a == "--askpass").unwrap_or(false)
+        || (std::env::var_os(host::ASKPASS_SECRET_VAR).is_some() && args.len() == 2);
+    if as_askpass {
+        std::process::exit(askpass(args.last().map(|s| s.as_str()).unwrap_or("")));
+    }
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("weft")

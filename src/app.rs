@@ -388,6 +388,8 @@ pub struct PaletteState {
 pub struct ConnectState {
     pub target: String,
     pub split: bool,
+    /// Optional ssh password; empty means keys / ssh-agent.
+    pub password: String,
 }
 
 pub enum Pending {
@@ -447,6 +449,11 @@ pub struct App {
     pub toasts: Vec<Toast>,
     pub palette: Option<PaletteState>,
     pub connect: Option<ConnectState>,
+    /// Agent authentication prompt: (host, password being typed).
+    pub auth_prompt: Option<(String, String)>,
+    /// ssh passwords for this session only; never written to disk or logs.
+    pub secrets: HashMap<String, String>,
+    auth_prompted: HashSet<String>,
     pub focus_term: bool,
     pub pane_rects: Vec<(usize, Rect)>,
     pub ssh_hosts: Vec<String>,
@@ -528,6 +535,9 @@ impl App {
             ssh_hosts: host::ssh_config_hosts(),
             actions: Vec::new(),
             agent_retried: HashSet::new(),
+            auth_prompt: None,
+            secrets: HashMap::new(),
+            auth_prompted: HashSet::new(),
             last_save: Instant::now(),
         };
         let session = std::mem::take(&mut app.settings.session);
@@ -596,15 +606,30 @@ impl App {
 
     pub fn ensure_conn(&mut self, host: &str) {
         if !self.conns.contains_key(host) {
-            let conn = Conn::open(self.profile(host), &self.data, self.wake());
+            let conn = Conn::open(self.profile(host), &self.data, self.wake(), self.secrets.get(host).cloned());
             self.conns.insert(host.to_string(), conn);
         }
     }
 
     pub fn reconnect(&mut self, host: &str) {
         let wake = self.wake();
+        let secret = self.secrets.get(host).cloned();
         if let Some(c) = self.conns.get_mut(host) {
-            c.connect(wake);
+            c.connect(wake, secret);
+        }
+    }
+
+    /// Remember a password for this session only (never saved) and retry the agent.
+    pub fn set_password(&mut self, host: &str, password: String) {
+        if password.is_empty() {
+            self.secrets.remove(host);
+        } else {
+            self.secrets.insert(host.to_string(), password);
+        }
+        self.agent_retried.insert(host.to_string());
+        self.auth_prompted.remove(host);
+        if self.conns.contains_key(host) {
+            self.reconnect(host);
         }
     }
 
@@ -628,7 +653,9 @@ impl App {
 
     fn start_pty(&self, pane: &mut Pane) {
         let prof = self.profile(&pane.host);
-        let argv = prof.pty_argv(pane.initial_cwd.as_deref());
+        let secret = if prof.is_local() { None } else { self.secrets.get(&pane.host) };
+        let argv = prof.pty_argv(pane.initial_cwd.as_deref(), secret.is_some());
+        let env = secret.map(|s| host::askpass_env(s)).unwrap_or_default();
         let local_cwd = if prof.is_local() { pane.initial_cwd.clone() } else { None };
         let shown: Vec<String> =
             argv.iter().map(|a| if a.len() > 120 { format!("{}…({} bytes)", &a[..60], a.len()) } else { a.clone() }).collect();
@@ -637,7 +664,7 @@ impl App {
         pane.parser = vte::Parser::new();
         pane.widgets.clear();
         pane.hist_seen = 0;
-        match Pty::spawn(&argv, local_cwd.as_deref(), &[], pane.term.cols as u16, pane.term.rows as u16, self.wake()) {
+        match Pty::spawn(&argv, local_cwd.as_deref(), &env, pane.term.cols as u16, pane.term.rows as u16, self.wake()) {
             Ok(p) => {
                 pane.pty = Some(p);
                 pane.exited = false;
@@ -968,6 +995,16 @@ impl App {
                     self.agent_retried.insert(h.clone());
                     self.reconnect(&h);
                 }
+            }
+            // Keys / ssh-agent were refused (or the password was wrong): ask
+            // for a password once instead of leaving the panels dead.
+            let denied = matches!(self.conns.get(&h).map(|c| &c.status), Some(ConnStatus::Failed(e)) if e.contains("Permission denied"));
+            if denied && self.auth_prompt.is_none() && !self.auth_prompted.contains(&h) {
+                self.auth_prompted.insert(h.clone());
+                if self.secrets.remove(&h).is_some() {
+                    self.toast(format!("{h}: password was rejected"), ToastKind::Error);
+                }
+                self.auth_prompt = Some((h.clone(), String::new()));
             }
         }
 

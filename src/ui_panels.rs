@@ -93,7 +93,7 @@ impl App {
                 let cwd = self.active_pane().and_then(|p| p.term.cwd.clone());
                 self.new_tab(&host, cwd);
             }
-            Cmd::Connect => self.connect = Some(ConnectState { target: String::new(), split: false }),
+            Cmd::Connect => self.connect = Some(ConnectState { target: String::new(), split: false, password: String::new() }),
             Cmd::SplitRight => self.split(true),
             Cmd::SplitDown => self.split(false),
             Cmd::ClosePane => {
@@ -344,9 +344,12 @@ impl App {
             ui.label(small(host.clone(), theme::TEXT));
             let r = ui.label(small(label, theme::TEXT_DIM));
             if matches!(status, ConnStatus::Failed(_)) {
-                r.on_hover_text("The agent uses `ssh -T -o BatchMode=yes`: it needs key/agent auth. Terminals work regardless.");
+                r.on_hover_text("Without a password the agent only uses keys / ssh-agent. Terminals work regardless.");
                 if ui.small_button("reconnect").clicked() {
                     self.actions.push(Action::Reconnect(host.clone()));
+                }
+                if !self.profile(&host).is_local() && ui.small_button("password…").clicked() {
+                    self.auth_prompt = Some((host.clone(), String::new()));
                 }
             }
             if let Some(cwd) = self.active_pane().and_then(|p| p.term.cwd.clone()) {
@@ -1054,10 +1057,24 @@ impl App {
                     keep = false;
                 }
                 let r = ui.add(TextEdit::singleline(&mut st.target).hint_text("user@host  [-p 2222 …extra ssh args]").desired_width(f32::INFINITY));
-                r.request_focus();
-                if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) && !st.target.trim().is_empty() {
+                if ui.memory(|m| m.focused().is_none()) {
+                    r.request_focus();
+                }
+                let pw = ui.add(
+                    TextEdit::singleline(&mut st.password)
+                        .password(true)
+                        .hint_text("password (optional — leave blank to use keys / ssh-agent)")
+                        .desired_width(f32::INFINITY),
+                );
+                let enter = ui.input(|i| i.key_pressed(Key::Enter));
+                if (r.lost_focus() || pw.lost_focus()) && enter && !st.target.trim().is_empty() {
                     open = Some(st.target.trim().to_string());
                 }
+                ui.label(
+                    RichText::new("The password stays in memory for this session only. It is never saved or logged.")
+                        .size(11.0)
+                        .color(theme::TEXT_FAINT),
+                );
                 ui.horizontal(|ui| {
                     ui.checkbox(&mut st.split, "open as split");
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1109,6 +1126,10 @@ impl App {
                 }
                 name
             };
+            if !st.password.is_empty() && host != "local" {
+                // Must be set before the pane/agent spawn so both use it.
+                self.set_password(&host, std::mem::take(&mut st.password));
+            }
             if st.split {
                 let cur = self.active_pane_id();
                 let id = self.spawn_pane(&host, None);
@@ -1123,6 +1144,52 @@ impl App {
             self.focus_term = true;
         } else if keep {
             self.connect = Some(st);
+        } else {
+            self.focus_term = true;
+        }
+    }
+
+    /// "The agent needs a password" dialog (opened automatically when keys /
+    /// ssh-agent are refused, or from the status bar).
+    pub fn ui_auth(&mut self, ctx: &egui::Context) {
+        let Some((host, mut password)) = self.auth_prompt.take() else { return };
+        let mut submit = false;
+        let mut keep = true;
+        egui::Area::new(Id::new("auth")).anchor(Align2::CENTER_TOP, vec2(0.0, 90.0)).order(egui::Order::Foreground).show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).fill(theme::BG_RAISED).corner_radius(CornerRadius::same(8)).inner_margin(12.0).show(ui, |ui| {
+                ui.set_width(420.0);
+                ui.label(RichText::new(format!("Password for {host}")).size(15.0).color(theme::TEXT));
+                ui.label(
+                    RichText::new("Keys / ssh-agent were not accepted, so the file panel, editor, search and procs are offline. Enter the ssh password to use it instead (kept in memory for this session only).")
+                        .size(11.5)
+                        .color(theme::TEXT_FAINT),
+                );
+                ui.add_space(6.0);
+                if take_key(ui, Key::Escape, |_| true) {
+                    keep = false;
+                }
+                let r = ui.add(TextEdit::singleline(&mut password).password(true).hint_text("ssh password").desired_width(f32::INFINITY));
+                r.request_focus();
+                if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) && !password.is_empty() {
+                    submit = true;
+                }
+                ui.horizontal(|ui| {
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui.add_enabled(!password.is_empty(), egui::Button::new("Connect")).clicked() {
+                            submit = true;
+                        }
+                        if ui.button("Not now").clicked() {
+                            keep = false;
+                        }
+                    });
+                });
+            });
+        });
+        if submit {
+            self.set_password(&host, password);
+            self.focus_term = true;
+        } else if keep {
+            self.auth_prompt = Some((host, password));
         } else {
             self.focus_term = true;
         }

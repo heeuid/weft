@@ -101,12 +101,16 @@ impl Profile {
         matches!(self.kind, HostKind::Local)
     }
 
-    /// argv for an interactive pane.
-    pub fn pty_argv(&self, cwd: Option<&str>) -> Vec<String> {
+    /// argv for an interactive pane.  With `password` the ssh password comes
+    /// from weft's askpass (see `askpass_env`) instead of the terminal.
+    pub fn pty_argv(&self, cwd: Option<&str>, password: bool) -> Vec<String> {
         match &self.kind {
             HostKind::Local => local_shell_argv(),
             HostKind::Ssh { target, args } => {
                 let mut v = vec!["ssh".to_string(), "-tt".to_string()];
+                if password {
+                    v.extend(["-o".to_string(), "NumberOfPasswordPrompts=1".to_string()]);
+                }
                 v.extend(args.iter().cloned());
                 v.push(target.clone());
                 v.push(remote_shell_command(cwd));
@@ -120,13 +124,15 @@ impl Profile {
         }
     }
 
-    /// argv for the agent side channel (None: served locally).
-    pub fn agent_argv(&self) -> Option<Vec<String>> {
+    /// argv for the agent side channel (None: served locally).  Without a
+    /// password it never prompts (keys / ssh-agent only); with one, the
+    /// password is answered by weft's askpass.
+    pub fn agent_argv(&self, password: bool) -> Option<Vec<String>> {
         match &self.kind {
             HostKind::Local => None,
             HostKind::Ssh { target, args } => {
-                let mut v: Vec<String> =
-                    ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"].iter().map(|s| s.to_string()).collect();
+                let auth = if password { "NumberOfPasswordPrompts=1" } else { "BatchMode=yes" };
+                let mut v: Vec<String> = ["ssh", "-T", "-o", auth, "-o", "ConnectTimeout=10"].iter().map(|s| s.to_string()).collect();
                 v.extend(args.iter().cloned());
                 v.push(target.clone());
                 v.push(agent_command());
@@ -161,6 +167,39 @@ impl Profile {
         } else {
             sh_quote(path)
         }
+    }
+}
+
+/// Environment that makes ssh ask weft (`weft --askpass`) instead of a
+/// terminal.  The secret only lives in this process environment: it is never
+/// written to settings or logs.  `DISPLAY` lets OpenSSH < 8.4 use askpass too.
+pub fn askpass_env(secret: &str) -> Vec<(String, String)> {
+    let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "weft".into());
+    vec![
+        ("SSH_ASKPASS".into(), exe),
+        ("SSH_ASKPASS_REQUIRE".into(), "force".into()),
+        ("DISPLAY".into(), std::env::var("DISPLAY").unwrap_or_else(|_| ":0".into())),
+        (ASKPASS_SECRET_VAR.into(), secret.into()),
+    ]
+}
+
+pub const ASKPASS_SECRET_VAR: &str = "WEFT_ASKPASS";
+
+/// What `weft --askpass PROMPT` answers: host key questions go to the user
+/// (never auto-accepted), password/passphrase prompts get the secret.
+pub enum AskpassAnswer {
+    ConfirmHostKey,
+    Secret(String),
+    Refuse,
+}
+
+pub fn askpass_answer(prompt: &str, secret: Option<String>) -> AskpassAnswer {
+    if prompt.contains("(yes/no") {
+        return AskpassAnswer::ConfirmHostKey;
+    }
+    match secret {
+        Some(s) if !s.is_empty() => AskpassAnswer::Secret(s),
+        _ => AskpassAnswer::Refuse,
     }
 }
 
@@ -323,7 +362,7 @@ pub struct Conn {
 }
 
 impl Conn {
-    pub fn open(profile: Profile, data: &DataDir, wake: impl Fn() + Send + Clone + 'static) -> Conn {
+    pub fn open(profile: Profile, data: &DataDir, wake: impl Fn() + Send + Clone + 'static, password: Option<String>) -> Conn {
         let log = data.open_log(&format!("agent-{}.log", safe_name(&profile.name)));
         let mut conn = Conn {
             profile,
@@ -335,13 +374,16 @@ impl Conn {
             stderr_tail: String::new(),
             backend_failures: Vec::new(),
         };
-        conn.connect(wake);
+        conn.connect(wake, password);
         conn
     }
 
-    pub fn connect(&mut self, wake: impl Fn() + Send + Clone + 'static) {
+    /// (Re)start the agent.  `password`: answer ssh's password prompt with
+    /// it; `None`: keys / ssh-agent only, never prompt.
+    pub fn connect(&mut self, wake: impl Fn() + Send + Clone + 'static, password: Option<String>) {
         self.stderr_tail.clear();
-        match self.profile.agent_argv() {
+        let env = password.as_deref().map(askpass_env).unwrap_or_default();
+        match self.profile.agent_argv(password.is_some()) {
             None => {
                 self.status = ConnStatus::Ready;
                 self.info = local_hello();
@@ -350,8 +392,9 @@ impl Conn {
             }
             Some(argv) => {
                 self.status = ConnStatus::Connecting;
-                self.write_log(&format!("spawn agent: {}", truncate_for_log(&argv.join(" "))));
-                match spawn_agent(&argv, wake) {
+                let auth = if env.is_empty() { "keys/ssh-agent" } else { "password via askpass" };
+                self.write_log(&format!("spawn agent ({auth}): {}", truncate_for_log(&argv.join(" "))));
+                match spawn_agent(&argv, &env, wake) {
                     Ok(b) => self.backend = b,
                     Err(e) => {
                         self.write_log(&format!("spawn failed: {e}"));
@@ -455,9 +498,9 @@ impl Drop for Conn {
     }
 }
 
-fn spawn_agent(argv: &[String], wake: impl Fn() + Send + Clone + 'static) -> Result<Backend, String> {
+fn spawn_agent(argv: &[String], env: &[(String, String)], wake: impl Fn() + Send + Clone + 'static) -> Result<Backend, String> {
     let mut cmd = Command::new(&argv[0]);
-    cmd.args(&argv[1..]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.args(&argv[1..]).envs(env.iter().cloned()).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -669,6 +712,29 @@ mod tests {
     }
 
     #[test]
+    fn askpass_answers() {
+        let s = || Some("pw".to_string());
+        assert!(matches!(askpass_answer("sunghee@192.168.30.85's password: ", s()), AskpassAnswer::Secret(p) if p == "pw"));
+        assert!(matches!(askpass_answer("(sunghee@host) Password:", s()), AskpassAnswer::Secret(_)));
+        assert!(matches!(
+            askpass_answer("Are you sure you want to continue connecting (yes/no/[fingerprint])? ", s()),
+            AskpassAnswer::ConfirmHostKey
+        ));
+        assert!(matches!(askpass_answer("x's password: ", None), AskpassAnswer::Refuse));
+    }
+
+    #[test]
+    fn password_switches_agent_off_batch_mode() {
+        let p = Profile::ssh("u@h -p 2222");
+        let keys = p.agent_argv(false).unwrap();
+        let pw = p.agent_argv(true).unwrap();
+        assert!(keys.contains(&"BatchMode=yes".to_string()));
+        assert!(!pw.contains(&"BatchMode=yes".to_string()));
+        assert!(pw.contains(&"NumberOfPasswordPrompts=1".to_string()));
+        assert!(askpass_env("s").iter().any(|(k, v)| k == ASKPASS_SECRET_VAR && v == "s"));
+    }
+
+    #[test]
     fn local_backend_roundtrip() {
         let dir = std::env::temp_dir().join(format!("weft-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -735,7 +801,7 @@ mod loopback {
     #[ignore]
     fn shell_integration_over_in_memory_rc() {
         let Some(prof) = profile() else { return };
-        let argv = prof.pty_argv(Some("/"));
+        let argv = prof.pty_argv(Some("/"), false);
         let mut pty = Pty::spawn(&argv, None, &[], 100, 30, || {}).unwrap();
         let mut t = Term::new(100, 30);
         let mut p = vte::Parser::new();
@@ -780,7 +846,7 @@ mod loopback {
         let Some(prof) = profile() else { return };
         let data = DataDir { root: std::env::temp_dir().join("weft-test-data") };
         let _ = std::fs::create_dir_all(data.root.join("logs"));
-        let mut c = Conn::open(prof, &data, || {});
+        let mut c = Conn::open(prof, &data, || {}, None);
         let end = Instant::now() + Duration::from_secs(20);
         while c.status != ConnStatus::Ready && Instant::now() < end {
             c.poll();
