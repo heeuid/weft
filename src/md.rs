@@ -513,6 +513,8 @@ struct Fence {
     mermaid: Option<(String, Option<f32>)>,
     /// The cursor is in the block (fences included): show both fence lines.
     editing: bool,
+    /// Syntax highlighting for the code ("" = none), from the fence's language.
+    ext: String,
 }
 
 /// Lay out `text` as in-place-rendered markdown. `cursor_line` (0-based) shows
@@ -613,7 +615,14 @@ pub fn layout(text: &str, cursor_line: Option<usize>, size: f32, breaks: bool, d
             } else if collapsed.is_some() {
                 cx.marker(line, body);
             } else {
-                cx.text(line, Style { family: Fam::Mono, size: size * 0.92, ..body });
+                let code = Style { family: Fam::Mono, size: size * 0.92, ..body };
+                if f.ext.is_empty() {
+                    cx.text(line, code);
+                } else {
+                    for (a, b, color) in crate::highlight::spans(line, &f.ext) {
+                        cx.text(&line[a..b], Style { color, ..code });
+                    }
+                }
             }
         } else if comment_line || html_only(trimmed) {
             // HTML comments and wrapper-tag lines take no room.
@@ -635,7 +644,8 @@ pub fn layout(text: &str, cursor_line: Option<usize>, size: f32, breaks: bool, d
                 let h = if editing { None } else { diagram(&source) };
                 mermaid = Some((source, h));
             }
-            fence = Some(Fence { close, start: char_pos, mermaid, editing });
+            let ext = crate::highlight::ext_of_lang(lang);
+            fence = Some(Fence { close, start: char_pos, mermaid, editing, ext });
             if editing {
                 cx.cursor_line = true;
             }
@@ -948,6 +958,23 @@ mod tests {
         // On the cursor line the source is shown as written.
         let raw = layout(src, Some(0), 14.0, false, &mut |_| None, &mut mono);
         assert!(raw.job.text.starts_with("a <b>bold</b> &amp;"));
+    }
+
+    #[test]
+    fn code_blocks_are_highlighted_by_language() {
+        let src = "```c\nint main() { return 0; } // hi\n```\n```\nint plain\n```\n";
+        let l = layout(src, None, 14.0, false, &mut |_| None, &mut mono);
+        assert_eq!(l.job.text.chars().count(), src.chars().count());
+        let color_of = |needle: &str, nth: usize| {
+            let at = src.match_indices(needle).nth(nth).unwrap().0;
+            l.job.sections.iter().find(|s| s.byte_range.start == at).map(|s| s.format.color).unwrap()
+        };
+        assert_ne!(color_of("int", 0), color_of("main", 0), "keyword colored in ```c");
+        assert_ne!(color_of("// hi", 0), color_of("main", 0), "comment colored");
+        // No language: one plain run for the whole line.
+        assert!(l.job.sections.iter().any(|s| &l.job.text[s.byte_range.clone()] == "int plain"));
+        assert_eq!(crate::highlight::ext_of_lang("Rust"), "rs");
+        assert_eq!(crate::highlight::ext_of_lang("python {.numberLines}"), "py");
     }
 
     #[test]

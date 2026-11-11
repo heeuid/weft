@@ -56,12 +56,28 @@ pub fn ext_of(path: &str) -> String {
     }
 }
 
-/// Highlighted layout job.  `find` (case-insensitive) matches get a background.
-pub fn layout(text: &str, ext: &str, font: FontId, find: &str) -> LayoutJob {
-    let mut job = LayoutJob::default();
+/// Extension for a code fence's language name (```rust -> "rs").
+pub fn ext_of_lang(lang: &str) -> String {
+    let l = lang.split_whitespace().next().unwrap_or("").to_ascii_lowercase();
+    match l.as_str() {
+        "rust" => "rs",
+        "python" | "python3" => "py",
+        "shell" | "console" | "shellsession" | "bash" | "zsh" | "sh" => "sh",
+        "c++" | "cxx" => "cpp",
+        "javascript" | "node" => "js",
+        "typescript" => "ts",
+        "golang" => "go",
+        "yml" => "yaml",
+        "powershell" | "ps1" | "pwsh" => "ps1",
+        _ => return l,
+    }
+    .to_string()
+}
+
+/// Colored spans (byte ranges) covering all of `text`.
+pub fn spans(text: &str, ext: &str) -> Vec<(usize, usize, Color32)> {
     let kws = keywords(ext);
     let comments = comment_prefix(ext);
-    let fmt = |c: Color32| TextFormat { font_id: font.clone(), color: c, ..Default::default() };
     let c_text = theme::text();
     let c_kw = theme::ansi(5);
     let c_str = theme::ansi(2);
@@ -127,6 +143,14 @@ pub fn layout(text: &str, ext: &str, font: FontId, find: &str) -> LayoutJob {
         spans.push((i, i + len, c_text));
         i += len;
     }
+    spans
+}
+
+/// Highlighted layout job.  `find` (case-insensitive) matches get a background.
+pub fn layout(text: &str, ext: &str, font: FontId, find: &str) -> LayoutJob {
+    let mut job = LayoutJob::default();
+    let fmt = |c: Color32| TextFormat { font_id: font.clone(), color: c, ..Default::default() };
+    let spans = spans(text, ext);
 
     // Find highlights (char-boundary safe, ASCII case-insensitive).
     let mut marks: Vec<(usize, usize)> = Vec::new();
