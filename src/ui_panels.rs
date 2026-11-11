@@ -279,6 +279,7 @@ impl App {
     pub fn ui_tabbar(&mut self, ui: &mut Ui) {
         ui.horizontal_centered(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
+            self.dock_grip(ui, Region::Terms);
             let mut activate = None;
             let mut close = None;
             for (ti, tab) in self.tabs.iter().enumerate() {
@@ -928,97 +929,138 @@ impl App {
                 ui.painter().circle_filled(p, 1.3, c);
             }
         }
-        let resp = resp.on_hover_cursor(egui::CursorIcon::Grab).on_hover_text("drag to move this panel to the left / right / top / bottom (right-click: menu)");
+        let resp = resp.on_hover_cursor(egui::CursorIcon::Grab).on_hover_text("drag onto another panel or a window edge to move this panel (right-click: menu)");
         if resp.drag_started() {
             self.dock_drag = Some(region);
         }
         resp.context_menu(|ui| {
             for d in Dock::ALL {
-                if ui.button(format!("Move to {}", d.label())).clicked() {
-                    self.set_dock(region, d);
+                if ui.button(format!("Move to the {} edge", d.label())).clicked() {
+                    self.move_panel(region, None, d);
                     ui.close_menu();
                 }
             }
         });
     }
 
-    pub fn dock_of(&self, region: Region) -> Dock {
-        match region {
-            Region::Side => self.settings.side_dock,
-            Region::Editor => self.settings.editor_dock,
-        }
-    }
-
-    /// Dock to a window edge; next to the other panel there, this one goes outside.
-    pub fn set_dock(&mut self, region: Region, dock: Dock) {
-        match region {
-            Region::Side => self.settings.side_dock = dock,
-            Region::Editor => self.settings.editor_dock = dock,
-        }
-        if self.dock_of(region.other()) == dock {
-            self.settings.dock_split = false;
-            self.settings.dock_first = region;
-        }
+    /// Move a panel next to another one (or to a window edge) and remember it.
+    pub fn move_panel(&mut self, region: Region, target: Option<Region>, side: Dock) {
+        let layout = std::mem::take(&mut self.settings.layout);
+        self.settings.layout = layout.moved(region, target, side);
         self.save_settings();
     }
 
-    /// Dropped on `half` of the other panel: join its edge, split along the
-    /// edge (sharing it) or nested across it, on the side it was dropped.
-    pub fn dock_beside(&mut self, region: Region, half: Dock) {
-        let other = region.other();
-        let edge = self.dock_of(other);
-        match region {
-            Region::Side => self.settings.side_dock = edge,
-            Region::Editor => self.settings.editor_dock = edge,
+    /// The panels where the layout tree puts them, with draggable dividers.
+    /// Hidden panels (side panel, editor) keep their place in the tree.
+    pub fn ui_layout(&mut self, ui: &mut Ui) {
+        let rect = ui.max_rect();
+        self.layout_rect = rect;
+        let (side, editor) = (self.settings.sidebar, self.editor.visible);
+        let shown = |r: Region| match r {
+            Region::Side => side,
+            Region::Editor => editor,
+            Region::Terms => true,
+        };
+        if !self.settings.layout.contains(Region::Terms) {
+            self.settings.layout = crate::app::Layout::default();
         }
-        (self.settings.dock_split, self.settings.dock_first) = dock_beside_rule(edge, region, half);
-        self.save_settings();
+        let Some(tree) = self.settings.layout.pruned(&shown) else { return };
+        let mut panels = Vec::new();
+        let mut dividers = Vec::new();
+        tree.rects(rect, &mut panels, &mut dividers);
+        self.panel_rects = panels.iter().copied().collect();
+        for (region, r) in panels {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(r).id_salt(("panel", region)), |ui| {
+                ui.set_clip_rect(r.intersect(ui.clip_rect()));
+                match region {
+                    Region::Side | Region::Editor => {
+                        let margin = if region == Region::Side { egui::Margin::symmetric(8, 0) } else { egui::Margin::symmetric(8, 6) };
+                        egui::Frame::new().fill(theme::bg_base()).inner_margin(margin).show(ui, |ui| {
+                            ui.set_min_size(ui.available_size());
+                            if region == Region::Side {
+                                self.ui_sidebar(ui);
+                            } else {
+                                self.ui_editor(ui);
+                            }
+                        });
+                    }
+                    Region::Terms => {
+                        // Terminal panel: its tab bar, then the active tab's panes.
+                        let bar = egui::Rect::from_min_size(r.min, vec2(r.width(), 34.0));
+                        let body = egui::Rect::from_min_max(pos2(r.left(), bar.bottom()), r.max);
+                        ui.painter().rect_filled(bar, CornerRadius::ZERO, theme::bg_base());
+                        ui.painter().rect_filled(body, CornerRadius::ZERO, theme::bg_term());
+                        let inner = egui::Rect::from_min_max(pos2(bar.left() + 6.0, bar.top() + 4.0), pos2(bar.right() - 6.0, bar.bottom()));
+                        ui.scope_builder(egui::UiBuilder::new().max_rect(inner).id_salt("tabbar"), |ui| self.ui_tabbar(ui));
+                        ui.scope_builder(egui::UiBuilder::new().max_rect(body).id_salt("panes"), |ui| self.ui_panes(ui));
+                    }
+                }
+            });
+        }
+        for (id, handle, vertical, parent) in dividers {
+            let resp = ui.interact(handle.expand(2.0), Id::new(("panel-divider", id)), Sense::drag());
+            let hot = resp.hovered() || resp.dragged();
+            if hot {
+                ui.ctx().set_cursor_icon(if vertical { egui::CursorIcon::ResizeHorizontal } else { egui::CursorIcon::ResizeVertical });
+            }
+            ui.painter().rect_filled(handle, CornerRadius::ZERO, if hot { theme::tint(theme::accent(), 140) } else { theme::border() });
+            if resp.dragged() {
+                if let Some(p) = resp.interact_pointer_pos() {
+                    let r = if vertical { (p.x - parent.left()) / parent.width() } else { (p.y - parent.top()) / parent.height() };
+                    if let Some(ratio) = self.settings.layout.ratio_mut(id) {
+                        *ratio = r.clamp(0.08, 0.92);
+                    }
+                }
+            }
+            if resp.drag_stopped() {
+                self.save_settings();
+            }
+        }
     }
 
-    /// While a panel is dragged by its grip: highlight the window edge it
-    /// would dock to and move it there on release.
+    /// While a panel is dragged by its grip: highlight where it would go —
+    /// a half of the panel under the pointer, or a window edge near the
+    /// border — and move it there on release.
     pub fn ui_dock_drop(&mut self, ctx: &egui::Context) {
         let Some(region) = self.dock_drag else { return };
-        let screen = ctx.screen_rect();
-        let area = egui::Rect::from_min_max(pos2(screen.left(), screen.top() + 34.0), pos2(screen.right(), screen.bottom() - 24.0));
+        let area = self.layout_rect;
         let (pos, released) = ctx.input(|i| (i.pointer.latest_pos(), i.pointer.any_released() || !i.pointer.primary_down()));
         let Some(p) = pos else { return };
         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, Id::new("dock-drop")));
         ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
-        // Over the other panel: dock beside it, on the nearest half.
-        if let Some(o) = self.panel_rects.get(&region.other()).copied().filter(|r| r.contains(p)) {
-            let fx = (p.x - o.left()) / o.width();
-            let fy = (p.y - o.top()) / o.height();
-            let half = [(Dock::Left, fx), (Dock::Right, 1.0 - fx), (Dock::Top, fy), (Dock::Bottom, 1.0 - fy)].into_iter().min_by(|a, b| a.1.total_cmp(&b.1)).map(|t| t.0).unwrap_or(Dock::Top);
-            let zone = match half {
-                Dock::Left => egui::Rect::from_min_max(o.min, pos2(o.center().x, o.bottom())),
-                Dock::Right => egui::Rect::from_min_max(pos2(o.center().x, o.top()), o.max),
-                Dock::Top => egui::Rect::from_min_max(o.min, pos2(o.right(), o.center().y)),
-                Dock::Bottom => egui::Rect::from_min_max(pos2(o.left(), o.center().y), o.max),
-            };
-            painter.rect(zone.shrink(4.0), CornerRadius::same(8), theme::tint(theme::accent(), 40), Stroke::new(2.0_f32, theme::accent()), egui::StrokeKind::Inside);
-            let text = format!("{} \u{2192} {} of {}", region.name(), half.label(), region.other().name().to_lowercase());
-            painter.text(zone.center(), Align2::CENTER_CENTER, text, FontId::proportional(15.0), theme::text());
+        let nearest = |r: egui::Rect| {
+            let fx = (p.x - r.left()) / r.width();
+            let fy = (p.y - r.top()) / r.height();
+            [(Dock::Left, fx), (Dock::Right, 1.0 - fx), (Dock::Top, fy), (Dock::Bottom, 1.0 - fy)].into_iter().min_by(|a, b| a.1.total_cmp(&b.1)).map(|t| t.0).unwrap_or(Dock::Left)
+        };
+        let half_of = |r: egui::Rect, side: Dock, frac: f32| match side {
+            Dock::Left => egui::Rect::from_min_max(r.min, pos2(r.left() + r.width() * frac, r.bottom())),
+            Dock::Right => egui::Rect::from_min_max(pos2(r.right() - r.width() * frac, r.top()), r.max),
+            Dock::Top => egui::Rect::from_min_max(r.min, pos2(r.right(), r.top() + r.height() * frac)),
+            Dock::Bottom => egui::Rect::from_min_max(pos2(r.left(), r.bottom() - r.height() * frac), r.max),
+        };
+        // Within this distance of the window border: the window edge.
+        let border = [p.x - area.left(), area.right() - p.x, p.y - area.top(), area.bottom() - p.y].into_iter().fold(f32::MAX, f32::min);
+        let over = self.panel_rects.iter().find(|(r, rect)| **r != region && rect.contains(p)).map(|(r, rect)| (*r, *rect));
+        let (target, side, zone, text) = if border < 36.0 || !area.contains(p) {
+            let side = nearest(area);
+            (None, side, half_of(area, side, 0.3), format!("{} \u{2192} {} edge of the window", region.name(), side.label()))
+        } else if let Some((t, rect)) = over {
+            let side = nearest(rect);
+            (Some(t), side, half_of(rect, side, 0.5), format!("{} \u{2192} {} of {}", region.name(), side.label(), t.name().to_lowercase()))
+        } else {
+            // Over its own panel: nothing to do.
+            painter.text(p + vec2(16.0, 16.0), Align2::LEFT_TOP, "drop on another panel or near a window edge", FontId::proportional(12.0), theme::text_dim());
             if released {
                 self.dock_drag = None;
-                self.dock_beside(region, half);
             }
             return;
-        }
-        let fx = ((p.x - area.left()) / area.width()).clamp(0.0, 1.0);
-        let fy = ((p.y - area.top()) / area.height()).clamp(0.0, 1.0);
-        let target = [(Dock::Left, fx), (Dock::Right, 1.0 - fx), (Dock::Top, fy), (Dock::Bottom, 1.0 - fy)].into_iter().min_by(|a, b| a.1.total_cmp(&b.1)).map(|t| t.0).unwrap_or(Dock::Left);
-        let zone = match target {
-            Dock::Left => egui::Rect::from_min_max(area.min, pos2(area.left() + area.width() * 0.3, area.bottom())),
-            Dock::Right => egui::Rect::from_min_max(pos2(area.right() - area.width() * 0.3, area.top()), area.max),
-            Dock::Top => egui::Rect::from_min_max(area.min, pos2(area.right(), area.top() + area.height() * 0.35)),
-            Dock::Bottom => egui::Rect::from_min_max(pos2(area.left(), area.bottom() - area.height() * 0.35), area.max),
         };
         painter.rect(zone.shrink(4.0), CornerRadius::same(8), theme::tint(theme::accent(), 40), Stroke::new(2.0_f32, theme::accent()), egui::StrokeKind::Inside);
-        painter.text(zone.center(), Align2::CENTER_CENTER, format!("{} \u{2192} {}", region.name(), target.label()), FontId::proportional(15.0), theme::text());
+        painter.text(zone.center(), Align2::CENTER_CENTER, text, FontId::proportional(15.0), theme::text());
         if released {
             self.dock_drag = None;
-            self.set_dock(region, target);
+            self.move_panel(region, target, side);
         }
     }
 
