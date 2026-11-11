@@ -56,10 +56,73 @@ impl Dock {
 }
 
 /// A panel that can be dragged to another window edge.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Region {
     Side,
     Editor,
+}
+
+impl Region {
+    pub fn other(self) -> Region {
+        match self {
+            Region::Side => Region::Editor,
+            Region::Editor => Region::Side,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Region::Side => "Side panel",
+            Region::Editor => "Editor",
+        }
+    }
+}
+
+/// `region` dropped on `half` of the other panel, which sits on `edge`:
+/// (split, first). Along the edge (top/bottom half of a left/right panel,
+/// left/right half of a top/bottom one) they share the edge, first = top or
+/// left; across it they nest, first = the one nearer the window edge.
+pub fn dock_beside_rule(edge: Dock, region: Region, half: Dock) -> (bool, Region) {
+    let column = matches!(edge, Dock::Left | Dock::Right);
+    let along = if column { matches!(half, Dock::Top | Dock::Bottom) } else { matches!(half, Dock::Left | Dock::Right) };
+    let first = if along {
+        if matches!(half, Dock::Top | Dock::Left) { region } else { region.other() }
+    } else if half == edge {
+        region
+    } else {
+        region.other()
+    };
+    (along, first)
+}
+
+#[cfg(test)]
+mod dock_tests {
+    use super::*;
+
+    #[test]
+    fn dropping_beside_a_panel() {
+        use Dock::*;
+        use Region::*;
+        // Editor dropped on the bottom half of a left side panel: stacked, side panel on top.
+        assert_eq!(dock_beside_rule(Left, Editor, Bottom), (true, Side));
+        assert_eq!(dock_beside_rule(Left, Editor, Top), (true, Editor));
+        // On its right half: nested, side panel stays outside (at the window edge).
+        assert_eq!(dock_beside_rule(Left, Editor, Right), (false, Side));
+        assert_eq!(dock_beside_rule(Left, Editor, Left), (false, Editor));
+        assert_eq!(dock_beside_rule(Right, Side, Right), (false, Side));
+        // A bottom panel: left/right halves share the strip, top/bottom nest.
+        assert_eq!(dock_beside_rule(Bottom, Side, Left), (true, Side));
+        assert_eq!(dock_beside_rule(Bottom, Side, Right), (true, Editor));
+        assert_eq!(dock_beside_rule(Bottom, Side, Bottom), (false, Side));
+        assert_eq!(dock_beside_rule(Bottom, Side, Top), (false, Editor));
+    }
+}
+
+fn d_region_side() -> Region {
+    Region::Side
+}
+fn d_half() -> f32 {
+    0.5
 }
 
 fn d_dock_left() -> Dock {
@@ -85,6 +148,17 @@ pub struct Settings {
     pub side_dock: Dock,
     #[serde(default = "d_dock_right")]
     pub editor_dock: Dock,
+    /// Both on the same edge: share it (split along the edge: stacked on the
+    /// left/right, side by side on the top/bottom) instead of nesting.
+    #[serde(default)]
+    pub dock_split: bool,
+    /// Both on the same edge: the one nearer the window edge (nested), or the
+    /// top / left one (split).
+    #[serde(default = "d_region_side")]
+    pub dock_first: Region,
+    /// Split: the first panel's share.
+    #[serde(default = "d_half")]
+    pub dock_ratio: f32,
     #[serde(default)]
     pub show_hidden: bool,
     /// The file panel follows the active terminal's directory (OSC 7).
@@ -122,7 +196,7 @@ impl Default for Settings {
                 },
             });
         }
-        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, side_dock: Dock::Left, editor_dock: Dock::Right, show_hidden: false, follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, session: Vec::new() }
+        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, side_dock: Dock::Left, editor_dock: Dock::Right, dock_split: false, dock_first: Region::Side, dock_ratio: 0.5, show_hidden: false, follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, session: Vec::new() }
     }
 }
 
@@ -548,6 +622,8 @@ pub struct App {
     pub zoom_acc: f32,
     /// A panel being dragged by its grip to another window edge.
     pub dock_drag: Option<Region>,
+    /// Where each docked panel was drawn this frame (drop targets).
+    pub panel_rects: HashMap<Region, egui::Rect>,
     /// ssh passwords for this session only; never written to disk or logs.
     pub secrets: HashMap<String, String>,
     auth_prompted: HashSet<String>,
@@ -637,6 +713,7 @@ impl App {
             theme_menu: None,
             zoom_acc: 1.0,
             dock_drag: None,
+            panel_rects: HashMap::new(),
             secrets: HashMap::new(),
             auth_prompted: HashSet::new(),
             last_save: Instant::now(),

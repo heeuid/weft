@@ -942,11 +942,36 @@ impl App {
         });
     }
 
+    pub fn dock_of(&self, region: Region) -> Dock {
+        match region {
+            Region::Side => self.settings.side_dock,
+            Region::Editor => self.settings.editor_dock,
+        }
+    }
+
+    /// Dock to a window edge; next to the other panel there, this one goes outside.
     pub fn set_dock(&mut self, region: Region, dock: Dock) {
         match region {
             Region::Side => self.settings.side_dock = dock,
             Region::Editor => self.settings.editor_dock = dock,
         }
+        if self.dock_of(region.other()) == dock {
+            self.settings.dock_split = false;
+            self.settings.dock_first = region;
+        }
+        self.save_settings();
+    }
+
+    /// Dropped on `half` of the other panel: join its edge, split along the
+    /// edge (sharing it) or nested across it, on the side it was dropped.
+    pub fn dock_beside(&mut self, region: Region, half: Dock) {
+        let other = region.other();
+        let edge = self.dock_of(other);
+        match region {
+            Region::Side => self.settings.side_dock = edge,
+            Region::Editor => self.settings.editor_dock = edge,
+        }
+        (self.settings.dock_split, self.settings.dock_first) = dock_beside_rule(edge, region, half);
         self.save_settings();
     }
 
@@ -958,6 +983,28 @@ impl App {
         let area = egui::Rect::from_min_max(pos2(screen.left(), screen.top() + 34.0), pos2(screen.right(), screen.bottom() - 24.0));
         let (pos, released) = ctx.input(|i| (i.pointer.latest_pos(), i.pointer.any_released() || !i.pointer.primary_down()));
         let Some(p) = pos else { return };
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, Id::new("dock-drop")));
+        ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+        // Over the other panel: dock beside it, on the nearest half.
+        if let Some(o) = self.panel_rects.get(&region.other()).copied().filter(|r| r.contains(p)) {
+            let fx = (p.x - o.left()) / o.width();
+            let fy = (p.y - o.top()) / o.height();
+            let half = [(Dock::Left, fx), (Dock::Right, 1.0 - fx), (Dock::Top, fy), (Dock::Bottom, 1.0 - fy)].into_iter().min_by(|a, b| a.1.total_cmp(&b.1)).map(|t| t.0).unwrap_or(Dock::Top);
+            let zone = match half {
+                Dock::Left => egui::Rect::from_min_max(o.min, pos2(o.center().x, o.bottom())),
+                Dock::Right => egui::Rect::from_min_max(pos2(o.center().x, o.top()), o.max),
+                Dock::Top => egui::Rect::from_min_max(o.min, pos2(o.right(), o.center().y)),
+                Dock::Bottom => egui::Rect::from_min_max(pos2(o.left(), o.center().y), o.max),
+            };
+            painter.rect(zone.shrink(4.0), CornerRadius::same(8), theme::tint(theme::accent(), 40), Stroke::new(2.0_f32, theme::accent()), egui::StrokeKind::Inside);
+            let text = format!("{} \u{2192} {} of {}", region.name(), half.label(), region.other().name().to_lowercase());
+            painter.text(zone.center(), Align2::CENTER_CENTER, text, FontId::proportional(15.0), theme::text());
+            if released {
+                self.dock_drag = None;
+                self.dock_beside(region, half);
+            }
+            return;
+        }
         let fx = ((p.x - area.left()) / area.width()).clamp(0.0, 1.0);
         let fy = ((p.y - area.top()) / area.height()).clamp(0.0, 1.0);
         let target = [(Dock::Left, fx), (Dock::Right, 1.0 - fx), (Dock::Top, fy), (Dock::Bottom, 1.0 - fy)].into_iter().min_by(|a, b| a.1.total_cmp(&b.1)).map(|t| t.0).unwrap_or(Dock::Left);
@@ -967,14 +1014,8 @@ impl App {
             Dock::Top => egui::Rect::from_min_max(area.min, pos2(area.right(), area.top() + area.height() * 0.35)),
             Dock::Bottom => egui::Rect::from_min_max(pos2(area.left(), area.bottom() - area.height() * 0.35), area.max),
         };
-        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, Id::new("dock-drop")));
         painter.rect(zone.shrink(4.0), CornerRadius::same(8), theme::tint(theme::accent(), 40), Stroke::new(2.0_f32, theme::accent()), egui::StrokeKind::Inside);
-        let name = match region {
-            Region::Side => "Side panel",
-            Region::Editor => "Editor",
-        };
-        painter.text(zone.center(), Align2::CENTER_CENTER, format!("{name} \u{2192} {}", target.label()), FontId::proportional(15.0), theme::text());
-        ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+        painter.text(zone.center(), Align2::CENTER_CENTER, format!("{} \u{2192} {}", region.name(), target.label()), FontId::proportional(15.0), theme::text());
         if released {
             self.dock_drag = None;
             self.set_dock(region, target);

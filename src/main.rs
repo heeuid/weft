@@ -55,17 +55,7 @@ impl eframe::App for WeftApp {
             .exact_height(24.0)
             .frame(egui::Frame::new().fill(theme::bg_base()).inner_margin(egui::Margin::symmetric(10, 0)))
             .show(ctx, |ui| app.ui_status(ui));
-        let (w, h) = (ctx.screen_rect().width(), ctx.screen_rect().height());
-        if app.settings.sidebar {
-            let frame = egui::Frame::new().fill(theme::bg_base()).inner_margin(egui::Margin::symmetric(8, 0));
-            let size = DockSize { width: 280.0, widths: 200.0..=520.0, height: 260.0, heights: 140.0..=h * 0.7 };
-            dock_panel(ctx, "side", app.settings.side_dock, size, frame, |ui| app.ui_sidebar(ui));
-        }
-        if app.editor.visible {
-            let frame = egui::Frame::new().fill(theme::bg_base()).inner_margin(egui::Margin::symmetric(8, 6));
-            let size = DockSize { width: (w * 0.42).max(360.0), widths: 280.0..=w * 0.75, height: h * 0.45, heights: 160.0..=h * 0.8 };
-            dock_panel(ctx, "editor", app.settings.editor_dock, size, frame, |ui| app.ui_editor(ui));
-        }
+        docked_panels(ctx, app);
         egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::bg_term())).show(ctx, |ui| app.ui_panes(ui));
 
         app.ui_palette(ctx);
@@ -99,18 +89,126 @@ struct DockSize {
 }
 
 /// A resizable panel on the window edge `dock`. Each edge keeps its own size.
-fn dock_panel(ctx: &egui::Context, id: &str, dock: app::Dock, size: DockSize, frame: egui::Frame, add: impl FnOnce(&mut egui::Ui)) {
+fn dock_panel(ctx: &egui::Context, id: &str, dock: app::Dock, size: DockSize, frame: egui::Frame, add: impl FnOnce(&mut egui::Ui)) -> egui::Rect {
     let id = format!("{id}-{}", dock.label());
     match dock {
         app::Dock::Left | app::Dock::Right => {
             let p = if dock == app::Dock::Left { egui::SidePanel::left(id) } else { egui::SidePanel::right(id) };
-            p.resizable(true).default_width(size.width).width_range(size.widths).frame(frame).show(ctx, add);
+            p.resizable(true).default_width(size.width).width_range(size.widths).frame(frame).show(ctx, add).response.rect
         }
         app::Dock::Top | app::Dock::Bottom => {
             let p = if dock == app::Dock::Top { egui::TopBottomPanel::top(id) } else { egui::TopBottomPanel::bottom(id) };
-            p.resizable(true).default_height(size.height).height_range(size.heights).frame(frame).show(ctx, add);
+            p.resizable(true).default_height(size.height).height_range(size.heights).frame(frame).show(ctx, add).response.rect
         }
     }
+}
+
+fn region_margin(r: app::Region) -> egui::Margin {
+    match r {
+        app::Region::Side => egui::Margin::symmetric(8, 0),
+        app::Region::Editor => egui::Margin::symmetric(8, 6),
+    }
+}
+
+fn region_ui(app: &mut App, r: app::Region, ui: &mut egui::Ui) {
+    match r {
+        app::Region::Side => app.ui_sidebar(ui),
+        app::Region::Editor => app.ui_editor(ui),
+    }
+}
+
+/// The side panel and the editor on their window edges. On the same edge they
+/// either nest (`dock_first` outside) or share one panel split along the edge.
+fn docked_panels(ctx: &egui::Context, app: &mut App) {
+    use app::Region;
+    let (w, h) = (ctx.screen_rect().width(), ctx.screen_rect().height());
+    let size = |r: Region| match r {
+        Region::Side => DockSize { width: 280.0, widths: 200.0..=520.0, height: 260.0, heights: 140.0..=h * 0.7 },
+        Region::Editor => DockSize { width: (w * 0.42).max(360.0), widths: 280.0..=w * 0.75, height: h * 0.45, heights: 160.0..=h * 0.8 },
+    };
+    let visible = |app: &App, r: Region| match r {
+        Region::Side => app.settings.sidebar,
+        Region::Editor => app.editor.visible,
+    };
+    app.panel_rects.clear();
+    let first = app.settings.dock_first;
+    let both = visible(app, Region::Side) && visible(app, Region::Editor);
+    let edge = app.settings.side_dock;
+    if both && edge == app.settings.editor_dock && app.settings.dock_split {
+        let size = DockSize { width: (w * 0.42).max(360.0), widths: 240.0..=w * 0.75, height: h * 0.45, heights: 160.0..=h * 0.8 };
+        dock_panel(ctx, "pair", edge, size, egui::Frame::new().fill(theme::bg_base()), |ui| split_pair(app, ui, edge, first));
+        return;
+    }
+    let order = if both && edge == app.settings.editor_dock { [first, first.other()] } else { [Region::Side, Region::Editor] };
+    for r in order {
+        if visible(app, r) {
+            let frame = egui::Frame::new().fill(theme::bg_base()).inner_margin(region_margin(r));
+            let dock = match r {
+                Region::Side => app.settings.side_dock,
+                Region::Editor => app.settings.editor_dock,
+            };
+            let id = match r {
+                Region::Side => "side",
+                Region::Editor => "editor",
+            };
+            let rect = dock_panel(ctx, id, dock, size(r), frame, |ui| region_ui(app, r, ui));
+            app.panel_rects.insert(r, rect);
+        }
+    }
+}
+
+/// Both panels in one, split along `edge` (stacked on the left/right, side by
+/// side on the top/bottom) with a draggable divider.
+fn split_pair(app: &mut App, ui: &mut egui::Ui, edge: app::Dock, first: app::Region) {
+    let full = ui.max_rect();
+    let stacked = matches!(edge, app::Dock::Left | app::Dock::Right);
+    let ratio = app.settings.dock_ratio.clamp(0.15, 0.85);
+    let gap = 6.0;
+    let (a, b, sep) = if stacked {
+        let y = full.top() + full.height() * ratio;
+        (
+            egui::Rect::from_min_max(full.min, egui::pos2(full.right(), y - gap / 2.0)),
+            egui::Rect::from_min_max(egui::pos2(full.left(), y + gap / 2.0), full.max),
+            egui::Rect::from_min_max(egui::pos2(full.left(), y - gap / 2.0), egui::pos2(full.right(), y + gap / 2.0)),
+        )
+    } else {
+        let x = full.left() + full.width() * ratio;
+        (
+            egui::Rect::from_min_max(full.min, egui::pos2(x - gap / 2.0, full.bottom())),
+            egui::Rect::from_min_max(egui::pos2(x + gap / 2.0, full.top()), full.max),
+            egui::Rect::from_min_max(egui::pos2(x - gap / 2.0, full.top()), egui::pos2(x + gap / 2.0, full.bottom())),
+        )
+    };
+    for (r, rect) in [(first, a), (first.other(), b)] {
+        app.panel_rects.insert(r, rect);
+        ui.scope_builder(egui::UiBuilder::new().max_rect(rect).id_salt(("pair", r)), |ui| {
+            ui.set_clip_rect(rect.intersect(ui.clip_rect()));
+            egui::Frame::new().inner_margin(region_margin(r)).show(ui, |ui| {
+                ui.set_min_size(ui.available_size());
+                region_ui(app, r, ui);
+            });
+        });
+    }
+    let resp = ui.interact(sep, egui::Id::new("pair-divider"), egui::Sense::drag());
+    let hot = resp.hovered() || resp.dragged();
+    let stroke = egui::Stroke::new(1.0_f32, if hot { theme::accent() } else { theme::border() });
+    if stacked {
+        ui.painter().hline(sep.x_range(), sep.center().y, stroke);
+    } else {
+        ui.painter().vline(sep.center().x, sep.y_range(), stroke);
+    }
+    if hot {
+        ui.ctx().set_cursor_icon(if stacked { egui::CursorIcon::ResizeVertical } else { egui::CursorIcon::ResizeHorizontal });
+    }
+    if resp.dragged() {
+        if let Some(p) = ui.ctx().pointer_latest_pos() {
+            app.settings.dock_ratio = if stacked { (p.y - full.top()) / full.height() } else { (p.x - full.left()) / full.width() }.clamp(0.15, 0.85);
+        }
+    }
+    if resp.drag_stopped() {
+        app.save_settings();
+    }
+    ui.advance_cursor_after_rect(full);
 }
 
 /// `weft --askpass PROMPT`: ssh runs this (SSH_ASKPASS) when weft supplied a
