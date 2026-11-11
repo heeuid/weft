@@ -445,6 +445,62 @@ fn closes_fence(line: &str, marker: &str) -> bool {
     t.starts_with(marker) && t.chars().all(|x| x == c)
 }
 
+/// Whether line `ln` starts inside an open fenced block, judging only by the
+/// lines above it.
+fn inside_fence(text: &str, ln: usize) -> bool {
+    let mut open: Option<String> = None;
+    for line in text.split('\n').take(ln) {
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        let t = line.trim_start();
+        match &open {
+            Some(m) => {
+                if closes_fence(line, m) {
+                    open = None;
+                }
+            }
+            None => {
+                if t.starts_with("```") || t.starts_with("~~~") {
+                    open = Some(t[..3].to_string());
+                }
+            }
+        }
+    }
+    open.is_some()
+}
+
+/// After typing: if the cursor (char index) ends a line that is just a new
+/// opening fence (``` or ~~~, optionally with a language), the text to insert
+/// right after it to close the block, and the byte position. Not when the
+/// fence closes a block that is already open above.
+pub fn fence_autoclose(text: &str, cursor: usize) -> Option<(usize, String)> {
+    let byte = text.char_indices().nth(cursor).map(|(b, _)| b).unwrap_or(text.len());
+    let line_start = text[..byte].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let line_end = text[byte..].find('\n').map(|i| byte + i).unwrap_or(text.len());
+    let line = text[line_start..line_end].trim_end_matches('\r');
+    // The cursor sits at the end of the fence line.
+    if byte != line_start + line.len() {
+        return None;
+    }
+    let t = line.trim_start();
+    let marker = if t.starts_with("```") { "```" } else if t.starts_with("~~~") { "~~~" } else { return None };
+    let rest = &t[3..];
+    if rest.starts_with(marker.chars().next().unwrap()) || rest.contains(' ') && rest.trim().contains(' ') {
+        return None;
+    }
+    let ln = text[..line_start].matches('\n').count();
+    if inside_fence(text, ln) {
+        return None;
+    }
+    // Already closed right below (e.g. typing the language after ``` was closed).
+    let next = text[line_end..].strip_prefix("\r\n").or_else(|| text[line_end..].strip_prefix('\n')).map(|r| r.split('\n').next().unwrap_or(""));
+    if next.map(|n| closes_fence(n.trim_end_matches('\r'), marker)).unwrap_or(false) {
+        return None;
+    }
+    let indent = &line[..line.len() - t.len()];
+    let eol = if text[line_start..].contains("\r\n") { "\r\n" } else { "\n" };
+    Some((line_end, format!("{eol}{indent}{marker}")))
+}
+
 fn heading_level(line: &str) -> Option<(usize, usize)> {
     let hashes = line.bytes().take_while(|&c| c == b'#').count();
     if (1..=6).contains(&hashes) && line.as_bytes().get(hashes).map(|&c| c == b' ').unwrap_or(line.len() == hashes) {
@@ -465,6 +521,8 @@ struct Fence {
     marker: String,
     start: usize,
     mermaid: Option<(String, Option<f32>)>,
+    /// The cursor is in the block (fences included): show both fence lines.
+    editing: bool,
 }
 
 /// Lay out `text` as in-place-rendered markdown. `cursor_line` (0-based) shows
@@ -540,6 +598,9 @@ pub fn layout(text: &str, cursor_line: Option<usize>, size: f32, breaks: bool, d
         if let Some(f) = fence.as_ref() {
             let collapsed = f.mermaid.as_ref().and_then(|m| m.1);
             if closes_fence(line, &f.marker) {
+                if f.editing {
+                    cx.cursor_line = true;
+                }
                 let end = char_pos + line_chars;
                 match collapsed {
                     Some(h) => {
@@ -576,17 +637,19 @@ pub fn layout(text: &str, cursor_line: Option<usize>, size: f32, breaks: bool, d
             }
         } else if let Some(marker) = opens_fence(&lines, ln) {
             let lang = trimmed[3..].trim();
+            // opens_fence found the closing line, so this is Some.
+            let close = (ln + 1..lines.len()).find(|&i| closes_fence(lines[i], &marker)).unwrap_or(ln);
+            let editing = cursor_line.map(|cl| (ln..=close).contains(&cl)).unwrap_or(false);
             let mut mermaid = None;
             if lang.eq_ignore_ascii_case("mermaid") {
-                let close = lines.iter().enumerate().skip(ln + 1).find(|(_, l)| closes_fence(l, &marker)).map(|(i, _)| i);
-                if let Some(c) = close {
-                    let source: String = lines[ln + 1..c].concat();
-                    let editing = cursor_line.map(|cl| (ln..=c).contains(&cl)).unwrap_or(false);
-                    let h = if editing { None } else { diagram(&source) };
-                    mermaid = Some((source, h));
-                }
+                let source: String = lines[ln + 1..close].concat();
+                let h = if editing { None } else { diagram(&source) };
+                mermaid = Some((source, h));
             }
-            fence = Some(Fence { marker, start: char_pos, mermaid });
+            fence = Some(Fence { marker, start: char_pos, mermaid, editing });
+            if editing {
+                cx.cursor_line = true;
+            }
             cx.marker(line, Style { family: Fam::Mono, ..body });
         } else if let Some((level, text_start)) = heading_level(line) {
             let scale = [1.8, 1.5, 1.3, 1.15, 1.05, 1.0][level - 1];
@@ -904,6 +967,38 @@ mod tests {
         // On the cursor line the source is shown as written.
         let raw = layout(src, Some(0), 14.0, false, &mut |_| None, &mut mono);
         assert!(raw.job.text.starts_with("a <b>bold</b> &amp;"));
+    }
+
+    #[test]
+    fn typing_a_fence_closes_it() {
+        // "```" just typed at the end of a line: close it right below.
+        let t = "intro\n```";
+        assert_eq!(fence_autoclose(t, 9), Some((9, "\n```".to_string())));
+        let t = "a\n```rust\nb";
+        assert_eq!(fence_autoclose(t, 9), Some((9, "\n```".to_string())));
+        // Even with a block further down (that is what used to turn everything into code).
+        let t = "```\n## 현재 단계\n```py\nx\n```\n";
+        assert_eq!(fence_autoclose(t, 3), Some((3, "\n```".to_string())));
+        // Closing an open block above: nothing to add.
+        let t = "```\ncode\n```";
+        assert_eq!(fence_autoclose(t, 12), None);
+        // Cursor not at the end, or not a fence.
+        assert_eq!(fence_autoclose("```x", 2), None);
+        assert_eq!(fence_autoclose("``", 2), None);
+        assert_eq!(fence_autoclose("````", 4), None);
+        assert_eq!(fence_autoclose("``` a b", 7), None);
+        // Typing the language after the fence was closed: no second closing line.
+        assert_eq!(fence_autoclose("```r\n```", 4), None);
+        assert_eq!(fence_autoclose("```rust\r\n```\r\n", 7), None);
+    }
+
+    #[test]
+    fn both_fences_show_while_editing_the_block() {
+        let src = "```\n```\nafter";
+        let shown = |cursor| visible(&layout(src, cursor, 14.0, false, &mut |_| None, &mut mono));
+        assert_eq!(shown(Some(0)).matches("```").count(), 2, "{}", shown(Some(0)));
+        assert_eq!(shown(Some(1)).matches("```").count(), 2);
+        assert_eq!(shown(Some(2)).matches("```").count(), 0, "cursor outside: fences hidden");
     }
 
     #[test]
