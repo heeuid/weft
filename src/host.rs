@@ -900,6 +900,40 @@ mod loopback {
         assert!(times.iter().all(|d| *d < Duration::from_millis(50)), "{times:?}");
     }
 
+    /// While typing at the PowerShell prompt the cursor sits on the cell
+    /// after the last character (the user saw it covering a character).
+    #[test]
+    #[ignore]
+    #[cfg(windows)]
+    fn powershell_cursor_follows_typing() {
+        let home = std::env::var("USERPROFILE").unwrap();
+        let mut pty = Pty::spawn(&local_shell_argv(), Some(&home), &[], 120, 30, || {}).expect("spawn");
+        let mut t = Term::new(120, 30);
+        let mut p = vte::Parser::new();
+        assert!(pump(&mut pty, &mut t, &mut p, |t| !t.blocks.is_empty(), 30), "first prompt");
+        pump(&mut pty, &mut t, &mut p, |_| false, 1);
+        let typed = "cd ..\\claude-workspace\\";
+        let mut report = Vec::new();
+        for (n, ch) in typed.chars().enumerate() {
+            pty.write(ch.to_string().as_bytes());
+            let want: String = typed.chars().take(n + 1).collect();
+            pump(&mut pty, &mut t, &mut p, |t| t.screen[t.cy].text().trim_end().ends_with(want.as_str()), 3);
+            // Let PSReadLine finish redrawing (prediction text, cursor move).
+            pump(&mut pty, &mut t, &mut p, |_| false, 1);
+            let row = t.screen[t.cy].text();
+            let line = row.trim_end();
+            let under = t.screen[t.cy].cells.get(t.cx).map(|c| c.ch).unwrap_or(' ');
+            report.push(format!("{:>2} typed={:?} cx={} line_end={} under={:?} line={:?}", n + 1, ch, t.cx, line.chars().count(), under, line));
+        }
+        for r in &report {
+            println!("{r}");
+        }
+        let last = t.screen[t.cy].text();
+        assert!(last.trim_end().ends_with(typed), "{last:?}");
+        assert_eq!(t.cx, last.trim_end().chars().count(), "cursor right after the text");
+        pty.write(b"\x03");
+    }
+
     fn screen(t: &Term) -> Vec<String> {
         (0..t.rows).map(|y| t.screen[y].text()).filter(|s| !s.is_empty()).collect()
     }

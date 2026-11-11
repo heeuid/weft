@@ -85,7 +85,7 @@ const COMMANDS: &[(Cmd, &str, &str)] = &[
     (Cmd::UiReset, "UI scale 100%", ""),
     (Cmd::ThemePicker, "Theme…", ""),
     (Cmd::ThemeSystem, "Theme: follow system (dark/light)", ""),
-    (Cmd::CursorStyle, "Terminal cursor: bar / block / underline", ""),
+    (Cmd::CursorStyle, "Terminal cursor: block / bar / underline", ""),
     (Cmd::MarkdownBreaks, "Markdown: toggle line breaks (GitHub PR style / CommonMark)", ""),
     (Cmd::Settings, "Open settings.json", ""),
     (Cmd::AgentLog, "Open agent log for this host", ""),
@@ -177,9 +177,9 @@ impl App {
             Cmd::ThemeSystem => self.settings.theme = "system".into(),
             Cmd::CursorStyle => {
                 self.settings.cursor_style = match self.settings.cursor_style {
-                    CursorStyle::Bar => CursorStyle::Block,
-                    CursorStyle::Block => CursorStyle::Underline,
-                    CursorStyle::Underline => CursorStyle::Bar,
+                    CursorStyle::Block => CursorStyle::Bar,
+                    CursorStyle::Bar => CursorStyle::Underline,
+                    CursorStyle::Underline => CursorStyle::Block,
                 };
                 self.toast(format!("cursor: {:?}", self.settings.cursor_style).to_lowercase(), crate::app::ToastKind::Info);
             }

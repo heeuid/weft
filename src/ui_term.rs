@@ -1012,7 +1012,7 @@ impl App {
                     match self.settings.cursor_style {
                         // Thin bar / underline: the character stays fully visible.
                         CursorStyle::Bar => {
-                            let bar = Rect::from_min_size(pos2(r.left() - 1.0, r.top() + 1.0), vec2(2.0, ch - 2.0));
+                            let bar = Rect::from_min_size(pos2(r.left(), r.top() + 1.0), vec2(2.0, ch - 2.0));
                             painter.rect_filled(bar, CornerRadius::same(1), theme::cursor());
                         }
                         CursorStyle::Underline => {

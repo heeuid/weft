@@ -37,10 +37,11 @@ fn d_theme_light() -> String {
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum CursorStyle {
-    /// A thin bar before the cell: never hides a character.
-    #[default]
+    /// A thin bar at the left edge of the cursor cell.
     Bar,
-    /// The whole cell, the character drawn inverted on it.
+    /// The whole cursor cell (the cell after the text), the character in it
+    /// (e.g. PSReadLine's grey prediction) drawn inverted so it stays readable.
+    #[default]
     Block,
     /// A line under the cell.
     Underline,
