@@ -554,7 +554,10 @@ impl App {
                     continue;
                 }
                 let p = ui.painter();
-                if resp.hovered() {
+                let selected = self.side.selected.as_deref() == Some(r.path.as_str());
+                if selected {
+                    p.rect_filled(rect, CornerRadius::same(4), theme::tint(theme::accent(), 45));
+                } else if resp.hovered() {
                     p.rect_filled(rect, CornerRadius::same(4), theme::bg_hover());
                 }
                 let x = rect.left() + 4.0 + r.depth as f32 * 14.0;
@@ -568,25 +571,30 @@ impl App {
                 if !r.dir {
                     p.text(pos2(rect.right() - 6.0, rect.center().y), Align2::RIGHT_CENTER, human_size(r.size), FontId::proportional(11.0), theme::text_faint());
                 }
-                if resp.clicked() {
+                // One click selects (and expands folders); opening a file takes a
+                // double-click or the context menu.
+                if resp.clicked() || resp.secondary_clicked() {
+                    self.side.selected = Some(r.path.clone());
+                }
+                if resp.clicked() && r.dir {
+                    let key = (host.clone(), r.path.clone());
+                    if !self.side.expanded.remove(&key) {
+                        self.side.expanded.insert(key);
+                        self.actions.push(Action::ListDir(host.clone(), r.path.clone()));
+                    }
+                }
+                if resp.double_clicked() {
                     if r.dir {
-                        let key = (host.clone(), r.path.clone());
-                        if !self.side.expanded.remove(&key) {
-                            self.side.expanded.insert(key);
-                            self.actions.push(Action::ListDir(host.clone(), r.path.clone()));
+                        match pane {
+                            Some(id) if at_prompt => self.actions.push(Action::Run(id, prof.cd_command(&r.path))),
+                            _ => self.actions.push(Action::SetRoot(host.clone(), r.path.clone())),
                         }
                     } else {
                         self.actions.push(Action::OpenFile(host.clone(), r.path.clone(), 1));
                     }
                 }
-                if resp.double_clicked() && r.dir {
-                    match pane {
-                        Some(id) if at_prompt => self.actions.push(Action::Run(id, prof.cd_command(&r.path))),
-                        _ => self.actions.push(Action::SetRoot(host.clone(), r.path.clone())),
-                    }
-                }
                 let (path, isdir) = (r.path.clone(), r.dir);
-                resp.on_hover_text(if isdir { "click: expand · double-click: cd" } else { "click: open in editor" }).context_menu(|ui| {
+                resp.on_hover_text(if isdir { "click: expand · double-click: cd" } else { "double-click: open in editor" }).context_menu(|ui| {
                     if !isdir && ui.button("Open in editor").clicked() {
                         self.actions.push(Action::OpenFile(host.clone(), path.clone(), 1));
                         ui.close_menu();

@@ -365,6 +365,8 @@ pub struct SideState {
     pub procs_filter: String,
     pub procs_sort: (usize, bool),
     pub procs_host: String,
+    /// Path selected in the file tree (single click); opening needs a double-click.
+    pub selected: Option<String>,
 }
 
 pub struct EditorFile {
@@ -547,6 +549,7 @@ impl App {
                 procs_filter: String::new(),
                 procs_sort: (3, false),
                 procs_host: String::new(),
+                selected: None,
             },
             editor: EditorState { files: Vec::new(), active: 0, visible: false },
             sys: HashMap::new(),
