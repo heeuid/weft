@@ -61,6 +61,9 @@ cargo run --release
   - **mermaid-cli (PATH)**: PATH에 있는 `mmdc` (공식 mermaid와 똑같은 모양, Node.js 필요). 설치 후 재시작 없이 잡힘.
   - **mermaid-cli (path)**: 직접 지정한 `mmdc` 경로.
   그린 결과는 `data/cache/mermaid/`에 저장돼 다음부터 바로 뜹니다.
+- 구문 강조: `bat`의 문법 묶음(syntect + two-face, 약 200개 언어, 순수 Rust 정규식)을 weft 테마 색으로.
+  에디터의 소스 파일과 마크다운 코드 블록(```` ```rust ````, ```` ```c ```` …) 모두. 바뀐 줄만 다시 칠해서 입력이 끊기지 않고,
+  큰 파일은 처음 열 때 간단한 강조로 바로 보여 준 뒤 백그라운드에서 정확한 색으로 바꿉니다. (PowerShell 문법은 묶음에 없음)
 - 이미지 파일(png, jpg, gif, webp, bmp, ico)은 에디터에서 그림으로 보입니다(Fit / 1:1 / 확대·축소).
 - PDF는 페이지가 세로로 이어져 보입니다(hayro, 순수 Rust). 보이는 페이지만 백그라운드에서 그리고, 확대하면 그 크기로 다시 그립니다.
   이미지·PDF는 64MB까지 읽습니다(원격도 에이전트가 메모리로만 전달).

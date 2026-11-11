@@ -513,8 +513,8 @@ struct Fence {
     mermaid: Option<(String, Option<f32>)>,
     /// The cursor is in the block (fences included): show both fence lines.
     editing: bool,
-    /// Syntax highlighting for the code ("" = none), from the fence's language.
-    ext: String,
+    /// Syntax highlighting for the code, from the fence's language (None: plain).
+    hl: Option<crate::highlight::Lines>,
 }
 
 /// Lay out `text` as in-place-rendered markdown. `cursor_line` (0-based) shows
@@ -616,12 +616,13 @@ pub fn layout(text: &str, cursor_line: Option<usize>, size: f32, breaks: bool, d
                 cx.marker(line, body);
             } else {
                 let code = Style { family: Fam::Mono, size: size * 0.92, ..body };
-                if f.ext.is_empty() {
-                    cx.text(line, code);
-                } else {
-                    for (a, b, color) in crate::highlight::spans(line, &f.ext) {
-                        cx.text(&line[a..b], Style { color, ..code });
+                match fence.as_mut().and_then(|f| f.hl.as_mut()) {
+                    Some(hl) => {
+                        for (a, b, color, italics) in hl.line(line) {
+                            cx.text(&line[a..b], Style { color, italics, ..code });
+                        }
                     }
+                    None => cx.text(line, code),
                 }
             }
         } else if comment_line || html_only(trimmed) {
@@ -645,7 +646,8 @@ pub fn layout(text: &str, cursor_line: Option<usize>, size: f32, breaks: bool, d
                 mermaid = Some((source, h));
             }
             let ext = crate::highlight::ext_of_lang(lang);
-            fence = Some(Fence { close, start: char_pos, mermaid, editing, ext });
+            let hl = (!ext.is_empty()).then(|| crate::highlight::Lines::new(&ext, ""));
+            fence = Some(Fence { close, start: char_pos, mermaid, editing, hl });
             if editing {
                 cx.cursor_line = true;
             }

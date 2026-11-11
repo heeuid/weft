@@ -135,6 +135,7 @@ fn main() -> eframe::Result<()> {
             theme::install_fonts(&cc.egui_ctx);
             let fonts = since_start();
             theme::apply(&cc.egui_ctx, 0);
+            highlight::preload(&cc.egui_ctx);
             cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
             let app = App::new(cc.egui_ctx.clone());
             app.data.log(&format!("startup: window+GL {window}, fonts read {fonts}, app+panes {}", since_start()));

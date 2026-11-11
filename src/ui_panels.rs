@@ -95,6 +95,8 @@ const COMMANDS: &[(Cmd, &str, &str)] = &[
 struct HlCache {
     key: u64,
     job: Option<Arc<LayoutJob>>,
+    /// Per-line highlighting kept between edits of this file.
+    state: Arc<std::sync::Mutex<highlight::FileState>>,
 }
 
 fn hash_str(s: &str, extra: &str) -> u64 {
@@ -1499,13 +1501,14 @@ impl App {
                 ui.add(egui::Label::new(RichText::new(nums).font(font.clone()).color(theme::text_faint())).selectable(false));
                 let cache_id = edit_id.with("hl");
                 let mut layouter = |ui: &Ui, text: &str, _wrap: f32| {
-                    let key = hash_str(text, &format!("{ext}|{find}|{}|{}", font.size, theme::is_light()));
+                    let key = hash_str(text, &format!("{ext}|{find}|{}|{}|{}|{}", font.size, theme::active(), highlight::ready(), highlight::warmed()));
                     let cached: HlCache = ui.ctx().memory_mut(|m| m.data.get_temp_mut_or_default::<HlCache>(cache_id).clone());
                     let job = match cached.job {
                         Some(j) if cached.key == key => j,
                         _ => {
-                            let j = Arc::new(highlight::layout(text, &ext, font.clone(), &find));
-                            ui.ctx().memory_mut(|m| m.data.insert_temp(cache_id, HlCache { key, job: Some(j.clone()) }));
+                            let state = cached.state.clone();
+                            let j = Arc::new(highlight::layout(text, &ext, font.clone(), &find, &state, ui.ctx()));
+                            ui.ctx().memory_mut(|m| m.data.insert_temp(cache_id, HlCache { key, job: Some(j.clone()), state }));
                             j
                         }
                     };
@@ -1920,7 +1923,7 @@ fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size:
         None
     };
     let cache_id = edit_id.with("md");
-    let style_key = format!("{cursor_line:?}|{size}|{breaks}|{renderer:?}|{}|{}", theme::active(), crate::mermaid::generation());
+    let style_key = format!("{cursor_line:?}|{size}|{breaks}|{renderer:?}|{}|{}|{}", theme::active(), crate::mermaid::generation(), crate::highlight::ready());
     let dark = !theme::is_light();
     // Rendered diagram size in points: mmdc renders at scale 2; never wider than the editor.
     let diagram_size = |ctx: &egui::Context, source: &str, wrap: f32| -> Option<(egui::TextureId, egui::Vec2)> {
