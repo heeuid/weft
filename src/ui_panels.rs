@@ -336,7 +336,7 @@ impl App {
             let (rect, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
             let status = self.conns.get(&host).map(|c| c.status.clone()).unwrap_or(ConnStatus::Connecting);
             let (dot, label) = match &status {
-                ConnStatus::Ready => (theme::SUCCESS, if host == "local" { "local".to_string() } else { "agent ready".to_string() }),
+                ConnStatus::Ready => (theme::SUCCESS, if host == "local" { "native fs".to_string() } else { "agent ready".to_string() }),
                 ConnStatus::Connecting => (theme::WARN, "agent connecting…".to_string()),
                 ConnStatus::Failed(e) => (theme::ERROR, format!("agent offline: {}", e.chars().take(80).collect::<String>())),
             };
@@ -512,6 +512,7 @@ impl App {
             self.list_dir(&host, &w);
         }
         let loading = self.inflight.contains(&(host.clone(), root.clone())) && !self.dir_cache.contains_key(&(host.clone(), root.clone()));
+        let root_error = self.dir_cache.get(&(host.clone(), root.clone())).and_then(|l| l.error.clone());
         let pane = self.active_pane_id();
         let at_prompt = pane.and_then(|id| self.panes.get(&id)).map(|p| p.term.at_prompt()).unwrap_or(false);
         let prof = self.profile(&host);
@@ -522,7 +523,9 @@ impl App {
                     ui.label(RichText::new("listing…").color(theme::TEXT_FAINT));
                 });
             }
-            if rows.is_empty() && !loading {
+            if let Some(e) = &root_error {
+                ui.label(RichText::new(e).size(12.0).color(theme::ERROR));
+            } else if rows.is_empty() && !loading {
                 ui.label(RichText::new("empty").color(theme::TEXT_FAINT));
             }
             for r in &rows {
@@ -964,7 +967,8 @@ impl App {
                         st.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(idx_char))));
                         st.store(ui.ctx(), edit_id);
                     }
-                    resp.request_focus();
+                    // Never steal keyboard focus: files are often opened from
+                    // the terminal (wopen, Ctrl+click) while the user keeps typing.
                 }
             });
         });

@@ -36,7 +36,11 @@ def send(obj):
 
 
 def _path(p):
-    return os.path.abspath(os.path.expanduser(p or "."))
+    p = p or "."
+    # Windows python behind an msys/cygwin shell sees /c/Users style paths.
+    if os.name == "nt" and len(p) >= 3 and p[0] == "/" and p[2] == "/" and p[1].isalpha():
+        p = p[1] + ":" + p[2:]
+    return os.path.abspath(os.path.expanduser(p))
 
 
 def op_hello(req):

@@ -142,7 +142,7 @@ pub fn apply_style(ctx: &egui::Context) {
     v.code_bg_color = BG_TERM;
     v.override_text_color = None;
     v.hyperlink_color = ACCENT;
-    v.selection.bg_fill = tint(ACCENT, 90);
+    v.selection.bg_fill = tint(ACCENT, 55);
     v.selection.stroke = Stroke::new(1.0, ACCENT);
     v.warn_fg_color = WARN;
     v.error_fg_color = ERROR;
@@ -171,5 +171,8 @@ pub fn apply_style(ctx: &egui::Context) {
         s.corner_radius = CornerRadius::same(5);
     }
     style.visuals = v;
-    ctx.set_style(style);
+    // egui follows the OS theme by default; on a light-mode OS that silently
+    // swaps in light widget visuals (white text fields). weft is dark-only.
+    ctx.set_theme(egui::ThemePreference::Dark);
+    ctx.set_style_of(egui::Theme::Dark, style);
 }

@@ -316,6 +316,7 @@ pub struct DirEntry {
 pub struct DirListing {
     pub entries: Vec<DirEntry>,
     pub at: Instant,
+    pub error: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1065,7 +1066,7 @@ impl App {
             Pending::List { path } => {
                 self.inflight.remove(&(host.to_string(), path.clone()));
                 if !ok {
-                    self.dir_cache.insert((host.into(), path), DirListing { entries: Vec::new(), at: Instant::now() });
+                    self.dir_cache.insert((host.into(), path), DirListing { entries: Vec::new(), at: Instant::now(), error: Some(err) });
                     return;
                 }
                 let mut entries: Vec<DirEntry> = r["entries"]
@@ -1082,7 +1083,7 @@ impl App {
                     })
                     .unwrap_or_default();
                 entries.sort_by(|a, b| b.dir.cmp(&a.dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
-                self.dir_cache.insert((host.into(), path), DirListing { entries, at: Instant::now() });
+                self.dir_cache.insert((host.into(), path), DirListing { entries, at: Instant::now(), error: None });
             }
             Pending::Open { path, line } => {
                 let Some(i) = self.editor.files.iter().position(|f| f.host == host && f.path == path) else { return };

@@ -22,6 +22,7 @@ fi
 unset __weft_cwd
 
 export WEFT=1 TERM=xterm-256color COLORTERM=truecolor
+shopt -s checkwinsize
 
 __weft_py=
 for __p in python3 python; do
@@ -148,6 +149,16 @@ def ev(o):
     t.write("\033]7777;" + base64.b64encode(json.dumps(o).encode()).decode() + "\007")
     t.flush()
     return t
+def fit(t, line):
+    # Clip the text fallback to the terminal width so it never soft-wraps
+    # and stays exactly under the GUI widget rows.
+    w = int(os.environ.get("COLUMNS") or 0)  # live value from bash (checkwinsize)
+    if w <= 0:
+        try:
+            w = os.get_terminal_size(t.fileno()).columns
+        except (OSError, ValueError, AttributeError):
+            w = 200
+    return line if len(line) < w else line[:max(w - 2, 1)] + "~"
 def human(n):
     for u in "BKMGT":
         if n < 1024: return ("%d%s" % (n, u)) if u == "B" else ("%.1f%s" % (n, u))
@@ -172,10 +183,10 @@ for e in os.scandir(d):
 rows.sort(key=lambda r: (not r["dir"], r["name"].lower()))
 t = ev({"t": "widget", "kind": "files", "id": "ls%d-%d" % (os.getpid(), time.time()),
         "rows": len(rows) + 1, "dir": d, "entries": rows})
-t.write("%-10s %8s  %-16s %s\n" % ("MODE", "SIZE", "MODIFIED", "NAME"))
+t.write(fit(t, "%-10s %8s  %-16s %s" % ("MODE", "SIZE", "MODIFIED", "NAME")) + "\n")
 for r in rows:
-    t.write("%-10s %8s  %-16s %s\n" % (r["mode"], "-" if r["dir"] else human(r["size"]),
-            time.strftime("%Y-%m-%d %H:%M", time.localtime(r["mtime"])), r["name"]))
+    t.write(fit(t, "%-10s %8s  %-16s %s" % (r["mode"], "-" if r["dir"] else human(r["size"]),
+            time.strftime("%Y-%m-%d %H:%M", time.localtime(r["mtime"])), r["name"])) + "\n")
 t.flush()
 '
 
@@ -190,14 +201,14 @@ for l in lines[1:]:
     rows.append(cells + [""] * (len(head) - len(cells)))
 t = ev({"t": "widget", "kind": "table", "id": "tb%d-%d" % (os.getpid(), time.time()),
         "rows": len(lines), "columns": head, "data": rows})
-t.write("\n".join(lines) + "\n")
+t.write("".join(fit(t, l) + "\n" for l in lines))
 t.flush()
 '
 
 # wls [DIR] : directory listing as an interactive table (WEFT_LS_ALL=1 for dotfiles)
 wls() {
     if [ -n "$__weft_py" ]; then
-        "$__weft_py" -c "$__weft_py_common$__weft_py_wls" "$@"
+        COLUMNS=$COLUMNS "$__weft_py" -c "$__weft_py_common$__weft_py_wls" "$@"
     else
         ls -la "$@"
     fi
@@ -206,7 +217,7 @@ wls() {
 # CMD | wtable : turn whitespace/TSV columns (ps aux, df -h, ...) into a sortable table
 wtable() {
     if [ -n "$__weft_py" ]; then
-        "$__weft_py" -c "$__weft_py_common$__weft_py_wtable"
+        COLUMNS=$COLUMNS "$__weft_py" -c "$__weft_py_common$__weft_py_wtable"
     else
         cat
     fi

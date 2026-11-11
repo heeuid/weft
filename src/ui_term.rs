@@ -811,7 +811,17 @@ impl App {
             }
             // Inline widget slots.
             for (wi, w) in p.widgets.iter().enumerate() {
-                let wend = w.anchor + w.rows as u64;
+                // Cover `rows` logical lines: soft-wrapped continuations count too.
+                let mut span = 0u64;
+                let mut logical = 0usize;
+                while logical < w.rows && span < 4000 {
+                    let wrapped = t.line(w.anchor + span).map(|r| r.wrapped).unwrap_or(false);
+                    span += 1;
+                    if !wrapped {
+                        logical += 1;
+                    }
+                }
+                let wend = w.anchor + span;
                 if wend <= first_abs || w.anchor > last_abs {
                     continue;
                 }
@@ -823,7 +833,7 @@ impl App {
                     Some(i) => row_y(i),
                     None => row_y(0) - (first_abs - w.anchor) as f32 * ch,
                 };
-                widget_slots.push((wi, Rect::from_min_size(pos2(inner.left() - 2.0, y), vec2(inner.width() + 2.0, w.rows as f32 * ch))));
+                widget_slots.push((wi, Rect::from_min_size(pos2(inner.left() - 2.0, y), vec2(inner.width() + 2.0, span as f32 * ch))));
             }
         }
 
@@ -896,8 +906,9 @@ impl App {
             }
             icons::paint(&painter, Rect::from_min_size(hr.min + vec2(8.0, 5.0), vec2(14.0, 14.0)), Icon::Terminal, if active { theme::ACCENT } else { theme::TEXT_FAINT });
             let title = if t.title.is_empty() { p.title() } else { format!("{} — {}", p.title(), t.title) };
-            painter.text(pos2(hr.left() + 28.0, hr.center().y), Align2::LEFT_CENTER, title, FontId::proportional(12.0), if active { theme::TEXT } else { theme::TEXT_DIM });
             let bx = hr.right() - 26.0;
+            let title_clip = Rect::from_min_max(hr.min, pos2(bx - 6.0, hr.bottom()));
+            painter.with_clip_rect(title_clip).text(pos2(hr.left() + 28.0, hr.center().y), Align2::LEFT_CENTER, title, FontId::proportional(12.0), if active { theme::TEXT } else { theme::TEXT_DIM });
             if icons::overlay_button(ui, Rect::from_min_size(pos2(bx, hr.top() + 2.0), vec2(20.0, 20.0)), Id::new(("close", id)), Icon::Cross, "close pane (Ctrl+Shift+W)").clicked() {
                 acts.push(Action::ClosePane(id));
             }
