@@ -40,6 +40,9 @@ pub struct Settings {
     pub sidebar: bool,
     #[serde(default)]
     pub show_hidden: bool,
+    /// The file panel follows the active terminal's directory (OSC 7).
+    #[serde(default = "d_true")]
+    pub follow_cwd: bool,
     /// A theme id (see theme.rs), or "system" to follow the OS light/dark setting.
     #[serde(default = "d_theme")]
     pub theme: String,
@@ -67,7 +70,7 @@ impl Default for Settings {
                 },
             });
         }
-        Settings { font_size: d_font(), profiles, sidebar: true, show_hidden: false, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), session: Vec::new() }
+        Settings { font_size: d_font(), profiles, sidebar: true, show_hidden: false, follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), session: Vec::new() }
     }
 }
 
@@ -275,6 +278,10 @@ pub struct Pane {
     pub preedit: String,
     /// Caret position last reported to the IME (kept while composing).
     pub ime_rect: Option<Rect>,
+    /// A new size waiting to settle (splitter drag) before it is applied.
+    pub pending_size: Option<((usize, usize), Instant)>,
+    /// The first size was applied (the first layout applies immediately).
+    pub sized: bool,
     pub hist_seen: u64,
     pub flash_block: Option<(u64, Instant)>,
 }
@@ -299,6 +306,8 @@ impl Pane {
             bell_at: None,
             preedit: String::new(),
             ime_rect: None,
+            pending_size: None,
+            sized: false,
             hist_seen: 0,
             flash_block: None,
         }
@@ -569,6 +578,7 @@ impl App {
             auth_prompted: HashSet::new(),
             last_save: Instant::now(),
         };
+        app.side.follow = app.settings.follow_cwd;
         let session = std::mem::take(&mut app.settings.session);
         for node in &session {
             let root = app.restore_node(node);
@@ -1188,7 +1198,6 @@ impl App {
                         self.editor.active = self.editor.active.min(self.editor.files.len().saturating_sub(1));
                         self.settings.sidebar = true;
                         self.side.tab = SideTab::Files;
-                        self.side.follow = false;
                         self.set_root(host, &path);
                     } else {
                         f.error = Some(err);
@@ -1337,7 +1346,6 @@ impl App {
                 Action::OpenScratch(t, s) => self.open_scratch(&t, s),
                 Action::ListDir(h, p) => self.list_dir(&h, &p),
                 Action::SetRoot(h, p) => {
-                    self.side.follow = false;
                     self.settings.sidebar = true;
                     self.side.tab = SideTab::Files;
                     self.set_root(&h, &p);

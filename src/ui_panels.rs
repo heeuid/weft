@@ -453,12 +453,12 @@ impl App {
                     }
                 }
                 if icons::button(ui, Icon::Up, "parent directory").clicked() {
-                    self.side.follow = false;
                     self.set_root(&host, &parent(&root));
                 }
                 let fc = if self.side.follow { theme::accent() } else { theme::text_faint() };
                 if icons::button_colored(ui, Icon::Terminal, "follow the terminal's directory", fc).clicked() {
                     self.side.follow = !self.side.follow;
+                    self.settings.follow_cwd = self.side.follow;
                     if self.side.follow {
                         self.on_active_changed();
                     }
@@ -484,7 +484,6 @@ impl App {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 }
                 if r.clicked() {
-                    self.side.follow = false;
                     self.set_root(&host, &acc.clone());
                 }
                 if !last && i > 0 {

@@ -20,6 +20,8 @@ pub const F_HIDDEN: u8 = 64;
 
 pub const WIDE_LEAD: u8 = 1;
 pub const WIDE_TAIL: u8 = 2;
+/// Blank left at a row end because the next wide char did not fit; not content.
+pub const WIDE_PAD: u8 = 3;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Color {
@@ -70,15 +72,18 @@ impl Row {
         self.cells.iter().all(|c| c.ch == ' ' && c.attr.bg == Color::Default)
     }
 
-    /// Text of columns `[from, to)`, wide-char tails skipped, trailing blanks trimmed.
+    /// Text of columns `[from, to)`, wide-char tails and pads skipped, trailing
+    /// blanks trimmed (except where the row soft-wraps: those spaces are text).
     pub fn text_range(&self, from: usize, to: usize) -> String {
         let to = to.min(self.cells.len());
         let mut s: String = self.cells[from.min(to)..to]
             .iter()
-            .filter(|c| c.wide != WIDE_TAIL)
+            .filter(|c| c.wide != WIDE_TAIL && c.wide != WIDE_PAD)
             .map(|c| c.ch)
             .collect();
-        s.truncate(s.trim_end().len());
+        if !(self.wrapped && to == self.cells.len()) {
+            s.truncate(s.trim_end().len());
+        }
         s
     }
 
@@ -91,7 +96,7 @@ impl Row {
         self.cells
             .iter()
             .enumerate()
-            .filter(|(_, c)| c.wide != WIDE_TAIL)
+            .filter(|(_, c)| c.wide != WIDE_TAIL && c.wide != WIDE_PAD)
             .map(|(i, c)| (c.ch, i))
             .collect()
     }
@@ -198,6 +203,8 @@ pub struct Term {
     next_block: u64,
     /// Bumped on every mutation; lets the UI know something changed.
     pub generation: u64,
+    /// Set by a reflow: (first old absolute line, new absolute line per old line).
+    line_remap: Option<(u64, Vec<u64>)>,
 }
 
 impl Term {
@@ -237,6 +244,7 @@ impl Term {
             blocks: Vec::new(),
             next_block: 1,
             generation: 0,
+            line_remap: None,
         }
     }
 
@@ -383,13 +391,28 @@ impl Term {
             return;
         }
         let attr = Attr::default();
-        for r in self.screen.iter_mut() {
-            r.resize(cols, attr);
-        }
-        if let Some(p) = self.primary_saved.as_mut() {
-            for r in p.iter_mut() {
-                r.resize(cols, attr);
+        if cols != self.cols {
+            // Width changed: rewrap the primary buffer (scrollback + screen) so
+            // nothing is cut off and shrinking then growing restores the text.
+            self.reflow_primary(cols, rows);
+            if self.alt_active {
+                // Full-screen apps redraw themselves; just fit the alt screen.
+                for r in self.screen.iter_mut() {
+                    r.resize(cols, attr);
+                }
+                self.screen.resize(rows, Row::new(cols, attr));
             }
+            self.cols = cols;
+            self.rows = rows;
+            self.top = 0;
+            self.bot = rows - 1;
+            self.cx = self.cx.min(cols - 1);
+            self.cy = self.cy.min(rows - 1);
+            self.saved.x = self.saved.x.min(cols - 1);
+            self.saved.y = self.saved.y.min(rows - 1);
+            self.pending_wrap = false;
+            self.generation = self.generation.wrapping_add(1);
+            return;
         }
         if self.alt_active {
             self.screen.resize(rows, Row::new(cols, attr));
@@ -415,6 +438,75 @@ impl Term {
         self.saved.y = self.saved.y.min(rows - 1);
         self.pending_wrap = false;
         self.generation = self.generation.wrapping_add(1);
+    }
+
+    /// Rewrap scrollback + primary screen to `cols` columns and fit `rows`.
+    /// Absolute line numbers change, so blocks are remapped here and the map
+    /// is left in `line_remap` for anchors kept outside (inline widgets).
+    fn reflow_primary(&mut self, cols: usize, rows: usize) {
+        let alt = self.alt_active;
+        let screen = if alt { self.primary_saved.take().unwrap_or_default() } else { std::mem::take(&mut self.screen) };
+        let (cur_y, cur_x) = if alt { (self.saved.y, self.saved.x) } else { (self.cy, self.cx) };
+        let base = self.dropped;
+        let hist_len = self.history.len();
+        let mut all: Vec<Row> = self.history.drain(..).collect();
+        all.extend(screen);
+        let (mut new, (mut ny, nx), map, end_map) = reflow(all, cols, (hist_len + cur_y, cur_x));
+        // Blank rows below the cursor are not content.
+        while new.len() > ny + 1 && new.last().map(|r| r.is_blank()).unwrap_or(false) {
+            new.pop();
+        }
+        let start = new.len().saturating_sub(rows);
+        let mut screen: Vec<Row> = new.split_off(start);
+        while screen.len() < rows {
+            screen.push(Row::new(cols, Attr::default()));
+        }
+        ny -= start;
+        self.history = new.into();
+        while self.history.len() > self.max_history {
+            self.history.pop_front();
+            self.dropped += 1;
+        }
+        if alt {
+            self.primary_saved = Some(screen);
+            self.saved.y = ny.min(rows - 1);
+            self.saved.x = nx.min(cols - 1);
+        } else {
+            self.screen = screen;
+            self.cy = ny.min(rows - 1);
+            self.cx = nx.min(cols - 1);
+        }
+        let new_abs: Vec<u64> = map.iter().map(|&r| base + r as u64).collect();
+        let remap = |abs: u64| -> u64 {
+            if abs < base {
+                abs
+            } else {
+                let i = (abs - base) as usize;
+                match new_abs.get(i) {
+                    Some(&n) => n,
+                    None => new_abs.last().map(|&l| l + 1 + (i - new_abs.len()) as u64).unwrap_or(abs),
+                }
+            }
+        };
+        for b in self.blocks.iter_mut() {
+            b.prompt_line = remap(b.prompt_line);
+            b.input = b.input.map(|(l, c)| (remap(l), c.min(cols - 1)));
+            b.out_line = b.out_line.map(remap);
+            b.end_line = b.end_line.map(|e| match e.checked_sub(base + 1).map(|i| i as usize) {
+                Some(i) if i < end_map.len() => base + end_map[i] as u64 + 1,
+                Some(_) => remap(e - 1) + 1,
+                None => e,
+            });
+        }
+        let dropped = self.dropped;
+        self.blocks.retain(|b| b.prompt_line >= dropped);
+        self.line_remap = Some((base, new_abs));
+    }
+
+    /// New absolute line for an old one after the last reflow (for anchors
+    /// kept outside the terminal, e.g. inline widgets).  Identity otherwise.
+    pub fn take_line_remap(&mut self) -> Option<(u64, Vec<u64>)> {
+        self.line_remap.take()
     }
 
     fn resize_primary_rows(&mut self, screen: &mut Vec<Row>, rows: usize, cols: usize, cy: &mut usize) {
@@ -546,8 +638,8 @@ impl Term {
             if !self.autowrap {
                 return;
             }
-            let blank = Cell::blank(self.attr);
-            self.screen[self.cy].cells[self.cx] = blank;
+            let pad = Cell { wide: WIDE_PAD, ..Cell::blank(self.attr) };
+            self.screen[self.cy].cells[self.cx] = pad;
             self.screen[self.cy].wrapped = true;
             self.cx = 0;
             self.linefeed();
@@ -818,6 +910,101 @@ impl Term {
             self.events.push(TermEvent::CwdChanged);
         }
     }
+}
+
+/// Cells of a row that matter: up to the last non-blank cell.
+fn content_len(r: &Row) -> usize {
+    r.cells.iter().rposition(|c| c.wide != WIDE_PAD && (c.ch != ' ' || c.attr.bg != Color::Default || c.wide != 0)).map(|i| i + 1).unwrap_or(0)
+}
+
+/// Rewrap rows to `cols`: soft-wrapped rows are joined into their logical
+/// line and split again at the new width (a wide char never straddles a row
+/// end).  Returns the rows, the cursor's new (row, col), and for every old row
+/// the new row its first cell landed on.
+fn reflow(rows: Vec<Row>, cols: usize, cursor: (usize, usize)) -> (Vec<Row>, (usize, usize), Vec<usize>, Vec<usize>) {
+    let mut out: Vec<Row> = Vec::new();
+    let mut map = vec![0usize; rows.len()];
+    let mut end_map = vec![0usize; rows.len()];
+    let mut new_cursor = (0, 0);
+    let mut i = 0;
+    while i < rows.len() {
+        let mut j = i;
+        while j + 1 < rows.len() && rows[j].wrapped {
+            j += 1;
+        }
+        // Join the logical line; remember where each old row started.
+        let mut cells: Vec<Cell> = Vec::new();
+        let mut starts = Vec::with_capacity(j - i + 1);
+        for (k, row) in rows.iter().enumerate().take(j + 1).skip(i) {
+            starts.push(cells.len());
+            let take = if k < j { row.cells.len() } else { content_len(row) };
+            cells.extend(row.cells[..take].iter().filter(|c| c.wide != WIDE_PAD));
+        }
+        let cursor_off = (i..=j).contains(&cursor.0).then(|| starts[cursor.0 - i] + cursor.1);
+        // Split at the new width.
+        let first = out.len();
+        let mut row = Row::new(cols, Attr::default());
+        let mut col = 0;
+        let mut pos_of = vec![(first, 0usize); cells.len()];
+        let mut k = 0;
+        while k < cells.len() {
+            let c = cells[k];
+            if c.wide == WIDE_TAIL {
+                // Orphan tail (its lead was cut off earlier): drop it.
+                pos_of[k] = (first + (out.len() - first), col);
+                k += 1;
+                continue;
+            }
+            let w = if c.wide == WIDE_LEAD { 2 } else { 1 };
+            if col + w > cols {
+                for pad in &mut row.cells[col..] {
+                    *pad = Cell { wide: WIDE_PAD, ..Cell::blank(Attr::default()) };
+                }
+                row.wrapped = true;
+                out.push(std::mem::replace(&mut row, Row::new(cols, Attr::default())));
+                col = 0;
+            }
+            pos_of[k] = (out.len(), col);
+            row.cells[col] = c;
+            if w == 2 {
+                if k + 1 < cells.len() && cells[k + 1].wide == WIDE_TAIL {
+                    pos_of[k + 1] = (out.len(), col + 1);
+                    row.cells[col + 1] = cells[k + 1];
+                    k += 1;
+                } else {
+                    row.cells[col + 1] = Cell { ch: ' ', attr: c.attr, wide: WIDE_TAIL };
+                }
+            }
+            col += w;
+            k += 1;
+        }
+        out.push(row);
+        let last = out.len() - 1;
+        for (n, &s) in starts.iter().enumerate() {
+            map[i + n] = pos_of.get(s).map(|p| p.0).unwrap_or(last);
+            // The new row holding this old row's last cell (the whole rest of the
+            // logical line for its final row).
+            let next = starts.get(n + 1).copied().unwrap_or(cells.len());
+            end_map[i + n] = if n + 1 == starts.len() { last } else { next.checked_sub(1).and_then(|e| pos_of.get(e)).map(|p| p.0).unwrap_or(last) };
+        }
+        if let Some(off) = cursor_off {
+            new_cursor = match pos_of.get(off) {
+                Some(&p) => p,
+                // Past the text (e.g. after the prompt): same distance after the last cell.
+                None => {
+                    let extra = off - cells.len();
+                    let (r, c) = cells.len().checked_sub(1).map(|l| (pos_of[l].0, pos_of[l].1 + 1 + (cells[l].wide == WIDE_LEAD) as usize)).unwrap_or((first, 0));
+                    let x = c + extra;
+                    (r + x / cols.max(1), x % cols.max(1))
+                }
+            };
+            while out.len() <= new_cursor.0 {
+                out.push(Row::new(cols, Attr::default()));
+            }
+        }
+        i = j + 1;
+    }
+    (out, new_cursor, map, end_map)
 }
 
 fn parse_ext_color(groups: &[&[u16]], i: usize) -> (Option<Color>, usize) {
@@ -1327,6 +1514,47 @@ mod tests {
         assert_eq!(tok, "src/main.rs:12");
         assert_eq!(s, 4);
         assert_eq!(t.search("main", false), vec![(0, 8, 12)]);
+    }
+
+    #[test]
+    fn narrowing_then_widening_restores_the_prompt() {
+        let mut t = Term::new(60, 5);
+        let prompt = "sunghee in ssw06 in SC26-device-mode on HEAD (e207490)";
+        run(&mut t, &format!("{prompt}\r\n> "));
+        t.resize(20, 5);
+        assert!(t.history.is_empty() || t.line(t.first_line()).is_some());
+        let joined = t.lines_text(t.first_line(), t.end_line());
+        assert!(joined.contains(prompt), "text lost while narrow: {joined:?}");
+        t.resize(60, 5);
+        assert_eq!(t.screen[0].text(), prompt);
+        assert_eq!(t.screen[1].text(), ">");
+        assert_eq!((t.cy, t.cx), (1, 2), "cursor stays after the prompt");
+    }
+
+    #[test]
+    fn reflow_never_splits_a_wide_char() {
+        let mut t = Term::new(10, 4);
+        run(&mut t, "abc한글한글"); // 3 + 4*2 = 11 cells: wraps once
+        t.resize(5, 4);
+        for r in &t.screen {
+            assert!(r.cells.last().map(|c| c.wide != WIDE_LEAD).unwrap_or(true), "wide char split at a row end");
+        }
+        t.resize(20, 4);
+        assert_eq!(t.screen[0].text(), "abc한글한글");
+    }
+
+    #[test]
+    fn reflow_moves_blocks_with_their_lines() {
+        let mut t = Term::new(20, 6);
+        run(&mut t, "\x1b]133;A\x07$ \x1b]133;B\x07echo aaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n\x1b]133;C\x07aaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n\x1b]133;D;0\x07\x1b]133;A\x07$ ");
+        let before = t.block_output(&t.blocks[0]);
+        t.resize(8, 6);
+        assert_eq!(t.blocks[0].command, "echo aaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        assert_eq!(t.block_output(&t.blocks[0]).replace('\n', ""), before.replace('\n', ""));
+        let remap = t.take_line_remap().expect("reflow reports the line map");
+        assert_eq!(remap.0, t.first_line());
+        t.resize(40, 6);
+        assert_eq!(t.block_output(&t.blocks[0]), before);
     }
 
     #[test]

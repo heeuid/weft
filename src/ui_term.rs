@@ -495,12 +495,42 @@ impl App {
 
         // 1. geometry
         {
+            // Apply a new size only once it has been stable for a moment: while a
+            // splitter is dragged, every intermediate width would reflow the
+            // buffer and send the shell a SIGWINCH (each redraws the prompt).
             let p = self.panes.get_mut(&id).unwrap();
-            if p.term.cols != cols || p.term.rows != rows {
-                p.term.resize(cols, rows);
-                if let Some(pty) = p.pty.as_ref() {
-                    pty.resize(cols as u16, rows as u16);
+            let want = (cols, rows);
+            if (p.term.cols, p.term.rows) != want {
+                let settle = Duration::from_millis(120);
+                let ready = match p.pending_size {
+                    _ if !p.sized => true,
+                    Some((s, at)) if s == want => at.elapsed() >= settle,
+                    _ => {
+                        p.pending_size = Some((want, std::time::Instant::now()));
+                        false
+                    }
+                };
+                if ready {
+                    p.pending_size = None;
+                    p.sized = true;
+                    p.term.resize(cols, rows);
+                    if let Some(pty) = p.pty.as_ref() {
+                        pty.resize(cols as u16, rows as u16);
+                    }
+                    p.sel = None;
+                    if let Some((base, new_abs)) = p.term.take_line_remap() {
+                        for w in p.widgets.iter_mut() {
+                            if let Some(&n) = w.anchor.checked_sub(base).and_then(|i| new_abs.get(i as usize)) {
+                                w.anchor = n;
+                            }
+                        }
+                    }
+                } else {
+                    ui.ctx().request_repaint_after(settle);
                 }
+            } else {
+                p.pending_size = None;
+                p.sized = true;
             }
         }
 
