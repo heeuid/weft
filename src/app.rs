@@ -33,6 +33,42 @@ fn d_theme_light() -> String {
     crate::theme::DEFAULT_LIGHT.into()
 }
 
+/// Window edge a panel (side panel, editor) is docked to.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Dock {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+impl Dock {
+    pub const ALL: [Dock; 4] = [Dock::Left, Dock::Right, Dock::Top, Dock::Bottom];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Dock::Left => "left",
+            Dock::Right => "right",
+            Dock::Top => "top",
+            Dock::Bottom => "bottom",
+        }
+    }
+}
+
+/// A panel that can be dragged to another window edge.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Region {
+    Side,
+    Editor,
+}
+
+fn d_dock_left() -> Dock {
+    Dock::Left
+}
+fn d_dock_right() -> Dock {
+    Dock::Right
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Settings {
     #[serde(default = "d_font")]
@@ -44,6 +80,11 @@ pub struct Settings {
     pub profiles: Vec<Profile>,
     #[serde(default = "d_true")]
     pub sidebar: bool,
+    /// Where the side panel and the editor sit (drag their grip to move them).
+    #[serde(default = "d_dock_left")]
+    pub side_dock: Dock,
+    #[serde(default = "d_dock_right")]
+    pub editor_dock: Dock,
     #[serde(default)]
     pub show_hidden: bool,
     /// The file panel follows the active terminal's directory (OSC 7).
@@ -81,7 +122,7 @@ impl Default for Settings {
                 },
             });
         }
-        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, show_hidden: false, follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, session: Vec::new() }
+        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, side_dock: Dock::Left, editor_dock: Dock::Right, show_hidden: false, follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, session: Vec::new() }
     }
 }
 
@@ -505,6 +546,8 @@ pub struct App {
     pub theme_menu: Option<egui::Rect>,
     /// Ctrl+wheel zoom not yet turned into a size step (touchpads send small steps).
     pub zoom_acc: f32,
+    /// A panel being dragged by its grip to another window edge.
+    pub dock_drag: Option<Region>,
     /// ssh passwords for this session only; never written to disk or logs.
     pub secrets: HashMap<String, String>,
     auth_prompted: HashSet<String>,
@@ -593,6 +636,7 @@ impl App {
             auth_prompt: None,
             theme_menu: None,
             zoom_acc: 1.0,
+            dock_drag: None,
             secrets: HashMap::new(),
             auth_prompted: HashSet::new(),
             last_save: Instant::now(),

@@ -463,6 +463,7 @@ impl App {
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
+            self.dock_grip(ui, Region::Side);
             for (tab, label) in [(SideTab::Files, "Files"), (SideTab::Blocks, "Commands"), (SideTab::Search, "Search"), (SideTab::Procs, "Procs")] {
                 let sel = self.side.tab == tab;
                 let txt = RichText::new(label).size(12.5).color(if sel { theme::text() } else { theme::text_dim() });
@@ -915,8 +916,74 @@ impl App {
 
     // ---- editor -----------------------------------------------------------------------
 
+    /// Drag handle that moves a panel to another window edge (drop zones are
+    /// drawn by `ui_dock_drop`); right-click for the same choices as a menu.
+    fn dock_grip(&mut self, ui: &mut Ui, region: Region) {
+        let (rect, resp) = ui.allocate_exact_size(vec2(14.0, 20.0), Sense::click_and_drag());
+        let active = resp.hovered() || resp.dragged() || self.dock_drag == Some(region);
+        let c = if active { theme::text() } else { theme::text_faint() };
+        for row in 0..3 {
+            for col in 0..2 {
+                let p = pos2(rect.center().x - 2.5 + col as f32 * 5.0, rect.center().y - 5.0 + row as f32 * 5.0);
+                ui.painter().circle_filled(p, 1.3, c);
+            }
+        }
+        let resp = resp.on_hover_cursor(egui::CursorIcon::Grab).on_hover_text("drag to move this panel to the left / right / top / bottom (right-click: menu)");
+        if resp.drag_started() {
+            self.dock_drag = Some(region);
+        }
+        resp.context_menu(|ui| {
+            for d in Dock::ALL {
+                if ui.button(format!("Move to {}", d.label())).clicked() {
+                    self.set_dock(region, d);
+                    ui.close_menu();
+                }
+            }
+        });
+    }
+
+    pub fn set_dock(&mut self, region: Region, dock: Dock) {
+        match region {
+            Region::Side => self.settings.side_dock = dock,
+            Region::Editor => self.settings.editor_dock = dock,
+        }
+        self.save_settings();
+    }
+
+    /// While a panel is dragged by its grip: highlight the window edge it
+    /// would dock to and move it there on release.
+    pub fn ui_dock_drop(&mut self, ctx: &egui::Context) {
+        let Some(region) = self.dock_drag else { return };
+        let screen = ctx.screen_rect();
+        let area = egui::Rect::from_min_max(pos2(screen.left(), screen.top() + 34.0), pos2(screen.right(), screen.bottom() - 24.0));
+        let (pos, released) = ctx.input(|i| (i.pointer.latest_pos(), i.pointer.any_released() || !i.pointer.primary_down()));
+        let Some(p) = pos else { return };
+        let fx = ((p.x - area.left()) / area.width()).clamp(0.0, 1.0);
+        let fy = ((p.y - area.top()) / area.height()).clamp(0.0, 1.0);
+        let target = [(Dock::Left, fx), (Dock::Right, 1.0 - fx), (Dock::Top, fy), (Dock::Bottom, 1.0 - fy)].into_iter().min_by(|a, b| a.1.total_cmp(&b.1)).map(|t| t.0).unwrap_or(Dock::Left);
+        let zone = match target {
+            Dock::Left => egui::Rect::from_min_max(area.min, pos2(area.left() + area.width() * 0.3, area.bottom())),
+            Dock::Right => egui::Rect::from_min_max(pos2(area.right() - area.width() * 0.3, area.top()), area.max),
+            Dock::Top => egui::Rect::from_min_max(area.min, pos2(area.right(), area.top() + area.height() * 0.35)),
+            Dock::Bottom => egui::Rect::from_min_max(pos2(area.left(), area.bottom() - area.height() * 0.35), area.max),
+        };
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, Id::new("dock-drop")));
+        painter.rect(zone.shrink(4.0), CornerRadius::same(8), theme::tint(theme::accent(), 40), Stroke::new(2.0_f32, theme::accent()), egui::StrokeKind::Inside);
+        let name = match region {
+            Region::Side => "Side panel",
+            Region::Editor => "Editor",
+        };
+        painter.text(zone.center(), Align2::CENTER_CENTER, format!("{name} \u{2192} {}", target.label()), FontId::proportional(15.0), theme::text());
+        ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+        if released {
+            self.dock_drag = None;
+            self.set_dock(region, target);
+        }
+    }
+
     pub fn ui_editor(&mut self, ui: &mut Ui) {
         if self.editor.files.is_empty() {
+            ui.horizontal(|ui| self.dock_grip(ui, Region::Editor));
             ui.add_space(20.0);
             ui.vertical_centered(|ui| {
                 ui.label(RichText::new("No files open").color(theme::text_dim()));
@@ -927,6 +994,8 @@ impl App {
         self.editor.active = self.editor.active.min(self.editor.files.len() - 1);
         // Tabs.
         let mut close = None;
+        ui.horizontal(|ui| {
+        self.dock_grip(ui, Region::Editor);
         ScrollArea::horizontal().id_salt("editor-tabs").show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
@@ -946,6 +1015,7 @@ impl App {
                     }
                 }
             });
+        });
         });
         if let Some(i) = close {
             if self.editor.files[i].dirty && !self.editor.files[i].scratch {

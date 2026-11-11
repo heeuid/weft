@@ -55,22 +55,16 @@ impl eframe::App for WeftApp {
             .exact_height(24.0)
             .frame(egui::Frame::new().fill(theme::bg_base()).inner_margin(egui::Margin::symmetric(10, 0)))
             .show(ctx, |ui| app.ui_status(ui));
+        let (w, h) = (ctx.screen_rect().width(), ctx.screen_rect().height());
         if app.settings.sidebar {
-            egui::SidePanel::left("side")
-                .resizable(true)
-                .default_width(280.0)
-                .width_range(200.0..=520.0)
-                .frame(egui::Frame::new().fill(theme::bg_base()).inner_margin(egui::Margin::symmetric(8, 0)))
-                .show(ctx, |ui| app.ui_sidebar(ui));
+            let frame = egui::Frame::new().fill(theme::bg_base()).inner_margin(egui::Margin::symmetric(8, 0));
+            let size = DockSize { width: 280.0, widths: 200.0..=520.0, height: 260.0, heights: 140.0..=h * 0.7 };
+            dock_panel(ctx, "side", app.settings.side_dock, size, frame, |ui| app.ui_sidebar(ui));
         }
         if app.editor.visible {
-            let w = ctx.screen_rect().width();
-            egui::SidePanel::right("editor")
-                .resizable(true)
-                .default_width((w * 0.42).max(360.0))
-                .width_range(280.0..=w * 0.75)
-                .frame(egui::Frame::new().fill(theme::bg_base()).inner_margin(egui::Margin::symmetric(8, 6)))
-                .show(ctx, |ui| app.ui_editor(ui));
+            let frame = egui::Frame::new().fill(theme::bg_base()).inner_margin(egui::Margin::symmetric(8, 6));
+            let size = DockSize { width: (w * 0.42).max(360.0), widths: 280.0..=w * 0.75, height: h * 0.45, heights: 160.0..=h * 0.8 };
+            dock_panel(ctx, "editor", app.settings.editor_dock, size, frame, |ui| app.ui_editor(ui));
         }
         egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::bg_term())).show(ctx, |ui| app.ui_panes(ui));
 
@@ -79,6 +73,7 @@ impl eframe::App for WeftApp {
         app.ui_auth(ctx);
         app.ui_theme_menu(ctx);
         app.ui_toasts(ctx);
+        app.ui_dock_drop(ctx);
         app.apply_actions();
 
         let title = app.active_pane().map(|p| format!("weft — {}", p.title())).unwrap_or_else(|| "weft".into());
@@ -92,6 +87,28 @@ impl eframe::App for WeftApp {
         if self.first_frame {
             self.first_frame = false;
             self.app.data.log(&format!("startup: first frame built at {}", since_start()));
+        }
+    }
+}
+
+struct DockSize {
+    width: f32,
+    widths: std::ops::RangeInclusive<f32>,
+    height: f32,
+    heights: std::ops::RangeInclusive<f32>,
+}
+
+/// A resizable panel on the window edge `dock`. Each edge keeps its own size.
+fn dock_panel(ctx: &egui::Context, id: &str, dock: app::Dock, size: DockSize, frame: egui::Frame, add: impl FnOnce(&mut egui::Ui)) {
+    let id = format!("{id}-{}", dock.label());
+    match dock {
+        app::Dock::Left | app::Dock::Right => {
+            let p = if dock == app::Dock::Left { egui::SidePanel::left(id) } else { egui::SidePanel::right(id) };
+            p.resizable(true).default_width(size.width).width_range(size.widths).frame(frame).show(ctx, add);
+        }
+        app::Dock::Top | app::Dock::Bottom => {
+            let p = if dock == app::Dock::Top { egui::TopBottomPanel::top(id) } else { egui::TopBottomPanel::bottom(id) };
+            p.resizable(true).default_height(size.height).height_range(size.heights).frame(frame).show(ctx, add);
         }
     }
 }
