@@ -27,6 +27,7 @@ pub fn host_color(host: &str) -> Color32 {
 
 #[derive(Clone, Copy, PartialEq)]
 enum Cmd {
+    CursorStyle,
     MarkdownBreaks,
     NewTab,
     Connect,
@@ -84,6 +85,7 @@ const COMMANDS: &[(Cmd, &str, &str)] = &[
     (Cmd::UiReset, "UI scale 100%", ""),
     (Cmd::ThemePicker, "Theme…", ""),
     (Cmd::ThemeSystem, "Theme: follow system (dark/light)", ""),
+    (Cmd::CursorStyle, "Terminal cursor: bar / block / underline", ""),
     (Cmd::MarkdownBreaks, "Markdown: toggle line breaks (GitHub PR style / CommonMark)", ""),
     (Cmd::Settings, "Open settings.json", ""),
     (Cmd::AgentLog, "Open agent log for this host", ""),
@@ -173,6 +175,14 @@ impl App {
             Cmd::UiReset => self.settings.ui_scale = 1.0,
             Cmd::Theme(i) => self.pick_theme(i),
             Cmd::ThemeSystem => self.settings.theme = "system".into(),
+            Cmd::CursorStyle => {
+                self.settings.cursor_style = match self.settings.cursor_style {
+                    CursorStyle::Bar => CursorStyle::Block,
+                    CursorStyle::Block => CursorStyle::Underline,
+                    CursorStyle::Underline => CursorStyle::Bar,
+                };
+                self.toast(format!("cursor: {:?}", self.settings.cursor_style).to_lowercase(), crate::app::ToastKind::Info);
+            }
             Cmd::MarkdownBreaks => {
                 self.settings.markdown_breaks = !self.settings.markdown_breaks;
                 let mode = if self.settings.markdown_breaks { "every newline breaks the line (GitHub PR style)" } else { "a single newline is a space (CommonMark)" };

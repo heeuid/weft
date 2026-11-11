@@ -1009,11 +1009,24 @@ impl App {
             cursor_rect = Some(r);
             if show_cursor && p.composer.is_none() {
                 if focused {
-                    painter.rect_filled(r, CornerRadius::same(1), theme::cursor());
-                    if let Some(c) = t.screen.get(t.cy).and_then(|r| r.cells.get(t.cx)) {
-                        if c.ch != ' ' {
-                            let g = painter.layout_no_wrap(c.ch.to_string(), font.clone(), theme::bg_term());
-                            painter.galley(pos2(r.left() + (r.width() - g.size().x) / 2.0, r.top() + (ch - g.size().y) / 2.0), g, theme::bg_term());
+                    match self.settings.cursor_style {
+                        // Thin bar / underline: the character stays fully visible.
+                        CursorStyle::Bar => {
+                            let bar = Rect::from_min_size(pos2(r.left() - 1.0, r.top() + 1.0), vec2(2.0, ch - 2.0));
+                            painter.rect_filled(bar, CornerRadius::same(1), theme::cursor());
+                        }
+                        CursorStyle::Underline => {
+                            let line = Rect::from_min_size(pos2(r.left(), r.bottom() - 2.5), vec2(r.width(), 2.0));
+                            painter.rect_filled(line, CornerRadius::ZERO, theme::cursor());
+                        }
+                        CursorStyle::Block => {
+                            painter.rect_filled(r, CornerRadius::same(1), theme::cursor());
+                            if let Some(c) = t.screen.get(t.cy).and_then(|r| r.cells.get(t.cx)) {
+                                if c.ch != ' ' {
+                                    let g = painter.layout_no_wrap(c.ch.to_string(), font.clone(), theme::bg_term());
+                                    painter.galley(pos2(r.left() + (r.width() - g.size().x) / 2.0, r.top() + (ch - g.size().y) / 2.0), g, theme::bg_term());
+                                }
+                            }
                         }
                     }
                 } else {

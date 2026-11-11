@@ -33,6 +33,19 @@ fn d_theme_light() -> String {
     crate::theme::DEFAULT_LIGHT.into()
 }
 
+/// How the terminal cursor is drawn (settings "cursor_style").
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CursorStyle {
+    /// A thin bar before the cell: never hides a character.
+    #[default]
+    Bar,
+    /// The whole cell, the character drawn inverted on it.
+    Block,
+    /// A line under the cell.
+    Underline,
+}
+
 /// Window edge a panel (side panel, editor) is docked to.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Dock {
@@ -296,6 +309,9 @@ pub struct Settings {
     /// Who draws mermaid diagrams: built-in, mermaid-cli on PATH, or at a path.
     #[serde(default)]
     pub mermaid: crate::mermaid::Renderer,
+    /// Terminal cursor: bar (default), block or underline.
+    #[serde(default)]
+    pub cursor_style: CursorStyle,
     /// File panel filter: fuzzy, glob or regex.
     #[serde(default)]
     pub find_mode: crate::find::FindMode,
@@ -334,7 +350,7 @@ impl Default for Settings {
                 },
             });
         }
-        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, layout: Layout::default(), show_hidden: false, find_mode: Default::default(), mermaid: Default::default(), follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, session: Vec::new() }
+        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, layout: Layout::default(), show_hidden: false, find_mode: Default::default(), cursor_style: Default::default(), mermaid: Default::default(), follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, session: Vec::new() }
     }
 }
 
