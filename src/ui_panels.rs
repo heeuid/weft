@@ -1295,6 +1295,13 @@ impl App {
         let mut close = None;
         ui.horizontal(|ui| {
         self.dock_grip(ui, Region::Editor);
+        // A thin scrollbar of its own below the tabs: egui's default floats
+        // over the content and hid the tab names. The wheel scrolls it too.
+        let scroll = &mut ui.style_mut().spacing.scroll;
+        scroll.floating = false;
+        scroll.bar_width = 4.0;
+        scroll.bar_inner_margin = 2.0;
+        scroll.bar_outer_margin = 0.0;
         ScrollArea::horizontal().id_salt("editor-tabs").show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
