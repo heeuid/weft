@@ -28,6 +28,8 @@ pub enum Icon {
     Dot,
     Plug,
     Terminal,
+    Sun,
+    Moon,
 }
 
 pub fn paint(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
@@ -122,6 +124,19 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
             line(&[(4.0, 5.5), (12.0, 5.5), (12.0, 8.0), (10.0, 10.5), (6.0, 10.5), (4.0, 8.0), (4.0, 5.5)]);
             line(&[(8.0, 10.5), (8.0, 14.0)]);
         }
+        Icon::Sun => {
+            p.circle_stroke(c, 3.0 * u, st);
+            for k in 0..8 {
+                let a = k as f32 * std::f32::consts::FRAC_PI_4;
+                let (s, co) = a.sin_cos();
+                line(&[(8.0 + 5.0 * co, 8.0 + 5.0 * s), (8.0 + 6.8 * co, 8.0 + 6.8 * s)]);
+            }
+        }
+        Icon::Moon => {
+            // Crescent: a filled disc with an offset disc in the button colour cut out.
+            p.circle_filled(c, 5.5 * u, color);
+            p.circle_filled(at(10.5, 5.5), 4.6 * u, crate::theme::bg_base());
+        }
         Icon::Terminal => {
             p.rect_stroke(r(2.0, 3.0, 14.0, 13.0), CornerRadius::same(2), st, StrokeKind::Middle);
             line(&[(4.5, 6.0), (7.0, 8.0), (4.5, 10.0)]);
@@ -132,7 +147,7 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
 
 /// Small square icon button with hover background and a tooltip.
 pub fn button(ui: &mut Ui, icon: Icon, tip: &str) -> Response {
-    button_colored(ui, icon, tip, theme::TEXT_DIM)
+    button_colored(ui, icon, tip, theme::text_dim())
 }
 
 pub fn button_colored(ui: &mut Ui, icon: Icon, tip: &str, color: Color32) -> Response {
@@ -141,9 +156,9 @@ pub fn button_colored(ui: &mut Ui, icon: Icon, tip: &str, color: Color32) -> Res
     if ui.is_rect_visible(rect) {
         let hovered = resp.hovered();
         if hovered {
-            ui.painter().rect_filled(rect, CornerRadius::same(5), theme::BG_HOVER);
+            ui.painter().rect_filled(rect, CornerRadius::same(5), theme::bg_hover());
         }
-        let col = if hovered { theme::TEXT } else { color };
+        let col = if hovered { theme::text() } else { color };
         paint(ui.painter(), rect.shrink(4.0), icon, col);
     }
     if tip.is_empty() {
@@ -156,9 +171,9 @@ pub fn button_colored(ui: &mut Ui, icon: Icon, tip: &str, color: Color32) -> Res
 /// Icon button drawn at an absolute rect (for overlays on the terminal grid).
 pub fn overlay_button(ui: &mut Ui, rect: Rect, id: egui::Id, icon: Icon, tip: &str) -> Response {
     let resp = ui.interact(rect, id, Sense::click());
-    let bg = if resp.hovered() { theme::BG_HOVER } else { theme::BG_RAISED };
+    let bg = if resp.hovered() { theme::bg_hover() } else { theme::bg_raised() };
     ui.painter().rect_filled(rect, CornerRadius::same(4), bg);
-    let col = if resp.hovered() { theme::TEXT } else { theme::TEXT_DIM };
+    let col = if resp.hovered() { theme::text() } else { theme::text_dim() };
     paint(ui.painter(), rect.shrink(3.5), icon, col);
     resp.on_hover_text(tip)
 }

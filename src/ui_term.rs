@@ -81,21 +81,21 @@ fn cell_colors(a: term::Attr) -> (Color32, Option<Color32>) {
             }
         }
     }
-    let mut fg = resolve(fg_c, theme::TERM_FG);
+    let mut fg = resolve(fg_c, theme::term_fg());
     let mut bg = match a.bg {
         Color::Default => None,
-        c => Some(resolve(c, theme::BG_TERM)),
+        c => Some(resolve(c, theme::bg_term())),
     };
     if a.flags & term::F_INVERSE != 0 {
         let new_bg = fg;
-        fg = bg.unwrap_or(theme::BG_TERM);
+        fg = bg.unwrap_or(theme::bg_term());
         bg = Some(new_bg);
     }
     if a.flags & term::F_DIM != 0 {
         fg = fg.gamma_multiply(0.6);
     }
     if a.flags & term::F_HIDDEN != 0 {
-        fg = bg.unwrap_or(theme::BG_TERM);
+        fg = bg.unwrap_or(theme::bg_term());
     }
     (fg, bg)
 }
@@ -376,7 +376,7 @@ impl App {
             if hot {
                 ui.ctx().set_cursor_icon(if vertical { CursorIcon::ResizeHorizontal } else { CursorIcon::ResizeVertical });
             }
-            ui.painter().rect_filled(handle, CornerRadius::ZERO, if hot { theme::tint(theme::ACCENT, 140) } else { theme::BG_BASE });
+            ui.painter().rect_filled(handle, CornerRadius::ZERO, if hot { theme::tint(theme::accent(), 140) } else { theme::bg_base() });
             if resp.dragged() {
                 if let Some(pos) = resp.interact_pointer_pos() {
                     let r = if vertical {
@@ -398,10 +398,10 @@ impl App {
         if zoomed {
             // "ZOOM" pill in the header, left of the pane buttons.
             let label = "ZOOM · Ctrl+Shift+Z";
-            let g = ui.painter().layout_no_wrap(label.into(), FontId::proportional(11.0), theme::ACCENT);
+            let g = ui.painter().layout_no_wrap(label.into(), FontId::proportional(11.0), theme::accent());
             let pill = Rect::from_min_size(pos2(rect.right() - 60.0 - g.size().x - 16.0, rect.top() + 4.0), vec2(g.size().x + 16.0, 16.0));
-            ui.painter().rect_filled(pill, CornerRadius::same(8), theme::tint(theme::ACCENT, 40));
-            ui.painter().galley(pos2(pill.left() + 8.0, pill.center().y - g.size().y / 2.0), g, theme::ACCENT);
+            ui.painter().rect_filled(pill, CornerRadius::same(8), theme::tint(theme::accent(), 40));
+            ui.painter().galley(pos2(pill.left() + 8.0, pill.center().y - g.size().y / 2.0), g, theme::accent());
         }
     }
 
@@ -416,7 +416,7 @@ impl App {
         let rows = ((inner.height() / ch).floor() as usize).max(2);
         let term_id = Id::new(("pane", id));
         let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, CornerRadius::ZERO, theme::BG_TERM);
+        painter.rect_filled(rect, CornerRadius::ZERO, theme::bg_term());
         let mut acts: Vec<Action> = Vec::new();
 
         // 1. geometry
@@ -667,15 +667,15 @@ impl App {
                 VRow::Fold(bid, count, _) => {
                     let r = Rect::from_min_size(pos2(inner.left(), y + 1.0), vec2(inner.width().min(46.0 * cw), ch - 2.0));
                     let fr = ui.interact(r, Id::new(("fold", id, bid)), Sense::click());
-                    let bg = if fr.hovered() { theme::BG_HOVER } else { theme::BG_RAISED };
+                    let bg = if fr.hovered() { theme::bg_hover() } else { theme::bg_raised() };
                     painter.rect_filled(r, CornerRadius::same(4), bg);
-                    icons::paint(&painter, Rect::from_min_size(r.min + vec2(4.0, 1.0), vec2(ch - 4.0, ch - 4.0)), Icon::Unfold, theme::TEXT_DIM);
+                    icons::paint(&painter, Rect::from_min_size(r.min + vec2(4.0, 1.0), vec2(ch - 4.0, ch - 4.0)), Icon::Unfold, theme::text_dim());
                     painter.text(
                         pos2(r.left() + ch + 4.0, y + ch / 2.0),
                         Align2::LEFT_CENTER,
                         format!("{count} lines folded — click to expand"),
                         FontId::proportional(12.0),
-                        theme::TEXT_DIM,
+                        theme::text_dim(),
                     );
                     if fr.clicked() {
                         acts.push(Action::ToggleFold(id, bid));
@@ -690,7 +690,7 @@ impl App {
             for (k, &(abs, c0, c1)) in s.hits.iter().enumerate() {
                 if let Some(i) = vis_index(abs) {
                     let r = Rect::from_min_size(pos2(inner.left() + c0 as f32 * cw, row_y(i)), vec2((c1 - c0) as f32 * cw, ch));
-                    let col = if k == s.cur { theme::tint(theme::WARN, 150) } else { theme::search_hit() };
+                    let col = if k == s.cur { theme::tint(theme::warn(), 150) } else { theme::search_hit() };
                     painter.rect_filled(r, CornerRadius::same(2), col);
                 }
             }
@@ -718,7 +718,7 @@ impl App {
                         if classify_token(&tok, cwd, home.as_deref()).is_some() {
                             if let Some(i) = vis_index(abs) {
                                 let y = row_y(i) + ch - 1.5;
-                                painter.hline(inner.left() + s as f32 * cw..=inner.left() + e as f32 * cw, y, Stroke::new(1.5_f32, theme::ACCENT));
+                                painter.hline(inner.left() + s as f32 * cw..=inner.left() + e as f32 * cw, y, Stroke::new(1.5_f32, theme::accent()));
                                 ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
                             }
                         }
@@ -753,8 +753,8 @@ impl App {
                 let state = b.state();
                 let color = match state {
                     BlockState::Prompt => None,
-                    BlockState::Running => Some(theme::ACCENT),
-                    BlockState::Done => Some(if b.exit == Some(0) { theme::tint(theme::SUCCESS, 150) } else { theme::ERROR }),
+                    BlockState::Running => Some(theme::accent()),
+                    BlockState::Done => Some(if b.exit == Some(0) { theme::tint(theme::success(), 150) } else { theme::error() }),
                 };
                 let gut = Rect::from_min_max(pos2(body.left() + 4.0, y0 + 1.0), pos2(body.left() + 7.0, y1 - 1.0));
                 if let Some(c) = color {
@@ -776,7 +776,7 @@ impl App {
                 let in_block = hover.map(|h| h.y >= y0 && h.y < y1).unwrap_or(false)
                     || ui.input(|i| i.pointer.hover_pos()).map(|h| h.y >= y0 && h.y < y1 && h.x > inner.right() - 160.0 && body.contains(h)).unwrap_or(false);
                 if in_block && state != BlockState::Prompt {
-                    painter.rect_filled(Rect::from_min_max(pos2(body.left() + gutter - 4.0, y0), pos2(inner.right(), y1)), CornerRadius::same(3), theme::tint(theme::TEXT, 6));
+                    painter.rect_filled(Rect::from_min_max(pos2(body.left() + gutter - 4.0, y0), pos2(inner.right(), y1)), CornerRadius::same(3), theme::tint(theme::text(), 6));
                 }
                 // Badge / toolbar on the prompt line.
                 let Some(ip) = vis_index(b.prompt_line) else { continue };
@@ -810,10 +810,10 @@ impl App {
                 } else if state != BlockState::Prompt {
                     let dur = b.elapsed().map(fmt_dur).unwrap_or_default();
                     let (icon, col, label) = match (state, b.exit) {
-                        (BlockState::Running, _) => (Icon::Dot, theme::ACCENT, dur),
-                        (_, Some(0)) => (Icon::Check, theme::SUCCESS, dur),
-                        (_, Some(code)) => (Icon::Cross, theme::ERROR, format!("exit {code} · {dur}")),
-                        _ => (Icon::Dot, theme::TEXT_FAINT, dur),
+                        (BlockState::Running, _) => (Icon::Dot, theme::accent(), dur),
+                        (_, Some(0)) => (Icon::Check, theme::success(), dur),
+                        (_, Some(code)) => (Icon::Cross, theme::error(), format!("exit {code} · {dur}")),
+                        _ => (Icon::Dot, theme::text_faint(), dur),
                     };
                     let f = FontId::proportional(11.5);
                     let g = painter.layout_no_wrap(label, f, col);
@@ -871,23 +871,23 @@ impl App {
             cursor_rect = Some(r);
             if show_cursor && p.composer.is_none() {
                 if focused {
-                    painter.rect_filled(r, CornerRadius::same(1), theme::CURSOR);
+                    painter.rect_filled(r, CornerRadius::same(1), theme::cursor());
                     if let Some(c) = t.screen.get(t.cy).and_then(|r| r.cells.get(t.cx)) {
                         if c.ch != ' ' {
-                            let g = painter.layout_no_wrap(c.ch.to_string(), font.clone(), theme::BG_TERM);
-                            painter.galley(pos2(r.left() + (r.width() - g.size().x) / 2.0, r.top() + (ch - g.size().y) / 2.0), g, theme::BG_TERM);
+                            let g = painter.layout_no_wrap(c.ch.to_string(), font.clone(), theme::bg_term());
+                            painter.galley(pos2(r.left() + (r.width() - g.size().x) / 2.0, r.top() + (ch - g.size().y) / 2.0), g, theme::bg_term());
                         }
                     }
                 } else {
-                    painter.rect_stroke(r.shrink(0.5), CornerRadius::same(1), Stroke::new(1.0_f32, theme::TEXT_DIM), StrokeKind::Inside);
+                    painter.rect_stroke(r.shrink(0.5), CornerRadius::same(1), Stroke::new(1.0_f32, theme::text_dim()), StrokeKind::Inside);
                 }
             }
             if focused && !p.preedit.is_empty() {
-                let g = painter.layout_no_wrap(p.preedit.clone(), font.clone(), theme::TEXT);
+                let g = painter.layout_no_wrap(p.preedit.clone(), font.clone(), theme::text());
                 let pr = Rect::from_min_size(r.min, vec2(g.size().x.max(cw), ch));
-                painter.rect_filled(pr, CornerRadius::ZERO, theme::BG_RAISED);
-                painter.galley(pr.min, g, theme::TEXT);
-                painter.hline(pr.x_range(), pr.bottom() - 1.0, Stroke::new(1.0_f32, theme::ACCENT));
+                painter.rect_filled(pr, CornerRadius::ZERO, theme::bg_raised());
+                painter.galley(pr.min, g, theme::text());
+                painter.hline(pr.x_range(), pr.bottom() - 1.0, Stroke::new(1.0_f32, theme::accent()));
             }
         }
         if focused {
@@ -902,12 +902,12 @@ impl App {
             let h = (inner.height() * rows as f32 / n).max(16.0);
             let frac = top as f32 / (n - rows as f32).max(1.0);
             let y = inner.top() + (inner.height() - h) * frac;
-            painter.rect_filled(Rect::from_min_size(pos2(body.right() - 5.0, y), vec2(3.0, h)), CornerRadius::same(2), theme::tint(theme::TEXT_DIM, 120));
+            painter.rect_filled(Rect::from_min_size(pos2(body.right() - 5.0, y), vec2(3.0, h)), CornerRadius::same(2), theme::tint(theme::text_dim(), 120));
             let label = format!("{} lines below — scroll or type to return", p.scroll);
-            let g = painter.layout_no_wrap(label, FontId::proportional(11.5), theme::TEXT);
+            let g = painter.layout_no_wrap(label, FontId::proportional(11.5), theme::text());
             let r = Rect::from_min_size(pos2(inner.right() - g.size().x - 16.0, inner.bottom() - g.size().y - 10.0), g.size() + vec2(12.0, 6.0));
-            painter.rect_filled(r, CornerRadius::same(5), theme::BG_RAISED);
-            painter.galley(r.min + vec2(6.0, 3.0), g, theme::TEXT);
+            painter.rect_filled(r, CornerRadius::same(5), theme::bg_raised());
+            painter.galley(r.min + vec2(6.0, 3.0), g, theme::text());
         }
 
         // Exited banner.
@@ -917,22 +917,22 @@ impl App {
                 None => "process exited — Enter: restart · Ctrl+Shift+W: close".to_string(),
             };
             let r = Rect::from_min_size(pos2(inner.left(), inner.bottom() - ch - 10.0), vec2(inner.width(), ch + 8.0));
-            painter.rect_filled(r, CornerRadius::same(5), theme::tint(theme::WARN, 30));
-            painter.text(pos2(r.left() + 10.0, r.center().y), Align2::LEFT_CENTER, msg, FontId::proportional(12.5), theme::WARN);
+            painter.rect_filled(r, CornerRadius::same(5), theme::tint(theme::warn(), 30));
+            painter.text(pos2(r.left() + 10.0, r.center().y), Align2::LEFT_CENTER, msg, FontId::proportional(12.5), theme::warn());
         }
 
         // Header (split layouts) and focus ring.
         if multi {
             let hr = Rect::from_min_max(rect.min, pos2(rect.right(), rect.top() + header_h));
-            painter.rect_filled(hr, CornerRadius::ZERO, theme::BG_BASE);
+            painter.rect_filled(hr, CornerRadius::ZERO, theme::bg_base());
             if active {
-                painter.hline(hr.x_range(), hr.bottom() - 1.0, Stroke::new(2.0_f32, theme::ACCENT));
+                painter.hline(hr.x_range(), hr.bottom() - 1.0, Stroke::new(2.0_f32, theme::accent()));
             }
-            icons::paint(&painter, Rect::from_min_size(hr.min + vec2(8.0, 5.0), vec2(14.0, 14.0)), Icon::Terminal, if active { theme::ACCENT } else { theme::TEXT_FAINT });
+            icons::paint(&painter, Rect::from_min_size(hr.min + vec2(8.0, 5.0), vec2(14.0, 14.0)), Icon::Terminal, if active { theme::accent() } else { theme::text_faint() });
             let title = if t.title.is_empty() { p.title() } else { format!("{} — {}", p.title(), t.title) };
             let bx = hr.right() - 26.0;
             let title_clip = Rect::from_min_max(hr.min, pos2(bx - 6.0, hr.bottom()));
-            painter.with_clip_rect(title_clip).text(pos2(hr.left() + 28.0, hr.center().y), Align2::LEFT_CENTER, title, FontId::proportional(12.0), if active { theme::TEXT } else { theme::TEXT_DIM });
+            painter.with_clip_rect(title_clip).text(pos2(hr.left() + 28.0, hr.center().y), Align2::LEFT_CENTER, title, FontId::proportional(12.0), if active { theme::text() } else { theme::text_dim() });
             if icons::overlay_button(ui, Rect::from_min_size(pos2(bx, hr.top() + 2.0), vec2(20.0, 20.0)), Id::new(("close", id)), Icon::Cross, "close pane (Ctrl+Shift+W)").clicked() {
                 acts.push(Action::ClosePane(id));
             }
@@ -946,7 +946,7 @@ impl App {
         if let Some(at) = p.bell_at {
             let a = 1.0 - at.elapsed().as_secs_f32() / 0.6;
             if a > 0.0 {
-                painter.rect_stroke(body.shrink(1.0), CornerRadius::same(2), Stroke::new(2.0_f32, theme::tint(theme::WARN, (a * 200.0) as u8)), StrokeKind::Inside);
+                painter.rect_stroke(body.shrink(1.0), CornerRadius::same(2), Stroke::new(2.0_f32, theme::tint(theme::warn(), (a * 200.0) as u8)), StrokeKind::Inside);
                 ui.ctx().request_repaint();
             }
         }
@@ -1024,9 +1024,9 @@ impl App {
         let top = cursor.map(|r| r.top()).unwrap_or(inner.bottom() - h).min(inner.bottom() - h).max(inner.top());
         let rect = Rect::from_min_size(pos2(inner.left() - 4.0, top), vec2(inner.width() + 4.0, h));
         let painter = ui.painter();
-        painter.rect_filled(rect.expand(2.0), CornerRadius::same(7), theme::tint(theme::BG_TERM, 230));
-        painter.rect_filled(rect, CornerRadius::same(6), theme::BG_RAISED);
-        painter.rect_stroke(rect, CornerRadius::same(6), Stroke::new(1.0_f32, theme::tint(theme::ACCENT, 160)), StrokeKind::Inside);
+        painter.rect_filled(rect.expand(2.0), CornerRadius::same(7), theme::tint(theme::bg_term(), 230));
+        painter.rect_filled(rect, CornerRadius::same(6), theme::bg_raised());
+        painter.rect_stroke(rect, CornerRadius::same(6), Stroke::new(1.0_f32, theme::tint(theme::accent(), 160)), StrokeKind::Inside);
 
         let has_focus = ui.memory(|m| m.has_focus(cid));
         let suggestion = if c.text.is_empty() || c.text.contains('\n') {
@@ -1111,8 +1111,8 @@ impl App {
             .desired_width(f32::INFINITY)
             .desired_rows(lines)
             .lock_focus(true)
-            .text_color(theme::TEXT)
-            .hint_text(egui::RichText::new("type a command — runs in the shell when you press Enter").color(theme::TEXT_FAINT));
+            .text_color(theme::text())
+            .hint_text(egui::RichText::new("type a command — runs in the shell when you press Enter").color(theme::text_faint()));
         let r = child.add(edit);
         if c.focus {
             r.request_focus();
@@ -1125,22 +1125,22 @@ impl App {
         if c.cands.len() > 1 {
             child.horizontal_wrapped(|ui| {
                 for (k, cand) in c.cands.iter().take(16).enumerate() {
-                    let col = if k == c.cand_idx { theme::ACCENT } else { theme::TEXT_DIM };
+                    let col = if k == c.cand_idx { theme::accent() } else { theme::text_dim() };
                     ui.label(egui::RichText::new(cand).monospace().color(col));
                 }
                 if c.cands.len() > 16 {
-                    ui.label(egui::RichText::new(format!("+{} more", c.cands.len() - 16)).color(theme::TEXT_FAINT));
+                    ui.label(egui::RichText::new(format!("+{} more", c.cands.len() - 16)).color(theme::text_faint()));
                 }
             });
         }
         child.horizontal(|ui| {
-            let small = |s: &str| egui::RichText::new(s).size(11.0).color(theme::TEXT_FAINT);
+            let small = |s: &str| egui::RichText::new(s).size(11.0).color(theme::text_faint());
             ui.label(small("Enter run · Shift+Enter newline · Tab complete · ↑↓ history · Esc close"));
             if c.pending {
                 ui.spinner();
             }
             if let Some(s) = suggestion.as_ref() {
-                ui.label(egui::RichText::new(format!("→ {s}")).size(11.0).color(theme::TEXT_DIM));
+                ui.label(egui::RichText::new(format!("→ {s}")).size(11.0).color(theme::text_dim()));
             }
         });
         if submit {
@@ -1166,8 +1166,8 @@ impl App {
             s.cur = s.cur.min(s.hits.len().saturating_sub(1));
         }
         let rect = Rect::from_min_size(pos2(inner.right() - 360.0, inner.top() + 2.0), vec2(356.0, 32.0));
-        ui.painter().rect_filled(rect, CornerRadius::same(6), theme::BG_RAISED);
-        ui.painter().rect_stroke(rect, CornerRadius::same(6), Stroke::new(1.0_f32, theme::BORDER), StrokeKind::Inside);
+        ui.painter().rect_filled(rect, CornerRadius::same(6), theme::bg_raised());
+        ui.painter().rect_stroke(rect, CornerRadius::same(6), Stroke::new(1.0_f32, theme::border()), StrokeKind::Inside);
         let sid = Id::new(("search", id));
         let mut jump: Option<i32> = None;
         let mut close = false;
@@ -1184,7 +1184,7 @@ impl App {
         }
         let mut child = ui.new_child(UiBuilder::new().max_rect(rect.shrink2(vec2(8.0, 5.0))).id_salt(("search-ui", id)));
         child.horizontal(|ui| {
-            icons::paint(ui.painter(), Rect::from_min_size(ui.cursor().min + vec2(0.0, 3.0), vec2(16.0, 16.0)), Icon::Search, theme::TEXT_DIM);
+            icons::paint(ui.painter(), Rect::from_min_size(ui.cursor().min + vec2(0.0, 3.0), vec2(16.0, 16.0)), Icon::Search, theme::text_dim());
             ui.add_space(20.0);
             let r = ui.add(TextEdit::singleline(&mut s.query).id(sid).desired_width(170.0).hint_text("find in scrollback"));
             if s.focus {
@@ -1196,7 +1196,7 @@ impl App {
                 s.cur = s.hits.len();
             }
             let label = if s.hits.is_empty() { "0/0".to_string() } else { format!("{}/{}", s.cur + 1, s.hits.len()) };
-            ui.label(egui::RichText::new(label).size(11.5).color(theme::TEXT_DIM));
+            ui.label(egui::RichText::new(label).size(11.5).color(theme::text_dim()));
             if ui.selectable_label(s.icase, "Aa").on_hover_text("ignore case").clicked() {
                 s.icase = !s.icase;
                 s.seen_generation = u64::MAX;

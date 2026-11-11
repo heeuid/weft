@@ -62,12 +62,12 @@ pub fn layout(text: &str, ext: &str, font: FontId, find: &str) -> LayoutJob {
     let kws = keywords(ext);
     let comments = comment_prefix(ext);
     let fmt = |c: Color32| TextFormat { font_id: font.clone(), color: c, ..Default::default() };
-    let c_text = theme::TEXT;
-    let c_kw = theme::ANSI[5];
-    let c_str = theme::ANSI[2];
-    let c_num = theme::ANSI[3];
-    let c_com = theme::TEXT_FAINT;
-    let c_fn = theme::ANSI[4];
+    let c_text = theme::text();
+    let c_kw = theme::ansi(5);
+    let c_str = theme::ansi(2);
+    let c_num = theme::ansi(3);
+    let c_com = theme::text_faint();
+    let c_fn = theme::ansi(4);
 
     let mut spans: Vec<(usize, usize, Color32)> = Vec::new();
     let bytes = text.as_bytes();

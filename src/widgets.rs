@@ -54,13 +54,13 @@ fn clip_text(s: &str, max_chars: usize) -> String {
 /// Header cell; returns true when clicked (sort toggle).
 fn header_cell(ui: &mut Ui, r: Rect, id: Id, label: &str, sorted: Option<bool>, right: bool) -> bool {
     let resp = ui.interact(r, id, Sense::click());
-    let col = if resp.hovered() || sorted.is_some() { theme::TEXT } else { theme::TEXT_DIM };
+    let col = if resp.hovered() || sorted.is_some() { theme::text() } else { theme::text_dim() };
     let font = FontId::proportional(11.5);
     let (pos, align) = if right { (pos2(r.right() - 14.0, r.center().y), Align2::RIGHT_CENTER) } else { (pos2(r.left() + 2.0, r.center().y), Align2::LEFT_CENTER) };
     let tr = ui.painter().text(pos, align, label, font, col);
     if let Some(asc) = sorted {
         let ir = Rect::from_min_size(pos2(if right { r.right() - 13.0 } else { tr.right() + 2.0 }, r.center().y - 5.0), vec2(10.0, 10.0));
-        icons::paint(ui.painter(), ir, if asc { Icon::Up } else { Icon::ChevronDown }, theme::ACCENT);
+        icons::paint(ui.painter(), ir, if asc { Icon::Up } else { Icon::ChevronDown }, theme::accent());
     }
     resp.clicked()
 }
@@ -86,7 +86,7 @@ pub fn ui_widget(
     acts: &mut Vec<Action>,
 ) {
     let painter = ui.painter().clone();
-    painter.rect_filled(r, CornerRadius::same(4), theme::BG_BASE);
+    painter.rect_filled(r, CornerRadius::same(4), theme::bg_base());
     let row_rect = |i: usize| Rect::from_min_size(pos2(r.left(), r.top() + i as f32 * ch), vec2(r.width(), ch));
     let wid = Id::new(("w", pane, w.id.clone()));
 
@@ -94,43 +94,43 @@ pub fn ui_widget(
         WidgetKind::Progress { pct, label } => {
             let rr = row_rect(0).shrink2(vec2(4.0, 3.0));
             let bar = Rect::from_min_size(rr.min, vec2((rr.width() * 0.45).min(420.0), rr.height()));
-            painter.rect_filled(bar, CornerRadius::same(3), theme::BG_RAISED);
+            painter.rect_filled(bar, CornerRadius::same(3), theme::bg_raised());
             let done = *pct >= 100.0;
             let fill = Rect::from_min_size(bar.min, vec2(bar.width() * *pct / 100.0, bar.height()));
-            painter.rect_filled(fill, CornerRadius::same(3), if done { theme::SUCCESS } else { theme::ACCENT });
+            painter.rect_filled(fill, CornerRadius::same(3), if done { theme::success() } else { theme::accent() });
             painter.text(
                 pos2(bar.right() + 10.0, rr.center().y),
                 Align2::LEFT_CENTER,
                 format!("{:>3.0}%  {}", pct, label),
                 FontId::proportional(12.0),
-                theme::TEXT,
+                theme::text(),
             );
         }
 
         WidgetKind::Choose { options } => {
             let hr = row_rect(0);
             let msg = if w.chosen.is_some() { "chosen" } else { "choose one — click, or type its number and Enter" };
-            painter.text(pos2(hr.left() + 6.0, hr.center().y), Align2::LEFT_CENTER, msg, FontId::proportional(12.0), theme::TEXT_DIM);
+            painter.text(pos2(hr.left() + 6.0, hr.center().y), Align2::LEFT_CENTER, msg, FontId::proportional(12.0), theme::text_dim());
             for (i, opt) in options.iter().enumerate() {
                 let rr = row_rect(i + 1).shrink2(vec2(2.0, 1.0));
                 let resp = ui.interact(rr, wid.with(i), Sense::click());
                 let chosen = w.chosen == Some(i);
                 let live = w.chosen.is_none();
                 let bg = if chosen {
-                    theme::tint(theme::ACCENT, 50)
+                    theme::tint(theme::accent(), 50)
                 } else if live && resp.hovered() {
-                    theme::BG_HOVER
+                    theme::bg_hover()
                 } else {
-                    theme::BG_BASE
+                    theme::bg_base()
                 };
                 painter.rect_filled(rr, CornerRadius::same(4), bg);
                 let badge = Rect::from_min_size(pos2(rr.left() + 4.0, rr.top() + 2.0), vec2(ch + 4.0, rr.height() - 4.0));
-                painter.rect_filled(badge, CornerRadius::same(3), theme::BG_RAISED);
-                painter.text(badge.center(), Align2::CENTER_CENTER, format!("{}", i + 1), FontId::proportional(11.0), theme::TEXT_DIM);
-                let col = if live || chosen { theme::TEXT } else { theme::TEXT_FAINT };
+                painter.rect_filled(badge, CornerRadius::same(3), theme::bg_raised());
+                painter.text(badge.center(), Align2::CENTER_CENTER, format!("{}", i + 1), FontId::proportional(11.0), theme::text_dim());
+                let col = if live || chosen { theme::text() } else { theme::text_faint() };
                 painter.text(pos2(badge.right() + 8.0, rr.center().y), Align2::LEFT_CENTER, opt, font.clone(), col);
                 if chosen {
-                    icons::paint(&painter, Rect::from_min_size(pos2(rr.right() - ch - 4.0, rr.top() + 1.0), vec2(ch - 2.0, ch - 2.0)), Icon::Check, theme::ACCENT);
+                    icons::paint(&painter, Rect::from_min_size(pos2(rr.right() - ch - 4.0, rr.top() + 1.0), vec2(ch - 2.0, ch - 2.0)), Icon::Check, theme::accent());
                 }
                 if live && resp.hovered() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -154,7 +154,7 @@ pub fn ui_widget(
             let mode_r = Rect::from_min_size(pos2(time_r.right(), hr.top()), vec2(mode_w, ch));
             let s = w.sort;
             let st = |c: usize| s.filter(|x| x.0 == c).map(|x| x.1);
-            painter.hline(hr.x_range(), hr.bottom() - 0.5, Stroke::new(1.0_f32, theme::BORDER));
+            painter.hline(hr.x_range(), hr.bottom() - 0.5, Stroke::new(1.0_f32, theme::border()));
             if header_cell(ui, name_r, wid.with("h0"), "Name", st(0), false) {
                 toggle_sort(&mut w.sort, 0);
             }
@@ -193,18 +193,18 @@ pub fn ui_widget(
                 }
                 let resp = ui.interact(rr, wid.with(("row", ei)), Sense::click());
                 if resp.hovered() {
-                    painter.rect_filled(rr, CornerRadius::same(3), theme::BG_HOVER);
+                    painter.rect_filled(rr, CornerRadius::same(3), theme::bg_hover());
                 }
                 let ir = Rect::from_min_size(pos2(rr.left() + 4.0, rr.top() + 2.0), vec2(ch - 4.0, ch - 4.0));
-                icons::paint(&painter, ir, if e.dir { Icon::Folder } else { Icon::File }, if e.dir { theme::ANSI[4] } else { theme::TEXT_FAINT });
-                let ncol = if e.dir { theme::ANSI[12] } else { theme::TEXT };
+                icons::paint(&painter, ir, if e.dir { Icon::Folder } else { Icon::File }, if e.dir { theme::ansi(4) } else { theme::text_faint() });
+                let ncol = if e.dir { theme::ansi(12) } else { theme::text() };
                 painter.text(pos2(name_r.left(), rr.center().y), Align2::LEFT_CENTER, clip_text(&e.name, name_chars), font.clone(), ncol);
                 let small = FontId::proportional(11.5);
                 if !e.dir {
-                    painter.text(pos2(size_r.right() - 14.0, rr.center().y), Align2::RIGHT_CENTER, human_size(e.size), small.clone(), theme::TEXT_DIM);
+                    painter.text(pos2(size_r.right() - 14.0, rr.center().y), Align2::RIGHT_CENTER, human_size(e.size), small.clone(), theme::text_dim());
                 }
-                painter.text(pos2(time_r.right() - 14.0, rr.center().y), Align2::RIGHT_CENTER, ago(e.mtime), small.clone(), theme::TEXT_DIM);
-                painter.text(pos2(mode_r.right() - 14.0, rr.center().y), Align2::RIGHT_CENTER, &e.mode, font.clone(), theme::TEXT_FAINT);
+                painter.text(pos2(time_r.right() - 14.0, rr.center().y), Align2::RIGHT_CENTER, ago(e.mtime), small.clone(), theme::text_dim());
+                painter.text(pos2(mode_r.right() - 14.0, rr.center().y), Align2::RIGHT_CENTER, &e.mode, font.clone(), theme::text_faint());
                 if resp.double_clicked() {
                     if e.dir {
                         if at_prompt {
@@ -274,7 +274,7 @@ pub fn ui_widget(
                 })
                 .collect();
             let hr = row_rect(0);
-            painter.hline(hr.x_range(), hr.bottom() - 0.5, Stroke::new(1.0_f32, theme::BORDER));
+            painter.hline(hr.x_range(), hr.bottom() - 0.5, Stroke::new(1.0_f32, theme::border()));
             for c in 0..ncol {
                 let cr = Rect::from_min_size(pos2(xs[c], hr.top()), vec2((widths[c] + 1) as f32 * cw, ch));
                 let sorted = w.sort.filter(|s| s.0 == c).map(|s| s.1);
@@ -300,14 +300,14 @@ pub fn ui_widget(
                 }
                 let resp = ui.interact(rr, wid.with(("r", di)), Sense::click());
                 if resp.hovered() {
-                    painter.rect_filled(rr, CornerRadius::same(3), theme::BG_HOVER);
+                    painter.rect_filled(rr, CornerRadius::same(3), theme::bg_hover());
                 } else if row % 2 == 1 {
-                    painter.rect_filled(rr, CornerRadius::ZERO, theme::tint(theme::TEXT, 4));
+                    painter.rect_filled(rr, CornerRadius::ZERO, theme::tint(theme::text(), 4));
                 }
                 for c in 0..ncol {
                     let cell = data[di].get(c).map(|s| s.as_str()).unwrap_or("");
                     let text = clip_text(cell, widths[c]);
-                    let col = if c == 0 { theme::TEXT } else { theme::TEXT_DIM };
+                    let col = if c == 0 { theme::text() } else { theme::text_dim() };
                     if numeric[c] {
                         painter.text(pos2(xs[c] + (widths[c] + 1) as f32 * cw - 14.0, rr.center().y), Align2::RIGHT_CENTER, text, font.clone(), col);
                     } else {

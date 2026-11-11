@@ -26,23 +26,27 @@ struct WeftApp {
 impl eframe::App for WeftApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let app = &mut self.app;
+        let light = theme::wants_light(app.settings.theme, ctx);
+        if light != theme::is_light() {
+            theme::apply(ctx, light);
+        }
         app.poll();
         app.handle_global_keys(ctx);
 
         egui::TopBottomPanel::top("tabs")
             .exact_height(34.0)
-            .frame(egui::Frame::new().fill(theme::BG_BASE).inner_margin(egui::Margin { left: 6, right: 6, top: 4, bottom: 0 }))
+            .frame(egui::Frame::new().fill(theme::bg_base()).inner_margin(egui::Margin { left: 6, right: 6, top: 4, bottom: 0 }))
             .show(ctx, |ui| app.ui_tabbar(ui));
         egui::TopBottomPanel::bottom("status")
             .exact_height(24.0)
-            .frame(egui::Frame::new().fill(theme::BG_BASE).inner_margin(egui::Margin::symmetric(10, 0)))
+            .frame(egui::Frame::new().fill(theme::bg_base()).inner_margin(egui::Margin::symmetric(10, 0)))
             .show(ctx, |ui| app.ui_status(ui));
         if app.settings.sidebar {
             egui::SidePanel::left("side")
                 .resizable(true)
                 .default_width(280.0)
                 .width_range(200.0..=520.0)
-                .frame(egui::Frame::new().fill(theme::BG_BASE).inner_margin(egui::Margin::symmetric(8, 0)))
+                .frame(egui::Frame::new().fill(theme::bg_base()).inner_margin(egui::Margin::symmetric(8, 0)))
                 .show(ctx, |ui| app.ui_sidebar(ui));
         }
         if app.editor.visible {
@@ -51,10 +55,10 @@ impl eframe::App for WeftApp {
                 .resizable(true)
                 .default_width((w * 0.42).max(360.0))
                 .width_range(280.0..=w * 0.75)
-                .frame(egui::Frame::new().fill(theme::BG_BASE).inner_margin(egui::Margin::symmetric(8, 6)))
+                .frame(egui::Frame::new().fill(theme::bg_base()).inner_margin(egui::Margin::symmetric(8, 6)))
                 .show(ctx, |ui| app.ui_editor(ui));
         }
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::BG_TERM)).show(ctx, |ui| app.ui_panes(ui));
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::bg_term())).show(ctx, |ui| app.ui_panes(ui));
 
         app.ui_palette(ctx);
         app.ui_connect(ctx);
@@ -126,7 +130,7 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(|cc| {
             theme::install_fonts(&cc.egui_ctx);
-            theme::apply_style(&cc.egui_ctx);
+            theme::apply(&cc.egui_ctx, false);
             cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
             Ok(Box::new(WeftApp { app: App::new(cc.egui_ctx.clone()) }))
         }),

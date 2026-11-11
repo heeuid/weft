@@ -32,6 +32,8 @@ pub struct Settings {
     #[serde(default)]
     pub show_hidden: bool,
     #[serde(default)]
+    pub theme: crate::theme::ThemeMode,
+    #[serde(default)]
     pub session: Vec<SavedNode>,
 }
 
@@ -50,7 +52,7 @@ impl Default for Settings {
                 },
             });
         }
-        Settings { font_size: d_font(), profiles, sidebar: true, show_hidden: false, session: Vec::new() }
+        Settings { font_size: d_font(), profiles, sidebar: true, show_hidden: false, theme: Default::default(), session: Vec::new() }
     }
 }
 

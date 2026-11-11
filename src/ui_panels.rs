@@ -16,9 +16,9 @@ use std::time::Duration;
 
 pub fn host_color(host: &str) -> Color32 {
     if host == "local" {
-        return theme::TEXT_DIM;
+        return theme::text_dim();
     }
-    let palette = [theme::ACCENT, theme::ANSI[6], theme::ANSI[5], theme::ANSI[3], theme::ANSI[2], theme::ANSI[9]];
+    let palette = [theme::accent(), theme::ansi(6), theme::ansi(5), theme::ansi(3), theme::ansi(2), theme::ansi(9)];
     let h = host.bytes().fold(7u32, |a, b| a.wrapping_mul(31).wrapping_add(b as u32));
     palette[(h as usize) % palette.len()]
 }
@@ -43,6 +43,9 @@ enum Cmd {
     Reconnect,
     FontUp,
     FontDown,
+    ThemeDark,
+    ThemeLight,
+    ThemeSystem,
     Hidden,
     Settings,
     AgentLog,
@@ -68,6 +71,9 @@ const COMMANDS: &[(Cmd, &str, &str)] = &[
     (Cmd::Reconnect, "Reconnect agent for this host", ""),
     (Cmd::FontUp, "Bigger font", "Ctrl+="),
     (Cmd::FontDown, "Smaller font", "Ctrl+-"),
+    (Cmd::ThemeDark, "Theme: dark", ""),
+    (Cmd::ThemeLight, "Theme: light", ""),
+    (Cmd::ThemeSystem, "Theme: follow system", ""),
     (Cmd::Settings, "Open settings.json", ""),
     (Cmd::AgentLog, "Open agent log for this host", ""),
 ];
@@ -150,6 +156,9 @@ impl App {
             }
             Cmd::FontUp => self.settings.font_size = (self.settings.font_size + 1.0).min(32.0),
             Cmd::FontDown => self.settings.font_size = (self.settings.font_size - 1.0).max(8.0),
+            Cmd::ThemeDark => self.settings.theme = theme::ThemeMode::Dark,
+            Cmd::ThemeLight => self.settings.theme = theme::ThemeMode::Light,
+            Cmd::ThemeSystem => self.settings.theme = theme::ThemeMode::System,
             Cmd::Hidden => {
                 self.settings.show_hidden = !self.settings.show_hidden;
                 self.dir_cache.clear();
@@ -243,16 +252,16 @@ impl App {
                 let running = p.term.blocks.last().map(|b| b.state() == BlockState::Running).unwrap_or(false);
                 let active = ti == self.active_tab;
                 let font = FontId::proportional(12.5);
-                let galley = ui.painter().layout_no_wrap(title.clone(), font, if active { theme::TEXT } else { theme::TEXT_DIM });
+                let galley = ui.painter().layout_no_wrap(title.clone(), font, if active { theme::text() } else { theme::text_dim() });
                 let w = (galley.size().x + 52.0).clamp(110.0, 260.0);
                 let (rect, resp) = ui.allocate_exact_size(vec2(w, 28.0), Sense::click());
                 let hovered = resp.hovered();
                 let bg = if active {
-                    theme::BG_TERM
+                    theme::bg_term()
                 } else if hovered {
-                    theme::BG_HOVER
+                    theme::bg_hover()
                 } else {
-                    theme::BG_BASE
+                    theme::bg_base()
                 };
                 ui.painter().rect_filled(rect, CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }, bg);
                 if active {
@@ -261,7 +270,7 @@ impl App {
                 let dot = Rect2::dot(rect);
                 if running {
                     let phase = (ui.input(|i| i.time) * 3.0).sin() as f32 * 0.5 + 0.5;
-                    ui.painter().circle_filled(dot, 3.5, theme::tint(theme::ACCENT, (110.0 + 145.0 * phase) as u8));
+                    ui.painter().circle_filled(dot, 3.5, theme::tint(theme::accent(), (110.0 + 145.0 * phase) as u8));
                     ui.ctx().request_repaint_after(Duration::from_millis(60));
                 } else {
                     ui.painter().circle_filled(dot, 3.5, host_color(&p.host));
@@ -271,16 +280,16 @@ impl App {
                 if g.size().x > text_w {
                     let mut t: String = title.chars().take(((text_w / 7.0) as usize).max(4)).collect();
                     t.push('…');
-                    g = ui.painter().layout_no_wrap(t, FontId::proportional(12.5), if active { theme::TEXT } else { theme::TEXT_DIM });
+                    g = ui.painter().layout_no_wrap(t, FontId::proportional(12.5), if active { theme::text() } else { theme::text_dim() });
                 }
-                ui.painter().galley(pos2(rect.left() + 22.0, rect.center().y - g.size().y / 2.0), g, theme::TEXT);
+                ui.painter().galley(pos2(rect.left() + 22.0, rect.center().y - g.size().y / 2.0), g, theme::text());
                 let cr = egui::Rect::from_center_size(pos2(rect.right() - 15.0, rect.center().y), vec2(18.0, 18.0));
                 if hovered || active {
                     let cresp = ui.interact(cr, Id::new(("tabclose", ti)), Sense::click());
                     if cresp.hovered() {
-                        ui.painter().rect_filled(cr, CornerRadius::same(4), theme::BG_HOVER);
+                        ui.painter().rect_filled(cr, CornerRadius::same(4), theme::bg_hover());
                     }
-                    icons::paint(ui.painter(), cr.shrink(4.5), Icon::Cross, if cresp.hovered() { theme::TEXT } else { theme::TEXT_FAINT });
+                    icons::paint(ui.painter(), cr.shrink(4.5), Icon::Cross, if cresp.hovered() { theme::text() } else { theme::text_faint() });
                     if cresp.clicked() {
                         close = Some(ti);
                     }
@@ -301,11 +310,15 @@ impl App {
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.add_space(6.0);
-                let ec = if self.editor.visible { theme::ACCENT } else { theme::TEXT_DIM };
+                let (ti, tip) = if theme::is_light() { (Icon::Moon, "switch to dark theme") } else { (Icon::Sun, "switch to light theme") };
+                if icons::button(ui, ti, tip).clicked() {
+                    self.settings.theme = if theme::is_light() { theme::ThemeMode::Dark } else { theme::ThemeMode::Light };
+                }
+                let ec = if self.editor.visible { theme::accent() } else { theme::text_dim() };
                 if icons::button_colored(ui, Icon::Editor, "editor (Ctrl+Shift+J)", ec).clicked() {
                     self.editor.visible = !self.editor.visible;
                 }
-                let sc = if self.settings.sidebar { theme::ACCENT } else { theme::TEXT_DIM };
+                let sc = if self.settings.sidebar { theme::accent() } else { theme::text_dim() };
                 if icons::button_colored(ui, Icon::Sidebar, "side panel (Ctrl+Shift+B)", sc).clicked() {
                     self.settings.sidebar = !self.settings.sidebar;
                 }
@@ -340,13 +353,13 @@ impl App {
             let (rect, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
             let status = self.conns.get(&host).map(|c| c.status.clone()).unwrap_or(ConnStatus::Connecting);
             let (dot, label) = match &status {
-                ConnStatus::Ready => (theme::SUCCESS, if host == "local" { "native fs".to_string() } else { "agent ready".to_string() }),
-                ConnStatus::Connecting => (theme::WARN, "agent connecting…".to_string()),
-                ConnStatus::Failed(e) => (theme::ERROR, format!("agent offline: {}", e.chars().take(80).collect::<String>())),
+                ConnStatus::Ready => (theme::success(), if host == "local" { "native fs".to_string() } else { "agent ready".to_string() }),
+                ConnStatus::Connecting => (theme::warn(), "agent connecting…".to_string()),
+                ConnStatus::Failed(e) => (theme::error(), format!("agent offline: {}", e.chars().take(80).collect::<String>())),
             };
             ui.painter().circle_filled(rect.center(), 4.0, dot);
-            ui.label(small(host.clone(), theme::TEXT));
-            let r = ui.label(small(label, theme::TEXT_DIM));
+            ui.label(small(host.clone(), theme::text()));
+            let r = ui.label(small(label, theme::text_dim()));
             if matches!(status, ConnStatus::Failed(_)) {
                 r.on_hover_text("Without a password the agent only uses keys / ssh-agent. Terminals work regardless.");
                 if ui.small_button("reconnect").clicked() {
@@ -357,12 +370,12 @@ impl App {
                 }
             }
             if let Some(cwd) = self.active_pane().and_then(|p| p.term.cwd.clone()) {
-                ui.label(small(cwd, theme::TEXT_FAINT));
+                ui.label(small(cwd, theme::text_faint()));
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.label(small("Ctrl+Space composer · Ctrl+Shift+P commands".into(), theme::TEXT_FAINT));
+                ui.label(small("Ctrl+Space composer · Ctrl+Shift+P commands".into(), theme::text_faint()));
                 if let Some(p) = self.active_pane() {
-                    ui.label(small(format!("{}×{}", p.term.cols, p.term.rows), theme::TEXT_FAINT));
+                    ui.label(small(format!("{}×{}", p.term.cols, p.term.rows), theme::text_faint()));
                 }
                 if let Some(s) = self.sys.get(&host) {
                     let mut parts = Vec::new();
@@ -376,7 +389,7 @@ impl App {
                         parts.push(format!("disk {} free", human_size(f as u64)));
                         let _ = t;
                     }
-                    ui.label(small(parts.join(" · "), theme::TEXT_DIM));
+                    ui.label(small(parts.join(" · "), theme::text_dim()));
                 }
             });
         });
@@ -390,7 +403,7 @@ impl App {
             ui.spacing_mut().item_spacing.x = 2.0;
             for (tab, label) in [(SideTab::Files, "Files"), (SideTab::Blocks, "Commands"), (SideTab::Search, "Search"), (SideTab::Procs, "Procs")] {
                 let sel = self.side.tab == tab;
-                let txt = RichText::new(label).size(12.5).color(if sel { theme::TEXT } else { theme::TEXT_DIM });
+                let txt = RichText::new(label).size(12.5).color(if sel { theme::text() } else { theme::text_dim() });
                 if ui.selectable_label(sel, txt).clicked() {
                     self.side.tab = tab;
                 }
@@ -416,7 +429,7 @@ impl App {
             match dir {
                 Some(d) => self.set_root(&host, &d),
                 None => {
-                    ui.label(RichText::new("waiting for the shell to report its directory…").color(theme::TEXT_FAINT));
+                    ui.label(RichText::new("waiting for the shell to report its directory…").color(theme::text_faint()));
                     return;
                 }
             }
@@ -427,7 +440,7 @@ impl App {
             ui.spacing_mut().item_spacing.x = 2.0;
             ui.painter().circle_filled(ui.cursor().min + vec2(5.0, 11.0), 3.5, host_color(&host));
             ui.add_space(12.0);
-            ui.label(RichText::new(&host).size(12.0).color(theme::TEXT));
+            ui.label(RichText::new(&host).size(12.0).color(theme::text()));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if icons::button(ui, Icon::Refresh, "refresh").clicked() {
                     self.actions.push(Action::ListDir(host.clone(), root.clone()));
@@ -440,7 +453,7 @@ impl App {
                     self.side.follow = false;
                     self.set_root(&host, &parent(&root));
                 }
-                let fc = if self.side.follow { theme::ACCENT } else { theme::TEXT_FAINT };
+                let fc = if self.side.follow { theme::accent() } else { theme::text_faint() };
                 if icons::button_colored(ui, Icon::Terminal, "follow the terminal's directory", fc).clicked() {
                     self.side.follow = !self.side.follow;
                     if self.side.follow {
@@ -463,7 +476,7 @@ impl App {
                 }
                 let label = if i == 0 && part.is_empty() { "/".to_string() } else { part.to_string() };
                 let last = i == parts.len() - 1;
-                let r = ui.add(egui::Label::new(RichText::new(label).size(11.5).color(if last { theme::TEXT } else { theme::TEXT_DIM })).sense(Sense::click()));
+                let r = ui.add(egui::Label::new(RichText::new(label).size(11.5).color(if last { theme::text() } else { theme::text_dim() })).sense(Sense::click()));
                 if r.hovered() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 }
@@ -472,7 +485,7 @@ impl App {
                     self.set_root(&host, &acc.clone());
                 }
                 if !last && i > 0 {
-                    ui.label(RichText::new(" / ").size(11.5).color(theme::TEXT_FAINT));
+                    ui.label(RichText::new(" / ").size(11.5).color(theme::text_faint()));
                 }
             }
         });
@@ -527,13 +540,13 @@ impl App {
             if loading {
                 ui.horizontal(|ui| {
                     ui.spinner();
-                    ui.label(RichText::new("listing…").color(theme::TEXT_FAINT));
+                    ui.label(RichText::new("listing…").color(theme::text_faint()));
                 });
             }
             if let Some(e) = &root_error {
-                ui.label(RichText::new(e).size(12.0).color(theme::ERROR));
+                ui.label(RichText::new(e).size(12.0).color(theme::error()));
             } else if rows.is_empty() && !loading {
-                ui.label(RichText::new("empty").color(theme::TEXT_FAINT));
+                ui.label(RichText::new("empty").color(theme::text_faint()));
             }
             for r in &rows {
                 let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
@@ -542,18 +555,18 @@ impl App {
                 }
                 let p = ui.painter();
                 if resp.hovered() {
-                    p.rect_filled(rect, CornerRadius::same(4), theme::BG_HOVER);
+                    p.rect_filled(rect, CornerRadius::same(4), theme::bg_hover());
                 }
                 let x = rect.left() + 4.0 + r.depth as f32 * 14.0;
                 if r.dir {
-                    icons::paint(p, egui::Rect::from_min_size(pos2(x, rect.top() + 5.0), vec2(12.0, 12.0)), if r.open { Icon::ChevronDown } else { Icon::ChevronRight }, theme::TEXT_FAINT);
+                    icons::paint(p, egui::Rect::from_min_size(pos2(x, rect.top() + 5.0), vec2(12.0, 12.0)), if r.open { Icon::ChevronDown } else { Icon::ChevronRight }, theme::text_faint());
                 }
-                icons::paint(p, egui::Rect::from_min_size(pos2(x + 14.0, rect.top() + 3.0), vec2(16.0, 16.0)), if r.dir { Icon::Folder } else { Icon::File }, if r.dir { theme::ANSI[4] } else { theme::TEXT_FAINT });
-                let name_col = if r.dir { theme::TEXT } else { theme::TEXT_DIM };
+                icons::paint(p, egui::Rect::from_min_size(pos2(x + 14.0, rect.top() + 3.0), vec2(16.0, 16.0)), if r.dir { Icon::Folder } else { Icon::File }, if r.dir { theme::ansi(4) } else { theme::text_faint() });
+                let name_col = if r.dir { theme::text() } else { theme::text_dim() };
                 let label = if r.link { format!("{} ↪", r.name) } else { r.name.clone() };
                 p.text(pos2(x + 34.0, rect.center().y), Align2::LEFT_CENTER, label, FontId::proportional(13.0), name_col);
                 if !r.dir {
-                    p.text(pos2(rect.right() - 6.0, rect.center().y), Align2::RIGHT_CENTER, human_size(r.size), FontId::proportional(11.0), theme::TEXT_FAINT);
+                    p.text(pos2(rect.right() - 6.0, rect.center().y), Align2::RIGHT_CENTER, human_size(r.size), FontId::proportional(11.0), theme::text_faint());
                 }
                 if resp.clicked() {
                     if r.dir {
@@ -616,7 +629,7 @@ impl App {
             let p = &self.panes[&id];
             let blocks: Vec<_> = p.term.blocks.iter().filter(|b| b.state() != BlockState::Prompt).collect();
             if blocks.is_empty() {
-                ui.label(RichText::new("Commands appear here once the shell integration reports them (bash via ssh, or local PowerShell).").color(theme::TEXT_FAINT));
+                ui.label(RichText::new("Commands appear here once the shell integration reports them (bash via ssh, or local PowerShell).").color(theme::text_faint()));
             }
             ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 for b in blocks.iter().rev() {
@@ -626,16 +639,16 @@ impl App {
                     }
                     let pt = ui.painter();
                     if resp.hovered() {
-                        pt.rect_filled(rect, CornerRadius::same(5), theme::BG_HOVER);
+                        pt.rect_filled(rect, CornerRadius::same(5), theme::bg_hover());
                     }
                     let (icon, col) = match (b.state(), b.exit) {
-                        (BlockState::Running, _) => (Icon::Dot, theme::ACCENT),
-                        (_, Some(0)) => (Icon::Check, theme::SUCCESS),
-                        _ => (Icon::Cross, theme::ERROR),
+                        (BlockState::Running, _) => (Icon::Dot, theme::accent()),
+                        (_, Some(0)) => (Icon::Check, theme::success()),
+                        _ => (Icon::Cross, theme::error()),
                     };
                     icons::paint(pt, egui::Rect::from_min_size(rect.min + vec2(6.0, 6.0), vec2(14.0, 14.0)), icon, col);
                     let cmd: String = b.command.chars().take(60).collect();
-                    pt.text(rect.min + vec2(26.0, 5.0), Align2::LEFT_TOP, cmd, FontId::monospace(12.5), theme::TEXT);
+                    pt.text(rect.min + vec2(26.0, 5.0), Align2::LEFT_TOP, cmd, FontId::monospace(12.5), theme::text());
                     let lines = match (b.out_line, b.end_line) {
                         (Some(o), Some(e)) => format!("{} lines", e.saturating_sub(o)),
                         _ => "running".into(),
@@ -644,7 +657,7 @@ impl App {
                         Some(c) if c != 0 => format!("exit {c} · {} · {lines}", b.elapsed().map(fmt_dur).unwrap_or_default()),
                         _ => format!("{} · {lines}", b.elapsed().map(fmt_dur).unwrap_or_default()),
                     };
-                    pt.text(rect.min + vec2(26.0, 23.0), Align2::LEFT_TOP, meta, FontId::proportional(11.0), theme::TEXT_FAINT);
+                    pt.text(rect.min + vec2(26.0, 23.0), Align2::LEFT_TOP, meta, FontId::proportional(11.0), theme::text_faint());
                     if resp.clicked() {
                         scroll_to = Some(b.prompt_line);
                     }
@@ -682,10 +695,10 @@ impl App {
 
     fn ui_grep(&mut self, ui: &mut Ui) {
         let Some((host, root)) = self.side.root.clone() else {
-            ui.label(RichText::new("open the Files tab first").color(theme::TEXT_FAINT));
+            ui.label(RichText::new("open the Files tab first").color(theme::text_faint()));
             return;
         };
-        ui.label(RichText::new(format!("in {host}:{root}")).size(11.5).color(theme::TEXT_FAINT));
+        ui.label(RichText::new(format!("in {host}:{root}")).size(11.5).color(theme::text_faint()));
         let r = ui.add(TextEdit::singleline(&mut self.side.grep_q).hint_text("text to find (Enter)").desired_width(f32::INFINITY));
         if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
             self.actions.push(Action::Grep);
@@ -704,7 +717,7 @@ impl App {
         let Some(res) = self.side.grep.clone() else { return };
         let hits = res["hits"].as_array().cloned().unwrap_or_default();
         let base = res["root"].as_str().unwrap_or("").replace('\\', "/");
-        ui.label(RichText::new(format!("{} matches{}", hits.len(), if res["truncated"].as_bool().unwrap_or(false) { " (truncated)" } else { "" })).size(11.5).color(theme::TEXT_DIM));
+        ui.label(RichText::new(format!("{} matches{}", hits.len(), if res["truncated"].as_bool().unwrap_or(false) { " (truncated)" } else { "" })).size(11.5).color(theme::text_dim()));
         ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             let mut last_file = String::new();
             for h in hits {
@@ -714,10 +727,10 @@ impl App {
                 if path != last_file {
                     ui.add_space(4.0);
                     let rel = path.strip_prefix(&base).unwrap_or(&path).trim_start_matches('/');
-                    ui.label(RichText::new(rel).size(12.0).color(theme::ANSI[12]));
+                    ui.label(RichText::new(rel).size(12.0).color(theme::ansi(12)));
                     last_file = path.clone();
                 }
-                let r = ui.add(egui::Label::new(RichText::new(format!("{line:>5}  {}", text.chars().take(120).collect::<String>())).monospace().size(12.0).color(theme::TEXT_DIM)).sense(Sense::click()));
+                let r = ui.add(egui::Label::new(RichText::new(format!("{line:>5}  {}", text.chars().take(120).collect::<String>())).monospace().size(12.0).color(theme::text_dim())).sense(Sense::click()));
                 if r.hovered() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 }
@@ -731,7 +744,7 @@ impl App {
     fn ui_procs(&mut self, ui: &mut Ui) {
         let host = self.active_host();
         if self.profile(&host).is_local() {
-            ui.label(RichText::new("The process list comes from the remote agent (POSIX `ps`). Connect to an ssh host to use it.").color(theme::TEXT_FAINT));
+            ui.label(RichText::new("The process list comes from the remote agent (POSIX `ps`). Connect to an ssh host to use it.").color(theme::text_faint()));
             return;
         }
         let stale = self.side.procs_host != host || self.side.procs_at.map(|t| t.elapsed() > Duration::from_secs(3)).unwrap_or(true);
@@ -751,7 +764,7 @@ impl App {
                 return;
             }
             Some(Err(e)) => {
-                ui.colored_label(theme::ERROR, e);
+                ui.colored_label(theme::error(), e);
                 return;
             }
             Some(Ok(r)) => r.clone(),
@@ -776,7 +789,7 @@ impl App {
             for (c, name, w) in cols {
                 let w = if w == 0.0 { ui.available_width() } else { w };
                 let sel = sc == c;
-                let txt = RichText::new(if sel { format!("{name}{}", if asc { " ↑" } else { " ↓" }) } else { name.to_string() }).size(11.5).color(if sel { theme::TEXT } else { theme::TEXT_DIM });
+                let txt = RichText::new(if sel { format!("{name}{}", if asc { " ↑" } else { " ↓" }) } else { name.to_string() }).size(11.5).color(if sel { theme::text() } else { theme::text_dim() });
                 if ui.add_sized([w, 20.0], egui::Button::new(txt).frame(false)).clicked() {
                     self.side.procs_sort = if sel { (c, !asc) } else { (c, false) };
                 }
@@ -790,7 +803,7 @@ impl App {
                 }
                 let p = ui.painter();
                 if resp.hovered() {
-                    p.rect_filled(rect, CornerRadius::same(3), theme::BG_HOVER);
+                    p.rect_filled(rect, CornerRadius::same(3), theme::bg_hover());
                 }
                 let f = FontId::monospace(11.5);
                 let cpu = r[3].as_f64().unwrap_or(0.0);
@@ -800,7 +813,7 @@ impl App {
                         3 | 4 => format!("{:.1}", r[c].as_f64().unwrap_or(0.0)),
                         _ => r[c].as_str().map(String::from).unwrap_or_else(|| r[c].to_string()),
                     };
-                    let col = if c == 3 && cpu > 50.0 { theme::WARN } else if c == 6 { theme::TEXT } else { theme::TEXT_DIM };
+                    let col = if c == 3 && cpu > 50.0 { theme::warn() } else if c == 6 { theme::text() } else { theme::text_dim() };
                     let max = if w == 0.0 { ((rect.right() - x) / 7.0) as usize } else { (w / 7.0) as usize };
                     p.text(pos2(x, rect.center().y), Align2::LEFT_CENTER, text.chars().take(max).collect::<String>(), f.clone(), col);
                     x += if w == 0.0 { 0.0 } else { w };
@@ -808,7 +821,7 @@ impl App {
                 let pid = r[0].as_i64().unwrap_or(0);
                 let cmd = r[6].as_str().unwrap_or("").to_string();
                 resp.on_hover_text(cmd.clone()).context_menu(|ui| {
-                    ui.label(RichText::new(format!("pid {pid}")).color(theme::TEXT_DIM));
+                    ui.label(RichText::new(format!("pid {pid}")).color(theme::text_dim()));
                     if ui.button("Terminate (TERM)").clicked() {
                         self.actions.push(Action::Kill(pid, "TERM"));
                         ui.close_menu();
@@ -832,8 +845,8 @@ impl App {
         if self.editor.files.is_empty() {
             ui.add_space(20.0);
             ui.vertical_centered(|ui| {
-                ui.label(RichText::new("No files open").color(theme::TEXT_DIM));
-                ui.label(RichText::new("Click a file in the side panel, Ctrl+click a path in the terminal,\nor run `wopen FILE` on a remote shell.").size(12.0).color(theme::TEXT_FAINT));
+                ui.label(RichText::new("No files open").color(theme::text_dim()));
+                ui.label(RichText::new("Click a file in the side panel, Ctrl+click a path in the terminal,\nor run `wopen FILE` on a remote shell.").size(12.0).color(theme::text_faint()));
             });
             return;
         }
@@ -846,7 +859,7 @@ impl App {
                 for (i, f) in self.editor.files.iter().enumerate() {
                     let name = f.path.rsplit('/').next().unwrap_or(&f.path).to_string();
                     let sel = i == self.editor.active;
-                    let label = RichText::new(if f.dirty { format!("● {name}") } else { name }).size(12.5).color(if sel { theme::TEXT } else { theme::TEXT_DIM });
+                    let label = RichText::new(if f.dirty { format!("● {name}") } else { name }).size(12.5).color(if sel { theme::text() } else { theme::text_dim() });
                     let r = ui.selectable_label(sel, label).on_hover_text(format!("{}:{}", f.host, f.path));
                     if r.clicked() {
                         self.editor.active = i;
@@ -880,7 +893,7 @@ impl App {
             ui.horizontal(|ui| {
                 ui.painter().circle_filled(ui.cursor().min + vec2(5.0, 11.0), 3.5, host_color(&f.host));
                 ui.add_space(12.0);
-                ui.label(RichText::new(format!("{}  {}", f.host, f.path)).size(11.5).color(theme::TEXT_FAINT));
+                ui.label(RichText::new(format!("{}  {}", f.host, f.path)).size(11.5).color(theme::text_faint()));
             });
             ui.horizontal(|ui| {
                 let can_save = f.dirty && !f.scratch && !f.binary && !f.loading;
@@ -893,17 +906,17 @@ impl App {
                 ui.add(TextEdit::singleline(&mut f.find).hint_text("highlight…").desired_width(140.0));
                 if f.loading {
                     ui.spinner();
-                    ui.label(RichText::new("reading…").size(11.5).color(theme::TEXT_FAINT));
+                    ui.label(RichText::new("reading…").size(11.5).color(theme::text_faint()));
                 } else if f.saving {
                     ui.spinner();
                 } else if f.scratch {
-                    ui.label(RichText::new("scratch (local only)").size(11.5).color(theme::TEXT_FAINT));
+                    ui.label(RichText::new("scratch (local only)").size(11.5).color(theme::text_faint()));
                 }
             });
             if f.conflict {
-                egui::Frame::new().fill(theme::tint(theme::WARN, 28)).corner_radius(CornerRadius::same(5)).inner_margin(6.0).show(ui, |ui| {
+                egui::Frame::new().fill(theme::tint(theme::warn(), 28)).corner_radius(CornerRadius::same(5)).inner_margin(6.0).show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new("The file changed on the host since it was opened.").color(theme::WARN));
+                        ui.label(RichText::new("The file changed on the host since it was opened.").color(theme::warn()));
                         if ui.button("Overwrite").clicked() {
                             force = true;
                         }
@@ -914,7 +927,7 @@ impl App {
                 });
             }
             if let Some(e) = &f.error {
-                ui.colored_label(theme::ERROR, e);
+                ui.colored_label(theme::error(), e);
             }
         }
         ui.separator();
@@ -938,10 +951,10 @@ impl App {
         sa.show(ui, |ui| {
             ui.horizontal_top(|ui| {
                 let nums: String = (1..=lines).map(|n| format!("{n:>4}\n")).collect();
-                ui.add(egui::Label::new(RichText::new(nums).font(font.clone()).color(theme::TEXT_FAINT)).selectable(false));
+                ui.add(egui::Label::new(RichText::new(nums).font(font.clone()).color(theme::text_faint())).selectable(false));
                 let cache_id = edit_id.with("hl");
                 let mut layouter = |ui: &Ui, text: &str, _wrap: f32| {
-                    let key = hash_str(text, &format!("{ext}|{find}|{}", font.size));
+                    let key = hash_str(text, &format!("{ext}|{find}|{}|{}", font.size, theme::is_light()));
                     let cached: HlCache = ui.ctx().memory_mut(|m| m.data.get_temp_mut_or_default::<HlCache>(cache_id).clone());
                     let job = match cached.job {
                         Some(j) if cached.key == key => j,
@@ -1002,7 +1015,7 @@ impl App {
         let mut run = None;
         let mut keep = true;
         let area = egui::Area::new(Id::new("palette")).anchor(Align2::CENTER_TOP, vec2(0.0, 70.0)).order(egui::Order::Foreground).show(ctx, |ui| {
-            egui::Frame::popup(ui.style()).fill(theme::BG_RAISED).corner_radius(CornerRadius::same(8)).inner_margin(8.0).show(ui, |ui| {
+            egui::Frame::popup(ui.style()).fill(theme::bg_raised()).corner_radius(CornerRadius::same(8)).inner_margin(8.0).show(ui, |ui| {
                 ui.set_width(460.0);
                 let id = Id::new("palette-q");
                 if take_key(ui, Key::ArrowDown, |_| true) {
@@ -1033,10 +1046,10 @@ impl App {
                 for (i, (cmd, label, keys)) in items.iter().enumerate() {
                     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click());
                     if i == st.sel || resp.hovered() {
-                        ui.painter().rect_filled(rect, CornerRadius::same(5), if i == st.sel { theme::tint(theme::ACCENT, 45) } else { theme::BG_HOVER });
+                        ui.painter().rect_filled(rect, CornerRadius::same(5), if i == st.sel { theme::tint(theme::accent(), 45) } else { theme::bg_hover() });
                     }
-                    ui.painter().text(pos2(rect.left() + 10.0, rect.center().y), Align2::LEFT_CENTER, *label, FontId::proportional(13.0), theme::TEXT);
-                    ui.painter().text(pos2(rect.right() - 10.0, rect.center().y), Align2::RIGHT_CENTER, *keys, FontId::proportional(11.5), theme::TEXT_FAINT);
+                    ui.painter().text(pos2(rect.left() + 10.0, rect.center().y), Align2::LEFT_CENTER, *label, FontId::proportional(13.0), theme::text());
+                    ui.painter().text(pos2(rect.right() - 10.0, rect.center().y), Align2::RIGHT_CENTER, *keys, FontId::proportional(11.5), theme::text_faint());
                     if resp.clicked() {
                         run = Some(*cmd);
                     }
@@ -1062,17 +1075,17 @@ impl App {
         let mut open: Option<String> = None;
         let mut keep = true;
         let area = egui::Area::new(Id::new("connect")).anchor(Align2::CENTER_TOP, vec2(0.0, 70.0)).order(egui::Order::Foreground).show(ctx, |ui| {
-            egui::Frame::popup(ui.style()).fill(theme::BG_RAISED).corner_radius(CornerRadius::same(8)).inner_margin(12.0).show(ui, |ui| {
+            egui::Frame::popup(ui.style()).fill(theme::bg_raised()).corner_radius(CornerRadius::same(8)).inner_margin(12.0).show(ui, |ui| {
                 ui.set_width(480.0);
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Connect").size(15.0).color(theme::TEXT));
+                    ui.label(RichText::new("Connect").size(15.0).color(theme::text()));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if icons::button(ui, Icon::Cross, "close (Esc)").clicked() {
                             keep = false;
                         }
                     });
                 });
-                ui.label(RichText::new("Terminals run over `ssh -tt`. Files, editor, search and procs use a python agent fed through `ssh -T` stdin — nothing is copied to or installed on the host.").size(11.5).color(theme::TEXT_FAINT));
+                ui.label(RichText::new("Terminals run over `ssh -tt`. Files, editor, search and procs use a python agent fed through `ssh -T` stdin — nothing is copied to or installed on the host.").size(11.5).color(theme::text_faint()));
                 ui.add_space(6.0);
                 if take_key(ui, Key::Escape, |_| true) {
                     keep = false;
@@ -1094,7 +1107,7 @@ impl App {
                 ui.label(
                     RichText::new("The password stays in memory for this session only. It is never saved or logged.")
                         .size(11.0)
-                        .color(theme::TEXT_FAINT),
+                        .color(theme::text_faint()),
                 );
                 ui.horizontal(|ui| {
                     ui.checkbox(&mut st.split, "open as split");
@@ -1123,11 +1136,11 @@ impl App {
                     for (name, kind) in names {
                         let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::click());
                         if resp.hovered() {
-                            ui.painter().rect_filled(rect, CornerRadius::same(5), theme::BG_HOVER);
+                            ui.painter().rect_filled(rect, CornerRadius::same(5), theme::bg_hover());
                         }
                         ui.painter().circle_filled(pos2(rect.left() + 12.0, rect.center().y), 4.0, host_color(&name));
-                        ui.painter().text(pos2(rect.left() + 26.0, rect.center().y), Align2::LEFT_CENTER, &name, FontId::proportional(13.5), theme::TEXT);
-                        ui.painter().text(pos2(rect.right() - 10.0, rect.center().y), Align2::RIGHT_CENTER, kind, FontId::proportional(11.5), theme::TEXT_FAINT);
+                        ui.painter().text(pos2(rect.left() + 26.0, rect.center().y), Align2::LEFT_CENTER, &name, FontId::proportional(13.5), theme::text());
+                        ui.painter().text(pos2(rect.right() - 10.0, rect.center().y), Align2::RIGHT_CENTER, kind, FontId::proportional(11.5), theme::text_faint());
                         if resp.clicked() {
                             open = Some(name);
                         }
@@ -1181,13 +1194,13 @@ impl App {
         let mut submit = false;
         let mut keep = true;
         let area = egui::Area::new(Id::new("auth")).anchor(Align2::CENTER_TOP, vec2(0.0, 90.0)).order(egui::Order::Foreground).show(ctx, |ui| {
-            egui::Frame::popup(ui.style()).fill(theme::BG_RAISED).corner_radius(CornerRadius::same(8)).inner_margin(12.0).show(ui, |ui| {
+            egui::Frame::popup(ui.style()).fill(theme::bg_raised()).corner_radius(CornerRadius::same(8)).inner_margin(12.0).show(ui, |ui| {
                 ui.set_width(420.0);
-                ui.label(RichText::new(format!("Password for {host}")).size(15.0).color(theme::TEXT));
+                ui.label(RichText::new(format!("Password for {host}")).size(15.0).color(theme::text()));
                 ui.label(
                     RichText::new("Keys / ssh-agent were not accepted, so the file panel, editor, search and procs are offline. Enter the ssh password to use it instead (kept in memory for this session only).")
                         .size(11.5)
-                        .color(theme::TEXT_FAINT),
+                        .color(theme::text_faint()),
                 );
                 ui.add_space(6.0);
                 if take_key(ui, Key::Escape, |_| true) {
@@ -1231,13 +1244,13 @@ impl App {
         egui::Area::new(Id::new("toasts")).anchor(Align2::RIGHT_BOTTOM, vec2(-16.0, -36.0)).order(egui::Order::Tooltip).interactable(false).show(ctx, |ui| {
             for t in &self.toasts {
                 let col = match t.kind {
-                    ToastKind::Info => theme::ACCENT,
-                    ToastKind::Ok => theme::SUCCESS,
-                    ToastKind::Error => theme::ERROR,
+                    ToastKind::Info => theme::accent(),
+                    ToastKind::Ok => theme::success(),
+                    ToastKind::Error => theme::error(),
                 };
-                egui::Frame::new().fill(theme::BG_RAISED).stroke(Stroke::new(1.0_f32, theme::BORDER)).corner_radius(CornerRadius::same(6)).inner_margin(egui::Margin { left: 12, right: 12, top: 8, bottom: 8 }).show(ui, |ui| {
+                egui::Frame::new().fill(theme::bg_raised()).stroke(Stroke::new(1.0_f32, theme::border())).corner_radius(CornerRadius::same(6)).inner_margin(egui::Margin { left: 12, right: 12, top: 8, bottom: 8 }).show(ui, |ui| {
                     ui.set_max_width(380.0);
-                    let r = ui.label(RichText::new(&t.text).size(12.5).color(theme::TEXT));
+                    let r = ui.label(RichText::new(&t.text).size(12.5).color(theme::text()));
                     ui.painter().rect_filled(egui::Rect::from_min_size(pos2(r.rect.left() - 8.0, r.rect.top()), vec2(3.0, r.rect.height())), CornerRadius::same(1), col);
                 });
                 ui.add_space(6.0);
