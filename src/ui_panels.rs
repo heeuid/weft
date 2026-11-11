@@ -254,7 +254,10 @@ impl App {
                 let galley = ui.painter().layout_no_wrap(title.clone(), font, if active { theme::text() } else { theme::text_dim() });
                 let w = (galley.size().x + 52.0).clamp(110.0, 260.0);
                 let (rect, resp) = ui.allocate_exact_size(vec2(w, 28.0), Sense::click());
-                let hovered = resp.hovered();
+                // contains_pointer, not hovered(): the close button drawn on hover
+                // sits on top of the tab and would "steal" hovered() from it, hiding
+                // itself again next frame -> endless flicker.
+                let hovered = resp.contains_pointer();
                 let bg = if active {
                     theme::bg_term()
                 } else if hovered {
