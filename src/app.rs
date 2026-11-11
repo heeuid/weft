@@ -658,6 +658,9 @@ pub struct EditorFile {
     /// Markdown shown rendered in place (false: plain source).
     pub rich: bool,
     pub error: Option<String>,
+    /// Raw bytes of a non-text file (images are shown, not edited).
+    pub bytes: Option<std::sync::Arc<Vec<u8>>>,
+    pub image: crate::media::ImageState,
 }
 
 pub struct EditorState {
@@ -1206,6 +1209,8 @@ impl App {
             return;
         }
         self.editor.files.push(EditorFile {
+            bytes: None,
+            image: Default::default(),
             host: host.into(),
             path: path.into(),
             text: String::new(),
@@ -1227,6 +1232,8 @@ impl App {
 
     pub fn open_scratch(&mut self, title: &str, text: String) {
         self.editor.files.push(EditorFile {
+            bytes: None,
+            image: Default::default(),
             host: "scratch".into(),
             path: title.into(),
             text,
@@ -1530,7 +1537,10 @@ impl App {
                 if let Some(t) = r["text"].as_str() {
                     f.text = t.to_string();
                     f.binary = false;
+                    f.bytes = None;
                 } else {
+                    use base64::Engine;
+                    f.bytes = r["b64"].as_str().and_then(|b| base64::engine::general_purpose::STANDARD.decode(b).ok()).map(std::sync::Arc::new);
                     f.binary = true;
                     f.text = format!("binary file, {} bytes — not editable", r["size"].as_u64().unwrap_or(0));
                 }

@@ -1348,7 +1348,7 @@ impl App {
                     if ui.selectable_label(!f.rich, RichText::new("Source").size(12.5)).on_hover_text("plain markdown source").clicked() {
                         f.rich = false;
                     }
-                } else {
+                } else if !crate::media::is_image(&f.path) {
                     ui.add(TextEdit::singleline(&mut f.find).hint_text("highlight…").desired_width(140.0));
                 }
                 if f.loading {
@@ -1385,6 +1385,15 @@ impl App {
         let font = FontId::monospace(self.settings.font_size - 1.0);
         let row_h = ui.fonts(|f| f.row_height(&font));
         let f = &mut self.editor.files[idx];
+        if crate::media::is_image(&f.path) {
+            if let Some(bytes) = f.bytes.clone() {
+                crate::media::image_view(ui, &mut f.image, &f.path, &bytes);
+                if reload {
+                    self.reload_file(idx);
+                }
+                return;
+            }
+        }
         if f.rich && md::is_markdown(&f.path) && !f.binary {
             let readonly = f.loading;
             let goto = f.goto.take();

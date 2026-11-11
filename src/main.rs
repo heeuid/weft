@@ -11,6 +11,7 @@ mod host;
 mod find;
 mod icons;
 mod md;
+mod media;
 mod mermaid;
 mod pty;
 mod term;
