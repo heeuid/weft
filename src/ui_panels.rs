@@ -30,6 +30,7 @@ enum Cmd {
     SplitRight,
     SplitDown,
     ClosePane,
+    Zoom,
     Sidebar,
     Editor,
     Find,
@@ -53,6 +54,7 @@ const COMMANDS: &[(Cmd, &str, &str)] = &[
     (Cmd::SplitRight, "Split right", "Ctrl+Shift+D"),
     (Cmd::SplitDown, "Split down", "Ctrl+Shift+E"),
     (Cmd::ClosePane, "Close pane", "Ctrl+Shift+W"),
+    (Cmd::Zoom, "Zoom / restore pane", "Ctrl+Shift+Z"),
     (Cmd::Composer, "Open composer (GUI command line)", "Ctrl+Space"),
     (Cmd::Find, "Find in scrollback", "Ctrl+Shift+F"),
     (Cmd::PrevBlock, "Jump to previous command", "Ctrl+Shift+Up"),
@@ -101,6 +103,7 @@ impl App {
                     self.close_pane(id)
                 }
             }
+            Cmd::Zoom => self.toggle_zoom(),
             Cmd::Sidebar => self.settings.sidebar = !self.settings.sidebar,
             Cmd::Editor => self.editor.visible = !self.editor.visible,
             Cmd::Find => {
@@ -172,6 +175,7 @@ impl App {
             (Key::T, Cmd::NewTab),
             (Key::N, Cmd::Connect),
             (Key::W, Cmd::ClosePane),
+            (Key::Z, Cmd::Zoom),
             (Key::D, Cmd::SplitRight),
             (Key::E, Cmd::SplitDown),
             (Key::F, Cmd::Find),
@@ -1137,6 +1141,7 @@ impl App {
                     let root = std::mem::replace(&mut tab.root, Node::Leaf(0));
                     tab.root = replace_leaf(root, cur, id);
                     tab.active = id;
+                    tab.zoomed = false;
                 }
             } else {
                 self.new_tab(&host, None);

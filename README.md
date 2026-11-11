@@ -71,6 +71,7 @@ cargo run --release
 | `Ctrl+Shift+P` | 커맨드 팔레트 |
 | `Ctrl+Shift+T` / `Ctrl+Shift+N` | 새 탭(같은 호스트·cwd) / 연결 |
 | `Ctrl+Shift+D` / `Ctrl+Shift+E` / `Ctrl+Shift+W` | 오른쪽 분할 / 아래 분할 / 패널 닫기 |
+| `Ctrl+Shift+Z` | 현재 패널만 탭 전체로 확대 / 원래 분할로 복귀 (패널 헤더 버튼, 우클릭 메뉴에도 있음) |
 | `Alt+←↑→↓` | (분할 시) 패널 포커스 이동 |
 | `Ctrl+Tab` / `Ctrl+Shift+Tab` | 탭 이동 |
 | `Ctrl+Shift+↑/↓` | 이전/다음 명령 블록으로 스크롤 |

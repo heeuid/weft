@@ -157,6 +157,8 @@ impl Node {
 pub struct Tab {
     pub root: Node,
     pub active: usize,
+    /// Show only the active pane, full size (tmux-style zoom).
+    pub zoomed: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -427,6 +429,7 @@ pub enum Action {
     Kill(i64, &'static str),
     Save(usize),
     Reconnect(String),
+    ToggleZoom,
 }
 
 pub struct App {
@@ -545,7 +548,7 @@ impl App {
             let root = app.restore_node(node);
             let mut leaves = Vec::new();
             root.leaves(&mut leaves);
-            app.tabs.push(Tab { root, active: leaves[0] });
+            app.tabs.push(Tab { root, active: leaves[0], zoomed: false });
         }
         app.settings.session = session;
         if app.tabs.is_empty() {
@@ -693,7 +696,7 @@ impl App {
 
     pub fn new_tab(&mut self, host: &str, cwd: Option<String>) {
         let id = self.spawn_pane(host, cwd);
-        self.tabs.push(Tab { root: Node::Leaf(id), active: id });
+        self.tabs.push(Tab { root: Node::Leaf(id), active: id, zoomed: false });
         self.active_tab = self.tabs.len() - 1;
         self.focus_term = true;
     }
@@ -708,6 +711,20 @@ impl App {
         let tab = &mut self.tabs[self.active_tab];
         tab.root.split_leaf(cur, id, vertical);
         tab.active = id;
+        tab.zoomed = false;
+        self.focus_term = true;
+    }
+
+    /// Zoom the active pane to the whole tab, or restore the split layout.
+    pub fn toggle_zoom(&mut self) {
+        let Some(tab) = self.tabs.get_mut(self.active_tab) else { return };
+        let mut leaves = Vec::new();
+        tab.root.leaves(&mut leaves);
+        if leaves.len() < 2 && !tab.zoomed {
+            self.toast("zoom needs a split tab (Ctrl+Shift+D / E)", ToastKind::Info);
+            return;
+        }
+        tab.zoomed = !tab.zoomed;
         self.focus_term = true;
     }
 
@@ -725,6 +742,7 @@ impl App {
                     let mut rest = Vec::new();
                     r.leaves(&mut rest);
                     self.tabs[ti].root = r;
+                    self.tabs[ti].zoomed = false;
                     if self.tabs[ti].active == id {
                         self.tabs[ti].active = rest[0];
                     }
@@ -1303,6 +1321,7 @@ impl App {
                 Action::Complete(id) => self.start_completion(id),
                 Action::NewTab(h, cwd) => self.new_tab(&h, cwd),
                 Action::Split(v) => self.split(v),
+                Action::ToggleZoom => self.toggle_zoom(),
                 Action::ClosePane(id) => self.close_pane(id),
                 Action::Restart(id) => {
                     if let Some(mut p) = self.panes.remove(&id) {

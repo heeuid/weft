@@ -343,16 +343,32 @@ fn classify_token(tok: &str, cwd: Option<&str>, home: Option<&str>) -> Option<(b
     Some((false, abs, line))
 }
 
+type SplitHandle = (Vec<bool>, Rect, bool, Rect);
+
+/// Pane rects and splitter handles for a tab. Returns true when zoomed: only
+/// the active pane is laid out, over the whole tab (the split tree is kept
+/// untouched so un-zooming restores it exactly).
+pub fn tab_layout(tab: &Tab, rect: Rect, panes: &mut Vec<(usize, Rect)>, splits: &mut Vec<SplitHandle>) -> bool {
+    tab.root.layout(rect, &mut Vec::new(), panes, splits);
+    let zoomed = tab.zoomed && panes.len() > 1;
+    if zoomed {
+        panes.clear();
+        panes.push((tab.active, rect));
+        splits.clear();
+    }
+    zoomed
+}
+
 impl App {
     pub fn ui_panes(&mut self, ui: &mut Ui) {
         let rect = ui.max_rect();
         let Some(tab) = self.tabs.get(self.active_tab) else { return };
         let mut panes = Vec::new();
         let mut splits = Vec::new();
-        tab.root.layout(rect, &mut Vec::new(), &mut panes, &mut splits);
         let active = tab.active;
+        let zoomed = tab_layout(tab, rect, &mut panes, &mut splits);
         self.pane_rects = panes.clone();
-        let multi = panes.len() > 1;
+        let multi = panes.len() > 1 || zoomed;
         for (path, handle, vertical, parent) in splits {
             let id = Id::new(("split", self.active_tab, path.clone()));
             let resp = ui.interact(handle.expand(2.0), id, Sense::drag());
@@ -378,6 +394,14 @@ impl App {
             if self.panes.contains_key(&id) {
                 self.ui_pane(ui, id, r, id == active, multi);
             }
+        }
+        if zoomed {
+            // "ZOOM" pill in the header, left of the pane buttons.
+            let label = "ZOOM · Ctrl+Shift+Z";
+            let g = ui.painter().layout_no_wrap(label.into(), FontId::proportional(11.0), theme::ACCENT);
+            let pill = Rect::from_min_size(pos2(rect.right() - 60.0 - g.size().x - 16.0, rect.top() + 4.0), vec2(g.size().x + 16.0, 16.0));
+            ui.painter().rect_filled(pill, CornerRadius::same(8), theme::tint(theme::ACCENT, 40));
+            ui.painter().galley(pos2(pill.left() + 8.0, pill.center().y - g.size().y / 2.0), g, theme::ACCENT);
         }
     }
 
@@ -912,6 +936,12 @@ impl App {
             if icons::overlay_button(ui, Rect::from_min_size(pos2(bx, hr.top() + 2.0), vec2(20.0, 20.0)), Id::new(("close", id)), Icon::Cross, "close pane (Ctrl+Shift+W)").clicked() {
                 acts.push(Action::ClosePane(id));
             }
+            let zoomed = self.tabs.get(self.active_tab).map(|t| t.zoomed).unwrap_or(false);
+            let (zi, ztip) = if zoomed { (Icon::Fold, "restore split (Ctrl+Shift+Z)") } else { (Icon::Unfold, "zoom this pane (Ctrl+Shift+Z)") };
+            if icons::overlay_button(ui, Rect::from_min_size(pos2(bx - 24.0, hr.top() + 2.0), vec2(20.0, 20.0)), Id::new(("zoom", id)), zi, ztip).clicked() {
+                acts.push(Action::Focus(id));
+                acts.push(Action::ToggleZoom);
+            }
         }
         if let Some(at) = p.bell_at {
             let a = 1.0 - at.elapsed().as_secs_f32() / 0.6;
@@ -952,6 +982,11 @@ impl App {
             if ui.button("Split down  (Ctrl+Shift+E)").clicked() {
                 acts.push(Action::Focus(id));
                 acts.push(Action::Split(false));
+                ui.close_menu();
+            }
+            if multi && ui.button("Zoom / restore pane  (Ctrl+Shift+Z)").clicked() {
+                acts.push(Action::Focus(id));
+                acts.push(Action::ToggleZoom);
                 ui.close_menu();
             }
             if ui.button("Close pane  (Ctrl+Shift+W)").clicked() {
@@ -1231,6 +1266,34 @@ mod tests {
         assert_eq!(classify_token("https://x.y/a", None, None).map(|t| t.0), Some(true));
         assert_eq!(classify_token("hello", Some("/p"), None), None);
         assert_eq!(classify_token("~/a.txt", None, Some("/home/u")), Some((false, "/home/u/a.txt".into(), 1)));
+    }
+
+    #[test]
+    fn zoom_shows_only_active_pane_full_size() {
+        let full = Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 600.0));
+        let root = Node::Split {
+            vertical: true,
+            ratio: 0.5,
+            a: Box::new(Node::Leaf(1)),
+            b: Box::new(Node::Split { vertical: false, ratio: 0.5, a: Box::new(Node::Leaf(2)), b: Box::new(Node::Leaf(3)) }),
+        };
+        let mut tab = Tab { root, active: 3, zoomed: false };
+        let (mut panes, mut splits) = (Vec::new(), Vec::new());
+        assert!(!tab_layout(&tab, full, &mut panes, &mut splits));
+        assert_eq!(panes.len(), 3);
+        assert_eq!(splits.len(), 2);
+
+        tab.zoomed = true;
+        let (mut panes, mut splits) = (Vec::new(), Vec::new());
+        assert!(tab_layout(&tab, full, &mut panes, &mut splits));
+        assert_eq!(panes, vec![(3, full)]);
+        assert!(splits.is_empty());
+
+        // A single-pane tab never counts as zoomed.
+        let single = Tab { root: Node::Leaf(9), active: 9, zoomed: true };
+        let (mut panes, mut splits) = (Vec::new(), Vec::new());
+        assert!(!tab_layout(&single, full, &mut panes, &mut splits));
+        assert_eq!(panes, vec![(9, full)]);
     }
 
     #[test]
