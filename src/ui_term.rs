@@ -428,6 +428,31 @@ pub fn tab_layout(tab: &Tab, rect: Rect, panes: &mut Vec<(usize, Rect)>, splits:
     zoomed
 }
 
+/// Points where a vertical splitter and a horizontal one meet end-to-side:
+/// (vertical index, horizontal index, meeting point).
+pub fn split_junctions(splits: &[SplitHandle]) -> Vec<(usize, usize, egui::Pos2)> {
+    let near = |a: f32, b: f32| (a - b).abs() <= 6.0;
+    let mut out = Vec::new();
+    for (vi, (_, v, vertical, _)) in splits.iter().enumerate() {
+        if !vertical {
+            continue;
+        }
+        for (hi, (_, h, hvert, _)) in splits.iter().enumerate() {
+            if *hvert {
+                continue;
+            }
+            // Horizontal splitter ends at the vertical one (a | b, b split top/bottom) ...
+            let h_touches_v = (near(h.left(), v.right()) || near(h.right(), v.left())) && v.y_range().contains(h.center().y);
+            // ... or the vertical splitter ends at the horizontal one (top/bottom, one side split left/right).
+            let v_touches_h = (near(v.top(), h.bottom()) || near(v.bottom(), h.top())) && h.x_range().contains(v.center().x);
+            if h_touches_v || v_touches_h {
+                out.push((vi, hi, egui::pos2(v.center().x, h.center().y)));
+            }
+        }
+    }
+    out
+}
+
 impl App {
     pub fn ui_panes(&mut self, ui: &mut Ui) {
         let rect = ui.max_rect();
@@ -438,7 +463,7 @@ impl App {
         let zoomed = tab_layout(tab, rect, &mut panes, &mut splits);
         self.pane_rects = panes.clone();
         let multi = panes.len() > 1 || zoomed;
-        for (path, handle, vertical, parent) in splits {
+        for (path, handle, vertical, parent) in splits.iter().cloned() {
             let id = Id::new(("split", self.active_tab, path.clone()));
             let resp = ui.interact(handle.expand(2.0), id, Sense::drag());
             let hot = resp.hovered() || resp.dragged();
@@ -455,6 +480,30 @@ impl App {
                     };
                     if let Some(ratio) = self.tabs[self.active_tab].root.ratio_at(&path) {
                         *ratio = r.clamp(0.1, 0.9);
+                    }
+                }
+            }
+        }
+        // Where a vertical and a horizontal splitter meet (three panes touch),
+        // a handle drags both at once.
+        for (vi, hi, at) in split_junctions(&splits) {
+            let (vpath, _, _, vparent) = splits[vi].clone();
+            let (hpath, _, _, hparent) = splits[hi].clone();
+            let zone = Rect::from_center_size(at, vec2(14.0, 14.0));
+            let resp = ui.interact(zone, Id::new(("junction", self.active_tab, vpath.clone(), hpath.clone())), Sense::drag());
+            let hot = resp.hovered() || resp.dragged();
+            if hot {
+                ui.ctx().set_cursor_icon(CursorIcon::Move);
+                ui.painter().circle_filled(at, 4.5, theme::accent());
+            }
+            if resp.dragged() {
+                if let Some(pos) = resp.interact_pointer_pos() {
+                    let root = &mut self.tabs[self.active_tab].root;
+                    if let Some(r) = root.ratio_at(&vpath) {
+                        *r = ((pos.x - vparent.left()) / vparent.width()).clamp(0.1, 0.9);
+                    }
+                    if let Some(r) = root.ratio_at(&hpath) {
+                        *r = ((pos.y - hparent.top()) / hparent.height()).clamp(0.1, 0.9);
                     }
                 }
             }
@@ -1454,6 +1503,37 @@ mod tests {
         let (mut panes, mut splits) = (Vec::new(), Vec::new());
         assert!(!tab_layout(&single, full, &mut panes, &mut splits));
         assert_eq!(panes, vec![(9, full)]);
+    }
+
+    #[test]
+    fn junction_where_three_panes_meet() {
+        let full = Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 600.0));
+        let layout = |root: Node| {
+            let tab = Tab { root, active: 1, zoomed: false };
+            let (mut panes, mut splits) = (Vec::new(), Vec::new());
+            tab_layout(&tab, full, &mut panes, &mut splits);
+            split_junctions(&splits)
+        };
+        // [1 | [2 / 3]]: right side split top/bottom -> one junction at (400, 300).
+        let j = layout(Node::Split {
+            vertical: true,
+            ratio: 0.5,
+            a: Box::new(Node::Leaf(1)),
+            b: Box::new(Node::Split { vertical: false, ratio: 0.5, a: Box::new(Node::Leaf(2)), b: Box::new(Node::Leaf(3)) }),
+        });
+        assert_eq!(j.len(), 1);
+        assert!((j[0].2.x - 400.0).abs() < 1.0 && (j[0].2.y - 300.0).abs() < 1.0, "{:?}", j[0].2);
+        // [[1 | 2] / 3]: top split left/right -> junction where the vertical one ends.
+        let j = layout(Node::Split {
+            vertical: false,
+            ratio: 0.5,
+            a: Box::new(Node::Split { vertical: true, ratio: 0.5, a: Box::new(Node::Leaf(1)), b: Box::new(Node::Leaf(2)) }),
+            b: Box::new(Node::Leaf(3)),
+        });
+        assert_eq!(j.len(), 1);
+        // Two side-by-side panes only: no junction.
+        let j = layout(Node::Split { vertical: true, ratio: 0.5, a: Box::new(Node::Leaf(1)), b: Box::new(Node::Leaf(2)) });
+        assert!(j.is_empty());
     }
 
     #[test]
