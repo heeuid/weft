@@ -3,6 +3,7 @@
 
 use crate::app::*;
 use crate::highlight;
+use crate::md;
 use crate::host::{ConnStatus, HostKind};
 use crate::icons::{self, Icon};
 use crate::term::BlockState;
@@ -913,7 +914,16 @@ impl App {
                 if !f.scratch && ui.add_enabled(!f.loading, egui::Button::new(RichText::new("Reload").size(12.5))).clicked() {
                     reload = true;
                 }
-                ui.add(TextEdit::singleline(&mut f.find).hint_text("highlight…").desired_width(140.0));
+                if md::is_markdown(&f.path) {
+                    if ui.selectable_label(f.rich, RichText::new("Rich").size(12.5)).on_hover_text("edit the rendered document").clicked() {
+                        f.rich = true;
+                    }
+                    if ui.selectable_label(!f.rich, RichText::new("Source").size(12.5)).on_hover_text("plain markdown source").clicked() {
+                        f.rich = false;
+                    }
+                } else {
+                    ui.add(TextEdit::singleline(&mut f.find).hint_text("highlight…").desired_width(140.0));
+                }
                 if f.loading {
                     ui.spinner();
                     ui.label(RichText::new("reading…").size(11.5).color(theme::text_faint()));
@@ -948,6 +958,26 @@ impl App {
         let font = FontId::monospace(self.settings.font_size - 1.0);
         let row_h = ui.fonts(|f| f.row_height(&font));
         let f = &mut self.editor.files[idx];
+        if f.rich && md::is_markdown(&f.path) && !f.binary {
+            let readonly = f.loading;
+            let goto = f.goto.take();
+            let size = self.settings.font_size + 0.5;
+            let cache_dir = self.data.path("cache/mermaid");
+            let changed = markdown_body(ui, f, edit_id, size, readonly, goto, &cache_dir);
+            if changed && !f.scratch {
+                f.dirty = true;
+            }
+            if save {
+                self.actions.push(Action::Save(idx));
+            }
+            if force {
+                self.save_file(idx, true);
+            }
+            if reload {
+                self.reload_file(idx);
+            }
+            return;
+        }
         let ext = highlight::ext_of(&f.path);
         let lines = f.text.matches('\n').count() + 1;
         let goto = f.goto.take();
@@ -1357,6 +1387,153 @@ fn clicked_outside(ctx: &egui::Context, rect: egui::Rect) -> bool {
     ctx.input(|i| {
         i.pointer.any_pressed() && !i.pointer.any_released() && i.pointer.press_origin().map(|p| !rect.contains(p)).unwrap_or(false)
     })
+}
+
+#[derive(Clone, Default)]
+struct MdCache {
+    key: u64,
+    job: Option<Arc<LayoutJob>>,
+    decos: Arc<Vec<md::Deco>>,
+}
+
+/// The markdown editor: the TextEdit edits the raw source while its layout
+/// renders it (md::layout); bullets, checkboxes, quote bars, code
+/// backgrounds and rules are painted at the galley positions afterwards.
+/// Returns whether the text changed.
+fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size: f32, readonly: bool, goto: Option<usize>, cache_dir: &std::path::Path) -> bool {
+    let ctx = ui.ctx().clone();
+    let focused = ui.memory(|m| m.has_focus(edit_id));
+    // The cursor's line shows its markup (from last frame's cursor).
+    let cursor_line = if focused {
+        TextEdit::load_state(&ctx, edit_id).and_then(|s| s.cursor.char_range()).map(|r| md::line_of_char(&f.text, r.primary.index))
+    } else {
+        None
+    };
+    let cache_id = edit_id.with("md");
+    let style_key = format!("{cursor_line:?}|{size}|{}|{}", theme::active(), crate::mermaid::generation());
+    let dark = !theme::is_light();
+    // Rendered diagram size in points: mmdc renders at scale 2; never wider than the editor.
+    let diagram_size = |ctx: &egui::Context, source: &str, wrap: f32| -> Option<(egui::TextureId, egui::Vec2)> {
+        match crate::mermaid::status(ctx, cache_dir, source, dark) {
+            crate::mermaid::Status::Ready(tex, px) => {
+                let pt = px / 2.0;
+                let scale = (wrap / pt.x).min(1.0);
+                Some((tex, pt * scale))
+            }
+            _ => None,
+        }
+    };
+    let mut changed = false;
+    ScrollArea::vertical().id_salt(("md-scroll", edit_id)).auto_shrink([false, false]).show(ui, |ui| {
+        let bg = ui.painter().add(egui::Shape::Noop);
+        let width = ui.available_width();
+        let mut layouter = |ui: &Ui, text: &str, wrap: f32| {
+            let key = hash_str(text, &style_key);
+            let cached: MdCache = ui.ctx().memory_mut(|m| m.data.get_temp_mut_or_default::<MdCache>(cache_id).clone());
+            let job = match cached.job {
+                Some(j) if cached.key == key => j,
+                _ => {
+                    let l = md::layout(text, cursor_line, size, &mut |src: &str| diagram_size(ui.ctx(), src, wrap).map(|(_, s)| s.y));
+                    let j = Arc::new(l.job);
+                    ui.ctx().memory_mut(|m| m.data.insert_temp(cache_id, MdCache { key, job: Some(j.clone()), decos: Arc::new(l.decos) }));
+                    j
+                }
+            };
+            let mut job = (*job).clone();
+            job.wrap.max_width = wrap;
+            ui.fonts(|f| f.layout_job(job))
+        };
+        let out = TextEdit::multiline(&mut f.text)
+            .id(edit_id)
+            .frame(false)
+            .margin(egui::Margin::ZERO)
+            .desired_width(width)
+            .desired_rows(30)
+            .interactive(!readonly)
+            .lock_focus(true)
+            .layouter(&mut layouter)
+            .show(ui);
+        changed = out.response.changed();
+        let galley = &out.galley;
+        let origin = out.galley_pos;
+        let at = |i: usize| galley.pos_from_ccursor(egui::text::CCursor::new(i)).translate(origin.to_vec2());
+        let decos = ctx.memory_mut(|m| m.data.get_temp_mut_or_default::<MdCache>(cache_id).decos.clone());
+        let right = origin.x + width;
+        let mut back = Vec::new();
+        let painter = ui.painter().clone();
+        let pointer = ctx.input(|i| i.pointer.interact_pos());
+        let mut toggle: Option<usize> = None;
+        for d in decos.iter() {
+            match *d {
+                md::Deco::Code { start, end } => {
+                    let r = egui::Rect::from_min_max(pos2(origin.x - 4.0, at(start).top() - 2.0), pos2(right, at(end).bottom() + 2.0));
+                    back.push(egui::Shape::rect_filled(r, CornerRadius::same(5), theme::tint(theme::text_faint(), 30)));
+                }
+                md::Deco::Quote { start, end } => {
+                    let r = egui::Rect::from_min_max(pos2(origin.x + 1.0, at(start).top()), pos2(origin.x + 4.0, at(end).bottom()));
+                    back.push(egui::Shape::rect_filled(r, CornerRadius::same(1), theme::tint(theme::accent(), 160)));
+                }
+                md::Deco::Bullet { at: i } => {
+                    let r = at(i);
+                    painter.circle_filled(pos2(r.left() + size * 0.35, r.center().y), size * 0.14, theme::text_dim());
+                }
+                md::Deco::Check { at: i, byte, checked } => {
+                    let r = at(i);
+                    let b = egui::Rect::from_center_size(pos2(r.left() + size * 0.55, r.center().y), vec2(size * 0.85, size * 0.85));
+                    if checked {
+                        painter.rect_filled(b, CornerRadius::same(3), theme::accent());
+                        icons::paint(&painter, b.shrink(1.5), Icon::Check, theme::bg_term());
+                    } else {
+                        painter.rect_stroke(b, CornerRadius::same(3), Stroke::new(1.2_f32, theme::text_dim()), egui::StrokeKind::Inside);
+                    }
+                    if out.response.clicked() && pointer.map(|p| b.expand(2.0).contains(p)).unwrap_or(false) && !readonly {
+                        toggle = Some(byte);
+                    }
+                }
+                md::Deco::Rule { at: i } => {
+                    let y = at(i).center().y;
+                    painter.hline(origin.x..=right, y, Stroke::new(1.0_f32, theme::border()));
+                }
+                md::Deco::Underline { at: i } => {
+                    let y = at(i).bottom() + 3.0;
+                    painter.hline(origin.x..=right, y, Stroke::new(1.0_f32, theme::border()));
+                }
+                md::Deco::Diagram { start, end, ref source, collapsed } => {
+                    let top = at(start).top();
+                    if collapsed {
+                        if let Some((tex, sz)) = diagram_size(&ctx, source, width) {
+                            let r = egui::Rect::from_min_size(pos2(origin.x, top), sz);
+                            painter.image(tex, r, egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+                        }
+                    } else {
+                        let note = match crate::mermaid::status(&ctx, cache_dir, source, dark) {
+                            crate::mermaid::Status::Rendering => Some(("rendering diagram…".to_string(), theme::text_faint())),
+                            crate::mermaid::Status::Unavailable => Some((crate::mermaid::INSTALL_HINT.to_string(), theme::text_faint())),
+                            crate::mermaid::Status::Failed(e) => Some((e, theme::error())),
+                            crate::mermaid::Status::Ready(..) => None,
+                        };
+                        if let Some((text, color)) = note {
+                            let _ = end;
+                            painter.text(pos2(right - 6.0, top + 2.0), Align2::RIGHT_TOP, text, FontId::proportional(11.0), color);
+                        }
+                    }
+                }
+            }
+        }
+        ui.painter().set(bg, egui::Shape::Vec(back));
+        if let Some(byte) = toggle {
+            if let Some(c) = f.text.get(byte..byte + 1) {
+                let new = if c == " " { "x" } else { " " };
+                f.text.replace_range(byte..byte + 1, new);
+                changed = true;
+            }
+        }
+        if let Some(l) = goto {
+            let idx: usize = f.text.split('\n').take(l.saturating_sub(1)).map(|s| s.chars().count() + 1).sum();
+            ui.scroll_to_rect(at(idx), Some(Align::Center));
+        }
+    });
+    changed
 }
 
 fn replace_leaf(n: Node, target: usize, new_id: usize) -> Node {

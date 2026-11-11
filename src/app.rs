@@ -391,6 +391,8 @@ pub struct EditorFile {
     pub conflict: bool,
     pub goto: Option<usize>,
     pub find: String,
+    /// Markdown shown rendered in place (false: plain source).
+    pub rich: bool,
     pub error: Option<String>,
 }
 
@@ -912,6 +914,7 @@ impl App {
             conflict: false,
             goto: Some(line.max(1)),
             find: String::new(),
+            rich: crate::md::is_markdown(path),
             error: None,
         });
         self.editor.active = self.editor.files.len() - 1;
@@ -932,6 +935,7 @@ impl App {
             conflict: false,
             goto: None,
             find: String::new(),
+            rich: false,
             error: None,
         });
         self.editor.active = self.editor.files.len() - 1;

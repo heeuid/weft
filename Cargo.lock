@@ -3503,6 +3503,7 @@ dependencies = [
  "eframe",
  "egui",
  "flate2",
+ "image",
  "portable-pty",
  "serde",
  "serde_json",

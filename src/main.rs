@@ -9,6 +9,8 @@ mod app;
 mod highlight;
 mod host;
 mod icons;
+mod md;
+mod mermaid;
 mod pty;
 mod term;
 mod theme;

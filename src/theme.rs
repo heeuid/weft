@@ -299,6 +299,8 @@ pub fn install_fonts(ctx: &egui::Context) {
     let ui = load("ui", &["segoeui.ttf", "DejaVuSans.ttf"]);
     let kr = load("kr", &["malgun.ttf", "NanumGothic.ttf", "AppleSDGothicNeo.ttc"]);
     let sym = load("sym", &["seguisym.ttf"]);
+    let ui_bold = load("ui_bold", &["segoeuib.ttf", "DejaVuSans-Bold.ttf"]);
+    let kr_bold = load("kr_bold", &["malgunbd.ttf", "NanumGothicBold.ttf"]);
 
     let egui_mono = fonts.families.get(&FontFamily::Monospace).cloned().unwrap_or_default();
     let egui_prop = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
@@ -316,7 +318,17 @@ pub fn install_fonts(ctx: &egui::Context) {
     let term_chain = chain(mono.clone(), &egui_mono);
     fonts.families.insert(FontFamily::Monospace, term_chain.clone());
     fonts.families.insert(FontFamily::Name(TERM_FONT.into()), term_chain);
-    fonts.families.insert(FontFamily::Proportional, chain(ui, &egui_prop));
+    let prop_chain = chain(ui, &egui_prop);
+    // Bold family for rendered markdown: bold Latin and Hangul faces first,
+    // then the regular chain so nothing renders as tofu.
+    let mut bold: Vec<String> = ui_bold.into_iter().chain(kr_bold).collect();
+    for f in &prop_chain {
+        if !bold.contains(f) {
+            bold.push(f.clone());
+        }
+    }
+    fonts.families.insert(FontFamily::Name(crate::md::BOLD_FONT.into()), bold);
+    fonts.families.insert(FontFamily::Proportional, prop_chain);
     ctx.set_fonts(fonts);
 }
 
