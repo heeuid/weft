@@ -302,3 +302,39 @@ mod win {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    /// A weft started before Node.js was installed (node missing from its own
+    /// PATH) still runs npm's mmdc.cmd, which calls `node`: the PATH comes from
+    /// the registry. Needs node on the system/user PATH; a fake mmdc.cmd stands
+    /// in for mermaid-cli.
+    #[test]
+    #[ignore]
+    #[cfg(windows)]
+    fn stale_path_still_finds_node() {
+        let dir = std::env::temp_dir().join(format!("weft-mmdc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fake = dir.join("mmdc.cmd");
+        // mmdc -i IN -o OUT ...: write OUT with node, as the real one would.
+        std::fs::write(&fake, "@node -e \"require('fs').writeFileSync(process.argv[1], 'png')\" %4\r\n").unwrap();
+        let old = std::env::var_os("PATH").unwrap_or_default();
+        let without_node: Vec<_> = std::env::split_paths(&old).filter(|d| !d.join("node.exe").is_file()).collect();
+        std::env::set_var("PATH", std::env::join_paths(without_node).unwrap());
+        assert!(super::node_in(&std::env::var_os("PATH").unwrap()).is_none(), "node hidden from our PATH");
+        let res = super::render(&fake, &dir.join("out"), 1, "graph TD; A-->B", true);
+        std::env::set_var("PATH", old);
+        let png = res.expect("render with the registry PATH");
+        assert_eq!(std::fs::read_to_string(png).unwrap(), "png");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn cmd_errors_are_not_mojibake() {
+        let out = std::process::Command::new("cmd").args(["/C", "no-such-command-xyz"]).output().unwrap();
+        let msg = super::decode(&out.stderr);
+        assert!(!msg.contains('\u{fffd}'), "{msg}");
+        assert!(msg.contains("no-such-command-xyz"), "{msg}");
+    }
+}
