@@ -238,17 +238,43 @@ impl App {
         if k(Modifiers::CTRL, Key::Num0) {
             cmds.push(Cmd::FontReset);
         }
-        // Ctrl+wheel: text size; Ctrl+Shift+wheel: the whole UI.
-        let (zoom, shift) = ctx.input(|i| (i.zoom_delta(), i.modifiers.shift));
+        // Ctrl+wheel: text size; Ctrl+Shift+wheel: the whole UI. With Shift
+        // held egui turns the wheel into horizontal scrolling, so its zoom
+        // delta stays 1: read those wheel events directly (one notch = one step).
+        let (zoom, ui_wheel) = ctx.input(|i| {
+            let notches: f32 = i
+                .events
+                .iter()
+                .filter_map(|e| match e {
+                    egui::Event::MouseWheel { unit, delta, modifiers } if modifiers.ctrl && modifiers.shift => Some(match unit {
+                        egui::MouseWheelUnit::Point => (delta.x + delta.y) / 50.0,
+                        _ => delta.x + delta.y,
+                    }),
+                    _ => None,
+                })
+                .sum();
+            (i.zoom_delta(), notches)
+        });
         if zoom != 1.0 {
             self.zoom_acc *= zoom;
             while self.zoom_acc > 1.1 {
                 self.zoom_acc /= 1.1;
-                cmds.push(if shift { Cmd::UiUp } else { Cmd::FontUp });
+                cmds.push(Cmd::FontUp);
             }
             while self.zoom_acc < 1.0 / 1.1 {
                 self.zoom_acc *= 1.1;
-                cmds.push(if shift { Cmd::UiDown } else { Cmd::FontDown });
+                cmds.push(Cmd::FontDown);
+            }
+        }
+        if ui_wheel != 0.0 {
+            self.ui_wheel_acc += ui_wheel;
+            while self.ui_wheel_acc >= 1.0 {
+                self.ui_wheel_acc -= 1.0;
+                cmds.push(Cmd::UiUp);
+            }
+            while self.ui_wheel_acc <= -1.0 {
+                self.ui_wheel_acc += 1.0;
+                cmds.push(Cmd::UiDown);
             }
         }
         let multi = self.pane_rects.len() > 1;

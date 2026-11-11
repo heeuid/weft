@@ -752,6 +752,8 @@ pub struct App {
     pub theme_menu: Option<egui::Rect>,
     /// Ctrl+wheel zoom not yet turned into a size step (touchpads send small steps).
     pub zoom_acc: f32,
+    /// Ctrl+Shift+wheel notches not yet turned into a UI scale step.
+    pub ui_wheel_acc: f32,
     /// A panel being dragged by its grip to another window edge.
     pub dock_drag: Option<Region>,
     /// Where each panel was drawn this frame (drop targets).
@@ -846,6 +848,7 @@ impl App {
             auth_prompt: None,
             theme_menu: None,
             zoom_acc: 1.0,
+            ui_wheel_acc: 0.0,
             dock_drag: None,
             panel_rects: HashMap::new(),
             layout_rect: egui::Rect::NOTHING,
