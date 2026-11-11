@@ -1956,15 +1956,6 @@ fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size:
             .layouter(&mut layouter)
             .show(ui);
         changed = out.response.changed();
-        // Typing ``` (or ~~~) opens a block: close it right away, so the rest of
-        // the document doesn't turn into code until the closing fence exists.
-        if changed {
-            if let Some(c) = out.cursor_range.map(|r| r.primary.ccursor.index) {
-                if let Some((at, close)) = md::fence_autoclose(&f.text, c) {
-                    f.text.insert_str(at, &close);
-                }
-            }
-        }
         let galley = &out.galley;
         let origin = out.galley_pos;
         let at = |i: usize| galley.pos_from_ccursor(egui::text::CCursor::new(i)).translate(origin.to_vec2());

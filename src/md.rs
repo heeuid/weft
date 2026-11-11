@@ -427,78 +427,67 @@ impl Ctx<'_> {
     }
 }
 
-/// A fence opener (```lang / ~~~) whose closing fence exists below: an
-/// unclosed ``` is plain text, not the rest of the document as code.
-fn opens_fence(lines: &[&str], ln: usize) -> Option<String> {
-    let t = lines[ln].trim_start();
-    if !(t.starts_with("```") || t.starts_with("~~~")) {
-        return None;
-    }
-    let marker = t[..3].to_string();
-    lines[ln + 1..].iter().any(|l| closes_fence(l, &marker)).then_some(marker)
-}
-
-/// A closing fence: only the marker characters (at least as many) on the line.
-fn closes_fence(line: &str, marker: &str) -> bool {
-    let t = line.trim();
-    let c = marker.chars().next().unwrap_or('`');
-    t.starts_with(marker) && t.chars().all(|x| x == c)
-}
-
-/// Whether line `ln` starts inside an open fenced block, judging only by the
-/// lines above it.
-fn inside_fence(text: &str, ln: usize) -> bool {
-    let mut open: Option<String> = None;
-    for line in text.split('\n').take(ln) {
-        let line = line.strip_suffix('\r').unwrap_or(line);
-        let t = line.trim_start();
-        match &open {
-            Some(m) => {
-                if closes_fence(line, m) {
+/// Fenced code blocks as (opening line, closing line).
+///
+/// Plain markdown pairs fences from the top, so typing or deleting one fence
+/// re-pairs every block below it and flips the rest of the document between
+/// code and text. While editing (cursor known) blocks are paired from the
+/// cursor outwards instead: from the top down to the cursor line, and from the
+/// bottom up below it. A fence being typed or deleted at the cursor can't
+/// disturb the blocks around it: unmatched, it stays plain text until its
+/// partner is typed. An opener above and a closer below the cursor (editing
+/// inside a block) still pair.
+pub fn fence_blocks(lines: &[&str], cursor: Option<usize>) -> Vec<(usize, usize)> {
+    // (line, marker char, bare: nothing but marker characters)
+    let fences: Vec<(usize, char, bool)> = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(i, l)| {
+            let t = l.trim_end_matches(['\n', '\r']).trim();
+            let c = if t.starts_with("```") { '`' } else if t.starts_with("~~~") { '~' } else { return None };
+            Some((i, c, t.chars().all(|x| x == c)))
+        })
+        .collect();
+    // Top down: a bare fence of the same kind closes; anything else inside is content.
+    let top_down = |fs: &[(usize, char, bool)]| {
+        let mut pairs = Vec::new();
+        let mut open: Option<(usize, char)> = None;
+        for &(i, c, bare) in fs {
+            match open {
+                Some((o, oc)) if c == oc && bare => {
+                    pairs.push((o, i));
                     open = None;
                 }
-            }
-            None => {
-                if t.starts_with("```") || t.starts_with("~~~") {
-                    open = Some(t[..3].to_string());
-                }
+                Some(_) => {}
+                None => open = Some((i, c)),
             }
         }
+        (pairs, open)
+    };
+    let Some(cursor) = cursor else { return top_down(&fences).0 };
+    let split = fences.iter().position(|f| f.0 > cursor).unwrap_or(fences.len());
+    let (mut pairs, open_above) = top_down(&fences[..split]);
+    // Bottom up: a bare fence waits for its opener; a fence with a language
+    // and no closer below is plain text.
+    let mut closer: Option<(usize, char)> = None;
+    for &(i, c, bare) in fences[split..].iter().rev() {
+        match closer {
+            Some((cl, cc)) if c == cc => {
+                pairs.push((i, cl));
+                closer = None;
+            }
+            Some(_) => {}
+            None if bare => closer = Some((i, c)),
+            None => {}
+        }
     }
-    open.is_some()
-}
-
-/// After typing: if the cursor (char index) ends a line that is just a new
-/// opening fence (``` or ~~~, optionally with a language), the text to insert
-/// right after it to close the block, and the byte position. Not when the
-/// fence closes a block that is already open above.
-pub fn fence_autoclose(text: &str, cursor: usize) -> Option<(usize, String)> {
-    let byte = text.char_indices().nth(cursor).map(|(b, _)| b).unwrap_or(text.len());
-    let line_start = text[..byte].rfind('\n').map(|i| i + 1).unwrap_or(0);
-    let line_end = text[byte..].find('\n').map(|i| byte + i).unwrap_or(text.len());
-    let line = text[line_start..line_end].trim_end_matches('\r');
-    // The cursor sits at the end of the fence line.
-    if byte != line_start + line.len() {
-        return None;
+    if let (Some((o, oc)), Some((cl, cc))) = (open_above, closer) {
+        if oc == cc {
+            pairs.push((o, cl));
+        }
     }
-    let t = line.trim_start();
-    let marker = if t.starts_with("```") { "```" } else if t.starts_with("~~~") { "~~~" } else { return None };
-    let rest = &t[3..];
-    if rest.starts_with(marker.chars().next().unwrap()) || rest.contains(' ') && rest.trim().contains(' ') {
-        return None;
-    }
-    let ln = text[..line_start].matches('\n').count();
-    if inside_fence(text, ln) {
-        return None;
-    }
-    // Already closed right below (e.g. typing the language after ``` was closed).
-    let next = text[line_end..].strip_prefix("\r\n").or_else(|| text[line_end..].strip_prefix('\n')).map(|r| r.split('\n').next().unwrap_or(""));
-    if next.map(|n| closes_fence(n.trim_end_matches('\r'), marker)).unwrap_or(false) {
-        return None;
-    }
-    let indent = &line[..line.len() - t.len()];
-    let eol = if text[line_start..].contains("\r\n") { "\r\n" } else { "\n" };
-    Some((line_end, format!("{eol}{indent}{marker}")))
+    pairs.sort();
+    pairs
 }
 
 fn heading_level(line: &str) -> Option<(usize, usize)> {
@@ -518,7 +507,8 @@ fn is_rule(t: &str) -> bool {
 /// An open fenced block: closing marker, first char, and for a mermaid
 /// block its source and the height reserved for the diagram (if collapsed).
 struct Fence {
-    marker: String,
+    /// Line of the closing fence.
+    close: usize,
     start: usize,
     mermaid: Option<(String, Option<f32>)>,
     /// The cursor is in the block (fences included): show both fence lines.
@@ -539,7 +529,8 @@ pub fn layout(text: &str, cursor_line: Option<usize>, size: f32, breaks: bool, d
     let mut byte_pos = 0usize;
     let mut fence: Option<Fence> = None;
     let lines: Vec<&str> = text.split_inclusive('\n').collect();
-    let soft = if breaks { vec![false; lines.len()] } else { soft_breaks(&lines, cursor_line) };
+    let blocks = fence_blocks(&lines, cursor_line);
+    let soft = if breaks { vec![false; lines.len()] } else { soft_breaks(&lines, cursor_line, &blocks) };
     let mut table: Option<Table> = None;
     let mut in_comment = false;
     for (ln, raw_line) in lines.iter().copied().enumerate() {
@@ -597,7 +588,7 @@ pub fn layout(text: &str, cursor_line: Option<usize>, size: f32, breaks: bool, d
 
         if let Some(f) = fence.as_ref() {
             let collapsed = f.mermaid.as_ref().and_then(|m| m.1);
-            if closes_fence(line, &f.marker) {
+            if ln == f.close {
                 if f.editing {
                     cx.cursor_line = true;
                 }
@@ -635,10 +626,8 @@ pub fn layout(text: &str, cursor_line: Option<usize>, size: f32, breaks: bool, d
                 cx.blank(line, body);
                 decos.push(Deco::Rule { at: char_pos });
             }
-        } else if let Some(marker) = opens_fence(&lines, ln) {
+        } else if let Some(&(_, close)) = blocks.iter().find(|b| b.0 == ln) {
             let lang = trimmed[3..].trim();
-            // opens_fence found the closing line, so this is Some.
-            let close = (ln + 1..lines.len()).find(|&i| closes_fence(lines[i], &marker)).unwrap_or(ln);
             let editing = cursor_line.map(|cl| (ln..=close).contains(&cl)).unwrap_or(false);
             let mut mermaid = None;
             if lang.eq_ignore_ascii_case("mermaid") {
@@ -646,7 +635,7 @@ pub fn layout(text: &str, cursor_line: Option<usize>, size: f32, breaks: bool, d
                 let h = if editing { None } else { diagram(&source) };
                 mermaid = Some((source, h));
             }
-            fence = Some(Fence { marker, start: char_pos, mermaid, editing });
+            fence = Some(Fence { close, start: char_pos, mermaid, editing });
             if editing {
                 cx.cursor_line = true;
             }
@@ -818,8 +807,7 @@ enum Kind {
 /// Per line: does its newline join the next line into the same paragraph?
 /// Not for hard breaks (two trailing spaces or a backslash), nor anywhere in
 /// the paragraph holding the cursor, which shows its lines as written.
-fn soft_breaks(lines: &[&str], cursor_line: Option<usize>) -> Vec<bool> {
-    let mut in_fence: Option<String> = None;
+fn soft_breaks(lines: &[&str], cursor_line: Option<usize>, blocks: &[(usize, usize)]) -> Vec<bool> {
     let mut in_comment = false;
     let kinds: Vec<Kind> = lines
         .iter()
@@ -827,14 +815,7 @@ fn soft_breaks(lines: &[&str], cursor_line: Option<usize>) -> Vec<bool> {
         .map(|(ln, raw)| {
             let line = raw.trim_end_matches(['\n', '\r']);
             let t = line.trim_start();
-            if let Some(m) = &in_fence {
-                if closes_fence(line, m) {
-                    in_fence = None;
-                }
-                return Kind::Other;
-            }
-            if let Some(m) = opens_fence(lines, ln) {
-                in_fence = Some(m);
+            if blocks.iter().any(|&(a, b)| (a..=b).contains(&ln)) {
                 return Kind::Other;
             }
             if in_comment || (t.starts_with("<!--") && !t[4..].contains("-->")) {
@@ -970,26 +951,23 @@ mod tests {
     }
 
     #[test]
-    fn typing_a_fence_closes_it() {
-        // "```" just typed at the end of a line: close it right below.
-        let t = "intro\n```";
-        assert_eq!(fence_autoclose(t, 9), Some((9, "\n```".to_string())));
-        let t = "a\n```rust\nb";
-        assert_eq!(fence_autoclose(t, 9), Some((9, "\n```".to_string())));
-        // Even with a block further down (that is what used to turn everything into code).
-        let t = "```\n## 현재 단계\n```py\nx\n```\n";
-        assert_eq!(fence_autoclose(t, 3), Some((3, "\n```".to_string())));
-        // Closing an open block above: nothing to add.
-        let t = "```\ncode\n```";
-        assert_eq!(fence_autoclose(t, 12), None);
-        // Cursor not at the end, or not a fence.
-        assert_eq!(fence_autoclose("```x", 2), None);
-        assert_eq!(fence_autoclose("``", 2), None);
-        assert_eq!(fence_autoclose("````", 4), None);
-        assert_eq!(fence_autoclose("``` a b", 7), None);
-        // Typing the language after the fence was closed: no second closing line.
-        assert_eq!(fence_autoclose("```r\n```", 4), None);
-        assert_eq!(fence_autoclose("```rust\r\n```\r\n", 7), None);
+    fn fences_pair_outward_from_the_cursor() {
+        let doc: Vec<&str> = "intro\n```\nmore\n```py\nx\n```\nend\n".split_inclusive('\n').collect();
+        // Not editing: plain markdown, the lone ``` (line 1) swallows the py block's opener.
+        assert_eq!(fence_blocks(&doc, None), [(1, 5)]);
+        // Typing ``` on line 1 (cursor there): it stays text, the py block is intact.
+        assert_eq!(fence_blocks(&doc, Some(1)), [(3, 5)]);
+        // Then Enter and ``` again: the new pair is a block, the py block still intact.
+        let doc2: Vec<&str> = "intro\n```\n```\nmore\n```py\nx\n```\n".split_inclusive('\n').collect();
+        assert_eq!(fence_blocks(&doc2, Some(2)), [(1, 2), (4, 6)]);
+        // Deleting the closing ``` of a pair (cursor on that now empty line).
+        let doc3: Vec<&str> = "```\n\nmore\n```\ny\n```\n".split_inclusive('\n').collect();
+        assert_eq!(fence_blocks(&doc3, Some(1)), [(3, 5)], "the lone opener stays text");
+        // Cursor inside a block: its opener above and closer below still pair.
+        let doc4: Vec<&str> = "```\ncode\n```\ntext\n```rs\nfn\n```\n".split_inclusive('\n').collect();
+        assert_eq!(fence_blocks(&doc4, Some(1)), [(0, 2), (4, 6)]);
+        assert_eq!(fence_blocks(&doc4, Some(5)), [(0, 2), (4, 6)]);
+        assert_eq!(fence_blocks(&doc4, None), [(0, 2), (4, 6)]);
     }
 
     #[test]
