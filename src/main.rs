@@ -41,6 +41,9 @@ impl eframe::App for WeftApp {
         if wanted != theme::active() {
             theme::apply(ctx, wanted);
         }
+        if (ctx.zoom_factor() - app.settings.ui_scale).abs() > 0.001 {
+            ctx.set_zoom_factor(app.settings.ui_scale);
+        }
         app.poll();
         app.handle_global_keys(ctx);
 

@@ -17,6 +17,9 @@ use std::time::{Duration, Instant};
 fn d_font() -> f32 {
     14.0
 }
+fn d_one() -> f32 {
+    1.0
+}
 fn d_true() -> bool {
     true
 }
@@ -34,6 +37,9 @@ fn d_theme_light() -> String {
 pub struct Settings {
     #[serde(default = "d_font")]
     pub font_size: f32,
+    /// Scale of the whole window (icons, tabs, panels and text), 1.0 = 100%.
+    #[serde(default = "d_one")]
+    pub ui_scale: f32,
     #[serde(default)]
     pub profiles: Vec<Profile>,
     #[serde(default = "d_true")]
@@ -75,7 +81,7 @@ impl Default for Settings {
                 },
             });
         }
-        Settings { font_size: d_font(), profiles, sidebar: true, show_hidden: false, follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, session: Vec::new() }
+        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, show_hidden: false, follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, session: Vec::new() }
     }
 }
 
@@ -497,6 +503,8 @@ pub struct App {
     pub auth_prompt: Option<(String, String)>,
     /// Theme picker popup, anchored below the button (rect) that opened it.
     pub theme_menu: Option<egui::Rect>,
+    /// Ctrl+wheel zoom not yet turned into a size step (touchpads send small steps).
+    pub zoom_acc: f32,
     /// ssh passwords for this session only; never written to disk or logs.
     pub secrets: HashMap<String, String>,
     auth_prompted: HashSet<String>,
@@ -584,6 +592,7 @@ impl App {
             agent_retried: HashSet::new(),
             auth_prompt: None,
             theme_menu: None,
+            zoom_acc: 1.0,
             secrets: HashMap::new(),
             auth_prompted: HashSet::new(),
             last_save: Instant::now(),

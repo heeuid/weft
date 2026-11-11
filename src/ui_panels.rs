@@ -44,6 +44,10 @@ enum Cmd {
     ClearScrollback,
     Reconnect,
     FontUp,
+    FontReset,
+    UiUp,
+    UiDown,
+    UiReset,
     FontDown,
     Theme(usize),
     ThemeSystem,
@@ -73,6 +77,10 @@ const COMMANDS: &[(Cmd, &str, &str)] = &[
     (Cmd::Reconnect, "Reconnect agent for this host", ""),
     (Cmd::FontUp, "Bigger font", "Ctrl+="),
     (Cmd::FontDown, "Smaller font", "Ctrl+-"),
+    (Cmd::FontReset, "Default font size", "Ctrl+0"),
+    (Cmd::UiUp, "Bigger UI (icons, tabs, panels)", "Ctrl+Shift+wheel"),
+    (Cmd::UiDown, "Smaller UI (icons, tabs, panels)", "Ctrl+Shift+wheel"),
+    (Cmd::UiReset, "UI scale 100%", ""),
     (Cmd::ThemePicker, "Theme…", ""),
     (Cmd::ThemeSystem, "Theme: follow system (dark/light)", ""),
     (Cmd::MarkdownBreaks, "Markdown: toggle line breaks (GitHub PR style / CommonMark)", ""),
@@ -158,6 +166,10 @@ impl App {
             }
             Cmd::FontUp => self.settings.font_size = (self.settings.font_size + 1.0).min(32.0),
             Cmd::FontDown => self.settings.font_size = (self.settings.font_size - 1.0).max(8.0),
+            Cmd::FontReset => self.settings.font_size = 14.0,
+            Cmd::UiUp => self.settings.ui_scale = ((self.settings.ui_scale * 10.0).round() + 1.0).min(25.0) / 10.0,
+            Cmd::UiDown => self.settings.ui_scale = ((self.settings.ui_scale * 10.0).round() - 1.0).max(6.0) / 10.0,
+            Cmd::UiReset => self.settings.ui_scale = 1.0,
             Cmd::Theme(i) => self.pick_theme(i),
             Cmd::ThemeSystem => self.settings.theme = "system".into(),
             Cmd::MarkdownBreaks => {
@@ -222,6 +234,22 @@ impl App {
         }
         if k(Modifiers::CTRL, Key::Minus) {
             cmds.push(Cmd::FontDown);
+        }
+        if k(Modifiers::CTRL, Key::Num0) {
+            cmds.push(Cmd::FontReset);
+        }
+        // Ctrl+wheel: text size; Ctrl+Shift+wheel: the whole UI.
+        let (zoom, shift) = ctx.input(|i| (i.zoom_delta(), i.modifiers.shift));
+        if zoom != 1.0 {
+            self.zoom_acc *= zoom;
+            while self.zoom_acc > 1.1 {
+                self.zoom_acc /= 1.1;
+                cmds.push(if shift { Cmd::UiUp } else { Cmd::FontUp });
+            }
+            while self.zoom_acc < 1.0 / 1.1 {
+                self.zoom_acc *= 1.1;
+                cmds.push(if shift { Cmd::UiDown } else { Cmd::FontDown });
+            }
         }
         let multi = self.pane_rects.len() > 1;
         let mut dir = None;
@@ -384,6 +412,29 @@ impl App {
                 ui.label(small(cwd, theme::text_faint()));
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                // Sizes, always at hand: clicking doesn't close anything; the value resets.
+                let mut step: Option<Cmd> = None;
+                ui.spacing_mut().item_spacing.x = 0.0;
+                let mut btn = |ui: &mut Ui, label: String, tip: &str, cmd: Cmd, color: Color32| {
+                    let b = egui::Button::new(small(label, color)).frame(false).min_size(vec2(18.0, 18.0));
+                    if ui.add(b).on_hover_text(tip).clicked() {
+                        step = Some(cmd);
+                    }
+                };
+                let pct = format!("{:.0}%", self.settings.ui_scale * 100.0);
+                btn(ui, "+".into(), "bigger UI: icons, tabs, panels (Ctrl+Shift+wheel)", Cmd::UiUp, theme::text_dim());
+                btn(ui, pct, "UI scale - click: 100%", Cmd::UiReset, theme::text_faint());
+                btn(ui, "\u{2212}".into(), "smaller UI (Ctrl+Shift+wheel)", Cmd::UiDown, theme::text_dim());
+                ui.add_space(10.0);
+                let size = format!("{:.0}", self.settings.font_size);
+                btn(ui, "A+".into(), "bigger text: terminal, editor (Ctrl+wheel, Ctrl+=)", Cmd::FontUp, theme::text_dim());
+                btn(ui, size, "text size - click: default (Ctrl+0)", Cmd::FontReset, theme::text_faint());
+                btn(ui, "A\u{2212}".into(), "smaller text (Ctrl+wheel, Ctrl+-)", Cmd::FontDown, theme::text_dim());
+                if let Some(c) = step {
+                    self.run_cmd(c);
+                }
+                ui.spacing_mut().item_spacing.x = 10.0;
+                ui.add_space(14.0);
                 ui.label(small("Ctrl+Space composer · Ctrl+Shift+P commands".into(), theme::text_faint()));
                 if let Some(p) = self.active_pane() {
                     ui.label(small(format!("{}×{}", p.term.cols, p.term.rows), theme::text_faint()));
@@ -1119,7 +1170,11 @@ impl App {
         if clicked_outside(ctx, area.response.rect) {
             keep = false;
         }
-        if let Some(c) = run {
+        if let Some(c) = run.filter(|c| matches!(c, Cmd::FontUp | Cmd::FontDown | Cmd::FontReset | Cmd::UiUp | Cmd::UiDown | Cmd::UiReset)) {
+            // Size steps keep the palette open so they can be clicked repeatedly.
+            self.run_cmd(c);
+            self.palette = Some(st);
+        } else if let Some(c) = run {
             self.palette = None;
             self.focus_term = true;
             self.run_cmd(c);
