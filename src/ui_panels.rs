@@ -610,17 +610,22 @@ impl App {
         // Filter over everything under the root: fuzzy / glob / regex.
         let mut open_first = false;
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 2.0;
-            let w = (ui.available_width() - 132.0).max(60.0);
+            ui.spacing_mut().item_spacing.x = 4.0;
+            let w = (ui.available_width() - 72.0).max(60.0);
             let r = ui.add(TextEdit::singleline(&mut self.side.filter).hint_text(self.settings.find_mode.hint()).desired_width(w));
             open_first = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
-            for m in FindMode::ALL {
-                let sel = self.settings.find_mode == m;
-                let label = RichText::new(m.label()).size(11.5).color(if sel { theme::text() } else { theme::text_faint() });
-                if ui.selectable_label(sel, label).on_hover_text(m.hint()).clicked() {
-                    self.settings.find_mode = m;
-                }
-            }
+            // One dropdown for the match mode.
+            let before = self.settings.find_mode;
+            egui::ComboBox::from_id_salt("find-mode")
+                .selected_text(RichText::new(before.label()).size(11.5))
+                .width(64.0)
+                .show_ui(ui, |ui| {
+                    for m in FindMode::ALL {
+                        ui.selectable_value(&mut self.settings.find_mode, m, m.label()).on_hover_text(m.hint());
+                    }
+                })
+                .response
+                .on_hover_text(before.hint());
         });
         ui.add_space(2.0);
         if !self.side.filter.trim().is_empty() {
