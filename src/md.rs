@@ -471,15 +471,17 @@ struct Fence {
 /// its markup. `diagram` gives the height to reserve for a rendered mermaid
 /// source (None: show it as code).
 ///
+/// `breaks`: every newline is a line break, as in GitHub PR descriptions and
+/// comments; otherwise a single newline inside a paragraph is a space (CommonMark).
 /// `measure` gives the unwrapped width of a text in a font (aligns table columns).
-pub fn layout(text: &str, cursor_line: Option<usize>, size: f32, diagram: &mut dyn FnMut(&str) -> Option<f32>, measure: &mut dyn FnMut(&str, &FontId) -> f32) -> MdLayout {
+pub fn layout(text: &str, cursor_line: Option<usize>, size: f32, breaks: bool, diagram: &mut dyn FnMut(&str) -> Option<f32>, measure: &mut dyn FnMut(&str, &FontId) -> f32) -> MdLayout {
     let mut job = LayoutJob::default();
     let mut decos = Vec::new();
     let mut char_pos = 0usize; // char index of the current line start
     let mut byte_pos = 0usize;
     let mut fence: Option<Fence> = None;
     let lines: Vec<&str> = text.split_inclusive('\n').collect();
-    let soft = soft_breaks(&lines, cursor_line);
+    let soft = if breaks { vec![false; lines.len()] } else { soft_breaks(&lines, cursor_line) };
     let mut table: Option<Table> = None;
     let mut in_comment = false;
     for (ln, raw_line) in lines.iter().copied().enumerate() {
@@ -852,9 +854,9 @@ mod tests {
     #[test]
     fn layout_keeps_every_byte_of_the_source() {
         let src = "# 제목\n\n**굵게** 와 *기울임*, `code`, [링크](http://x)\n- [ ] 할 일\n- [x] 끝\n> 인용\n```rs\nfn main() {}\n```\n---\n| a | b |\n";
-        let l = layout(src, None, 14.0, &mut |_| None, &mut mono);
+        let l = layout(src, None, 14.0, false, &mut |_| None, &mut mono);
         assert_eq!(l.job.text, src, "the editor needs the exact source text");
-        assert_eq!(layout("a\nb", None, 14.0, &mut |_| None, &mut mono).job.text, "a b");
+        assert_eq!(layout("a\nb", None, 14.0, false, &mut |_| None, &mut mono).job.text, "a b");
         let covered: usize = l.job.sections.iter().map(|s| s.byte_range.len()).sum();
         assert_eq!(covered, src.len());
     }
@@ -862,7 +864,7 @@ mod tests {
     #[test]
     fn tables_hide_pipes_and_align_columns() {
         let src = "| name | n |\n|:--|--:|\n| a | 10 |\n| longer | 2 |\n";
-        let l = layout(src, None, 10.0, &mut |_| None, &mut mono);
+        let l = layout(src, None, 10.0, false, &mut |_| None, &mut mono);
         assert_eq!(l.job.text, src);
         let Some(Deco::Table { rows, cols, .. }) = l.decos.iter().find(|d| matches!(d, Deco::Table { .. })) else { panic!("no table") };
         assert_eq!(rows.len(), 3, "header + 2 rows, separator excluded");
@@ -881,14 +883,14 @@ mod tests {
         let shown: String = l.job.sections.iter().filter(|s| s.format.color != Color32::TRANSPARENT).map(|s| &l.job.text[s.byte_range.clone()]).collect();
         assert!(!shown.contains('|'), "{shown}");
         // With the cursor inside, the table is raw.
-        let raw = layout(src, Some(2), 10.0, &mut |_| None, &mut mono);
+        let raw = layout(src, Some(2), 10.0, false, &mut |_| None, &mut mono);
         assert!(!raw.decos.iter().any(|d| matches!(d, Deco::Table { .. })));
     }
 
     #[test]
     fn inline_html_renders() {
         let src = "a <b>bold</b> &amp; <kbd>K</kbd><!-- note --> x<br>y\n<div align=\"center\">\n<img src=\"p.png\" alt=\"pic\">\n</div>\n<hr>\nVec<T> &nope; a < b\n";
-        let l = layout(src, None, 14.0, &mut |_| None, &mut mono);
+        let l = layout(src, None, 14.0, false, &mut |_| None, &mut mono);
         assert_eq!(l.job.text.chars().count(), src.chars().count());
         let v = visible(&l);
         assert!(v.contains("a bold & K x"), "{v}");
@@ -900,19 +902,19 @@ mod tests {
         assert!(l.decos.iter().any(|d| matches!(d, Deco::Rule { .. })));
         assert!(l.job.sections.iter().any(|s| s.format.font_id.family == FontFamily::Name(BOLD_FONT.into()) && &l.job.text[s.byte_range.clone()] == "bold"));
         // On the cursor line the source is shown as written.
-        let raw = layout(src, Some(0), 14.0, &mut |_| None, &mut mono);
+        let raw = layout(src, Some(0), 14.0, false, &mut |_| None, &mut mono);
         assert!(raw.job.text.starts_with("a <b>bold</b> &amp;"));
     }
 
     #[test]
     fn unclosed_fence_is_plain_text() {
         let src = "```\n**bold** after\n";
-        let l = layout(src, None, 14.0, &mut |_| None, &mut mono);
+        let l = layout(src, None, 14.0, false, &mut |_| None, &mut mono);
         assert!(!l.decos.iter().any(|d| matches!(d, Deco::Code { .. })));
         assert!(l.job.sections.iter().any(|s| s.format.font_id.family == FontFamily::Name(BOLD_FONT.into())));
         // ```rust inside a block does not close it.
         let src = "```\n```rust\nx\n```\n";
-        let l = layout(src, None, 14.0, &mut |_| None, &mut mono);
+        let l = layout(src, None, 14.0, false, &mut |_| None, &mut mono);
         let codes: Vec<_> = l.decos.iter().filter(|d| matches!(d, Deco::Code { .. })).collect();
         assert_eq!(codes, [&Deco::Code { start: 0, end: src.chars().count() - 1 }]);
     }
@@ -920,7 +922,7 @@ mod tests {
     #[test]
     fn quotes_join_lines_and_split_on_bare_marker() {
         let src = "> a\n> b\n>\n> c\n";
-        let l = layout(src, None, 14.0, &mut |_| None, &mut mono);
+        let l = layout(src, None, 14.0, false, &mut |_| None, &mut mono);
         assert_eq!(l.job.text, "> a > b\n>\n> c\n");
         // The joined line's second "> " takes no room.
         let b = l.job.sections.iter().find(|s| s.byte_range.start == 4).unwrap();
@@ -928,32 +930,39 @@ mod tests {
     }
 
     #[test]
+    fn breaks_mode_keeps_every_newline() {
+        let src = "> 678\n> 1234\none\ntwo\n";
+        let l = layout(src, None, 14.0, true, &mut |_| None, &mut mono);
+        assert_eq!(l.job.text, src);
+    }
+
+    #[test]
     fn single_newlines_join_a_paragraph() {
         let src = "one\ntwo  \nthree\n\nfour\n- item\nmore\n# h\nx\n```\na\nb\n```\n";
-        let l = layout(src, None, 14.0, &mut |_| None, &mut mono);
+        let l = layout(src, None, 14.0, false, &mut |_| None, &mut mono);
         assert_eq!(l.job.text.chars().count(), src.chars().count(), "cursor positions must match the source");
         let lines: Vec<&str> = l.job.text.split('\n').collect();
         assert_eq!(&lines[..6], ["one two  ", "three", "", "four", "- item more", "# h"]);
         assert_eq!(&lines[6..10], ["x", "```", "a", "b"]);
         // The paragraph holding the cursor keeps its lines.
-        let l = layout(src, Some(1), 14.0, &mut |_| None, &mut mono);
+        let l = layout(src, Some(1), 14.0, false, &mut |_| None, &mut mono);
         assert!(l.job.text.starts_with("one\ntwo  \nthree\n"));
     }
 
     #[test]
     fn markup_hidden_except_on_cursor_line() {
         let src = "## Title **bold**\nnext";
-        let away = visible(&layout(src, Some(1), 14.0, &mut |_| None, &mut mono));
+        let away = visible(&layout(src, Some(1), 14.0, false, &mut |_| None, &mut mono));
         assert!(!away.contains('#') && !away.contains("**"), "{away}");
         assert!(away.contains("Title") && away.contains("bold"));
-        let here = visible(&layout(src, Some(0), 14.0, &mut |_| None, &mut mono));
+        let here = visible(&layout(src, Some(0), 14.0, false, &mut |_| None, &mut mono));
         assert!(here.contains("## ") && here.contains("**bold**"), "{here}");
     }
 
     #[test]
     fn decorations_for_blocks() {
         let src = "- a\n- [x] done\n> q\n```\ncode\n```\n---\n# H\n";
-        let l = layout(src, None, 14.0, &mut |_| None, &mut mono);
+        let l = layout(src, None, 14.0, false, &mut |_| None, &mut mono);
         assert!(l.decos.contains(&Deco::Bullet { at: 0 }));
         let check = l.decos.iter().find_map(|d| match d {
             Deco::Check { byte, checked, .. } => Some((*byte, *checked)),
@@ -971,7 +980,7 @@ mod tests {
     fn mermaid_block_collapses_into_reserved_space() {
         let src = "text\n```mermaid\ngraph TD; A-->B\n```\nafter\n";
         let mut asked = Vec::new();
-        let l = layout(src, Some(0), 14.0, &mut |s: &str| {
+        let l = layout(src, Some(0), 14.0, false, &mut |s: &str| {
             asked.push(s.to_string());
             Some(120.0)
         }, &mut mono);
@@ -982,7 +991,7 @@ mod tests {
         assert!(l.decos.iter().any(|d| matches!(d, Deco::Diagram { collapsed: true, .. })));
         // Cursor inside the block: edit the source, no diagram requested.
         let mut asked = 0;
-        let l = layout(src, Some(2), 14.0, &mut |_| {
+        let l = layout(src, Some(2), 14.0, false, &mut |_| {
             asked += 1;
             Some(120.0)
         }, &mut mono);
@@ -993,7 +1002,7 @@ mod tests {
 
     #[test]
     fn snake_case_is_not_italic() {
-        let l = layout("call my_func_name now", None, 14.0, &mut |_| None, &mut mono);
+        let l = layout("call my_func_name now", None, 14.0, false, &mut |_| None, &mut mono);
         assert!(l.job.sections.iter().all(|s| !s.format.italics));
     }
 }

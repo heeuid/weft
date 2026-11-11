@@ -51,6 +51,10 @@ pub struct Settings {
     pub theme_dark: String,
     #[serde(default = "d_theme_light")]
     pub theme_light: String,
+    /// Markdown: every newline is a line break (GitHub PR descriptions and
+    /// comments); false: a single newline inside a paragraph is a space (CommonMark).
+    #[serde(default = "d_true")]
+    pub markdown_breaks: bool,
     #[serde(default)]
     pub session: Vec<SavedNode>,
 }
@@ -70,7 +74,7 @@ impl Default for Settings {
                 },
             });
         }
-        Settings { font_size: d_font(), profiles, sidebar: true, show_hidden: false, follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), session: Vec::new() }
+        Settings { font_size: d_font(), profiles, sidebar: true, show_hidden: false, follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: true, session: Vec::new() }
     }
 }
 

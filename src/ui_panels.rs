@@ -26,6 +26,7 @@ pub fn host_color(host: &str) -> Color32 {
 
 #[derive(Clone, Copy, PartialEq)]
 enum Cmd {
+    MarkdownBreaks,
     NewTab,
     Connect,
     SplitRight,
@@ -74,6 +75,7 @@ const COMMANDS: &[(Cmd, &str, &str)] = &[
     (Cmd::FontDown, "Smaller font", "Ctrl+-"),
     (Cmd::ThemePicker, "Theme…", ""),
     (Cmd::ThemeSystem, "Theme: follow system (dark/light)", ""),
+    (Cmd::MarkdownBreaks, "Markdown: toggle line breaks (GitHub PR style / CommonMark)", ""),
     (Cmd::Settings, "Open settings.json", ""),
     (Cmd::AgentLog, "Open agent log for this host", ""),
 ];
@@ -158,6 +160,11 @@ impl App {
             Cmd::FontDown => self.settings.font_size = (self.settings.font_size - 1.0).max(8.0),
             Cmd::Theme(i) => self.pick_theme(i),
             Cmd::ThemeSystem => self.settings.theme = "system".into(),
+            Cmd::MarkdownBreaks => {
+                self.settings.markdown_breaks = !self.settings.markdown_breaks;
+                let mode = if self.settings.markdown_breaks { "every newline breaks the line (GitHub PR style)" } else { "a single newline is a space (CommonMark)" };
+                self.toast(format!("Markdown: {mode}"), crate::app::ToastKind::Info);
+            }
             Cmd::ThemePicker => self.theme_menu = Some(egui::Rect::from_min_size(pos2(f32::MAX, 34.0), vec2(0.0, 0.0))),
             Cmd::Hidden => {
                 self.settings.show_hidden = !self.settings.show_hidden;
@@ -968,7 +975,8 @@ impl App {
             let goto = f.goto.take();
             let size = self.settings.font_size + 0.5;
             let cache_dir = self.data.path("cache/mermaid");
-            let changed = markdown_body(ui, f, edit_id, size, readonly, goto, &cache_dir);
+            let breaks = self.settings.markdown_breaks;
+            let changed = markdown_body(ui, f, edit_id, size, breaks, readonly, goto, &cache_dir);
             if changed && !f.scratch {
                 f.dirty = true;
             }
@@ -1405,7 +1413,8 @@ struct MdCache {
 /// renders it (md::layout); bullets, checkboxes, quote bars, code
 /// backgrounds and rules are painted at the galley positions afterwards.
 /// Returns whether the text changed.
-fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size: f32, readonly: bool, goto: Option<usize>, cache_dir: &std::path::Path) -> bool {
+#[allow(clippy::too_many_arguments)]
+fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size: f32, breaks: bool, readonly: bool, goto: Option<usize>, cache_dir: &std::path::Path) -> bool {
     let ctx = ui.ctx().clone();
     let focused = ui.memory(|m| m.has_focus(edit_id));
     // The cursor's line shows its markup (from last frame's cursor).
@@ -1415,7 +1424,7 @@ fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size:
         None
     };
     let cache_id = edit_id.with("md");
-    let style_key = format!("{cursor_line:?}|{size}|{}|{}", theme::active(), crate::mermaid::generation());
+    let style_key = format!("{cursor_line:?}|{size}|{breaks}|{}|{}", theme::active(), crate::mermaid::generation());
     let dark = !theme::is_light();
     // Rendered diagram size in points: mmdc renders at scale 2; never wider than the editor.
     let diagram_size = |ctx: &egui::Context, source: &str, wrap: f32| -> Option<(egui::TextureId, egui::Vec2)> {
@@ -1439,7 +1448,7 @@ fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size:
                 Some(j) if cached.key == key => j,
                 _ => {
                     let mut measure = |t: &str, font: &FontId| ui.fonts(|f| f.layout_no_wrap(t.to_owned(), font.clone(), Color32::WHITE).size().x);
-                    let l = md::layout(text, cursor_line, size, &mut |src: &str| diagram_size(ui.ctx(), src, wrap).map(|(_, s)| s.y), &mut measure);
+                    let l = md::layout(text, cursor_line, size, breaks, &mut |src: &str| diagram_size(ui.ctx(), src, wrap).map(|(_, s)| s.y), &mut measure);
                     let j = Arc::new(l.job);
                     ui.ctx().memory_mut(|m| m.data.insert_temp(cache_id, MdCache { key, job: Some(j.clone()), decos: Arc::new(l.decos) }));
                     j
