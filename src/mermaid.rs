@@ -58,7 +58,7 @@ pub fn mmdc() -> Option<&'static PathBuf> {
         .as_ref()
 }
 
-pub const INSTALL_HINT: &str = "mermaid diagrams need mermaid-cli: npm install -g @mermaid-js/mermaid-cli";
+pub const INSTALL_HINT: &str = "need mermaid-cli";
 
 fn load_png(ctx: &egui::Context, path: &Path, name: &str) -> Result<(egui::TextureHandle, egui::Vec2), String> {
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
