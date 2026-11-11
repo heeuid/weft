@@ -2250,20 +2250,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "oscmux"
-version = "0.1.0"
-dependencies = [
- "arboard",
- "base64",
- "eframe",
- "egui",
- "portable-pty",
- "serde",
- "serde_json",
- "vte",
-]
-
-[[package]]
 name = "owned_ttf_parser"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3508,6 +3494,20 @@ name = "weezl"
 version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
+
+[[package]]
+name = "weft"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "eframe",
+ "egui",
+ "flate2",
+ "portable-pty",
+ "serde",
+ "serde_json",
+ "vte",
+]
 
 [[package]]
 name = "wgpu"
