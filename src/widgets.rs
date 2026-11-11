@@ -154,7 +154,7 @@ pub fn ui_widget(
             let mode_r = Rect::from_min_size(pos2(time_r.right(), hr.top()), vec2(mode_w, ch));
             let s = w.sort;
             let st = |c: usize| s.filter(|x| x.0 == c).map(|x| x.1);
-            painter.hline(hr.x_range(), hr.bottom() - 0.5, Stroke::new(1.0, theme::BORDER));
+            painter.hline(hr.x_range(), hr.bottom() - 0.5, Stroke::new(1.0_f32, theme::BORDER));
             if header_cell(ui, name_r, wid.with("h0"), "Name", st(0), false) {
                 toggle_sort(&mut w.sort, 0);
             }
@@ -274,7 +274,7 @@ pub fn ui_widget(
                 })
                 .collect();
             let hr = row_rect(0);
-            painter.hline(hr.x_range(), hr.bottom() - 0.5, Stroke::new(1.0, theme::BORDER));
+            painter.hline(hr.x_range(), hr.bottom() - 0.5, Stroke::new(1.0_f32, theme::BORDER));
             for c in 0..ncol {
                 let cr = Rect::from_min_size(pos2(xs[c], hr.top()), vec2((widths[c] + 1) as f32 * cw, ch));
                 let sorted = w.sort.filter(|s| s.0 == c).map(|s| s.1);

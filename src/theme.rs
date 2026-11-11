@@ -134,7 +134,7 @@ pub fn apply_style(ctx: &egui::Context) {
     let mut v = egui::Visuals::dark();
     v.panel_fill = BG_BASE;
     v.window_fill = BG_RAISED;
-    v.window_stroke = Stroke::new(1.0, BORDER);
+    v.window_stroke = Stroke::new(1.0_f32, BORDER);
     v.window_corner_radius = CornerRadius::same(8);
     v.menu_corner_radius = CornerRadius::same(6);
     v.extreme_bg_color = BG_TERM;
@@ -143,30 +143,30 @@ pub fn apply_style(ctx: &egui::Context) {
     v.override_text_color = None;
     v.hyperlink_color = ACCENT;
     v.selection.bg_fill = tint(ACCENT, 55);
-    v.selection.stroke = Stroke::new(1.0, ACCENT);
+    v.selection.stroke = Stroke::new(1.0_f32, ACCENT);
     v.warn_fg_color = WARN;
     v.error_fg_color = ERROR;
 
     let w = &mut v.widgets;
     w.noninteractive.bg_fill = BG_BASE;
     w.noninteractive.weak_bg_fill = BG_BASE;
-    w.noninteractive.bg_stroke = Stroke::new(1.0, BORDER);
-    w.noninteractive.fg_stroke = Stroke::new(1.0, TEXT_DIM);
+    w.noninteractive.bg_stroke = Stroke::new(1.0_f32, BORDER);
+    w.noninteractive.fg_stroke = Stroke::new(1.0_f32, TEXT_DIM);
     w.inactive.bg_fill = BG_RAISED;
     w.inactive.weak_bg_fill = BG_RAISED;
     w.inactive.bg_stroke = Stroke::NONE;
-    w.inactive.fg_stroke = Stroke::new(1.0, TEXT);
+    w.inactive.fg_stroke = Stroke::new(1.0_f32, TEXT);
     w.hovered.bg_fill = BG_HOVER;
     w.hovered.weak_bg_fill = BG_HOVER;
-    w.hovered.bg_stroke = Stroke::new(1.0, BORDER);
-    w.hovered.fg_stroke = Stroke::new(1.0, TEXT);
+    w.hovered.bg_stroke = Stroke::new(1.0_f32, BORDER);
+    w.hovered.fg_stroke = Stroke::new(1.0_f32, TEXT);
     w.active.bg_fill = tint(ACCENT, 60);
     w.active.weak_bg_fill = tint(ACCENT, 60);
-    w.active.bg_stroke = Stroke::new(1.0, ACCENT);
-    w.active.fg_stroke = Stroke::new(1.0, TEXT);
+    w.active.bg_stroke = Stroke::new(1.0_f32, ACCENT);
+    w.active.fg_stroke = Stroke::new(1.0_f32, TEXT);
     w.open.bg_fill = BG_HOVER;
     w.open.weak_bg_fill = BG_HOVER;
-    w.open.fg_stroke = Stroke::new(1.0, TEXT);
+    w.open.fg_stroke = Stroke::new(1.0_f32, TEXT);
     for s in [&mut w.noninteractive, &mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {
         s.corner_radius = CornerRadius::same(5);
     }

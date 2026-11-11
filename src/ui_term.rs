@@ -160,10 +160,10 @@ fn paint_row(p: &Painter, row: &Row, x0: f32, y: f32, cw: f32, ch: f32, font: &F
 
 fn decorate(p: &Painter, flags: u8, x: f32, w: f32, y: f32, ch: f32, fg: Color32) {
     if flags & term::F_UNDER != 0 {
-        p.hline(x..=x + w, y + ch - 1.5, Stroke::new(1.0, fg));
+        p.hline(x..=x + w, y + ch - 1.5, Stroke::new(1.0_f32, fg));
     }
     if flags & term::F_STRIKE != 0 {
-        p.hline(x..=x + w, y + ch * 0.55, Stroke::new(1.0, fg));
+        p.hline(x..=x + w, y + ch * 0.55, Stroke::new(1.0_f32, fg));
     }
 }
 
@@ -694,7 +694,7 @@ impl App {
                         if classify_token(&tok, cwd, home.as_deref()).is_some() {
                             if let Some(i) = vis_index(abs) {
                                 let y = row_y(i) + ch - 1.5;
-                                painter.hline(inner.left() + s as f32 * cw..=inner.left() + e as f32 * cw, y, Stroke::new(1.5, theme::ACCENT));
+                                painter.hline(inner.left() + s as f32 * cw..=inner.left() + e as f32 * cw, y, Stroke::new(1.5_f32, theme::ACCENT));
                                 ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
                             }
                         }
@@ -855,7 +855,7 @@ impl App {
                         }
                     }
                 } else {
-                    painter.rect_stroke(r.shrink(0.5), CornerRadius::same(1), Stroke::new(1.0, theme::TEXT_DIM), StrokeKind::Inside);
+                    painter.rect_stroke(r.shrink(0.5), CornerRadius::same(1), Stroke::new(1.0_f32, theme::TEXT_DIM), StrokeKind::Inside);
                 }
             }
             if focused && !p.preedit.is_empty() {
@@ -863,7 +863,7 @@ impl App {
                 let pr = Rect::from_min_size(r.min, vec2(g.size().x.max(cw), ch));
                 painter.rect_filled(pr, CornerRadius::ZERO, theme::BG_RAISED);
                 painter.galley(pr.min, g, theme::TEXT);
-                painter.hline(pr.x_range(), pr.bottom() - 1.0, Stroke::new(1.0, theme::ACCENT));
+                painter.hline(pr.x_range(), pr.bottom() - 1.0, Stroke::new(1.0_f32, theme::ACCENT));
             }
         }
         if focused {
@@ -902,7 +902,7 @@ impl App {
             let hr = Rect::from_min_max(rect.min, pos2(rect.right(), rect.top() + header_h));
             painter.rect_filled(hr, CornerRadius::ZERO, theme::BG_BASE);
             if active {
-                painter.hline(hr.x_range(), hr.bottom() - 1.0, Stroke::new(2.0, theme::ACCENT));
+                painter.hline(hr.x_range(), hr.bottom() - 1.0, Stroke::new(2.0_f32, theme::ACCENT));
             }
             icons::paint(&painter, Rect::from_min_size(hr.min + vec2(8.0, 5.0), vec2(14.0, 14.0)), Icon::Terminal, if active { theme::ACCENT } else { theme::TEXT_FAINT });
             let title = if t.title.is_empty() { p.title() } else { format!("{} — {}", p.title(), t.title) };
@@ -916,7 +916,7 @@ impl App {
         if let Some(at) = p.bell_at {
             let a = 1.0 - at.elapsed().as_secs_f32() / 0.6;
             if a > 0.0 {
-                painter.rect_stroke(body.shrink(1.0), CornerRadius::same(2), Stroke::new(2.0, theme::tint(theme::WARN, (a * 200.0) as u8)), StrokeKind::Inside);
+                painter.rect_stroke(body.shrink(1.0), CornerRadius::same(2), Stroke::new(2.0_f32, theme::tint(theme::WARN, (a * 200.0) as u8)), StrokeKind::Inside);
                 ui.ctx().request_repaint();
             }
         }
@@ -991,7 +991,7 @@ impl App {
         let painter = ui.painter();
         painter.rect_filled(rect.expand(2.0), CornerRadius::same(7), theme::tint(theme::BG_TERM, 230));
         painter.rect_filled(rect, CornerRadius::same(6), theme::BG_RAISED);
-        painter.rect_stroke(rect, CornerRadius::same(6), Stroke::new(1.0, theme::tint(theme::ACCENT, 160)), StrokeKind::Inside);
+        painter.rect_stroke(rect, CornerRadius::same(6), Stroke::new(1.0_f32, theme::tint(theme::ACCENT, 160)), StrokeKind::Inside);
 
         let has_focus = ui.memory(|m| m.has_focus(cid));
         let suggestion = if c.text.is_empty() || c.text.contains('\n') {
@@ -1132,7 +1132,7 @@ impl App {
         }
         let rect = Rect::from_min_size(pos2(inner.right() - 360.0, inner.top() + 2.0), vec2(356.0, 32.0));
         ui.painter().rect_filled(rect, CornerRadius::same(6), theme::BG_RAISED);
-        ui.painter().rect_stroke(rect, CornerRadius::same(6), Stroke::new(1.0, theme::BORDER), StrokeKind::Inside);
+        ui.painter().rect_stroke(rect, CornerRadius::same(6), Stroke::new(1.0_f32, theme::BORDER), StrokeKind::Inside);
         let sid = Id::new(("search", id));
         let mut jump: Option<i32> = None;
         let mut close = false;

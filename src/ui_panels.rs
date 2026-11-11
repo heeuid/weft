@@ -252,7 +252,7 @@ impl App {
                 };
                 ui.painter().rect_filled(rect, CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }, bg);
                 if active {
-                    ui.painter().hline(rect.x_range().shrink(6.0), rect.top() + 1.0, Stroke::new(2.0, host_color(&p.host)));
+                    ui.painter().hline(rect.x_range().shrink(6.0), rect.top() + 1.0, Stroke::new(2.0_f32, host_color(&p.host)));
                 }
                 let dot = Rect2::dot(rect);
                 if running {
@@ -1140,7 +1140,7 @@ impl App {
                     ToastKind::Ok => theme::SUCCESS,
                     ToastKind::Error => theme::ERROR,
                 };
-                egui::Frame::new().fill(theme::BG_RAISED).stroke(Stroke::new(1.0, theme::BORDER)).corner_radius(CornerRadius::same(6)).inner_margin(egui::Margin { left: 12, right: 12, top: 8, bottom: 8 }).show(ui, |ui| {
+                egui::Frame::new().fill(theme::BG_RAISED).stroke(Stroke::new(1.0_f32, theme::BORDER)).corner_radius(CornerRadius::same(6)).inner_margin(egui::Margin { left: 12, right: 12, top: 8, bottom: 8 }).show(ui, |ui| {
                     ui.set_max_width(380.0);
                     let r = ui.label(RichText::new(&t.text).size(12.5).color(theme::TEXT));
                     ui.painter().rect_filled(egui::Rect::from_min_size(pos2(r.rect.left() - 8.0, r.rect.top()), vec2(3.0, r.rect.height())), CornerRadius::same(1), col);
