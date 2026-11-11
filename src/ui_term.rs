@@ -465,12 +465,17 @@ impl App {
             }
         }
         if zoomed {
-            // "ZOOM" pill in the header, left of the pane buttons.
-            let label = "ZOOM · Ctrl+Shift+Z";
+            // "ZOOM" badge left of the pane buttons; clicking it restores the split.
+            let label = "ZOOM · click to restore";
             let g = ui.painter().layout_no_wrap(label.into(), FontId::proportional(11.0), theme::accent());
-            let pill = Rect::from_min_size(pos2(rect.right() - 60.0 - g.size().x - 16.0, rect.top() + 4.0), vec2(g.size().x + 16.0, 16.0));
-            ui.painter().rect_filled(pill, CornerRadius::same(8), theme::tint(theme::accent(), 40));
+            let pill = Rect::from_min_size(pos2(rect.right() - 90.0 - g.size().x - 16.0, rect.top() + 4.0), vec2(g.size().x + 16.0, 16.0));
+            let resp = ui.interact(pill, Id::new(("zoom-badge", self.active_tab)), Sense::click());
+            let alpha = if resp.hovered() { 70 } else { 40 };
+            ui.painter().rect_filled(pill, CornerRadius::same(8), theme::tint(theme::accent(), alpha));
             ui.painter().galley(pos2(pill.left() + 8.0, pill.center().y - g.size().y / 2.0), g, theme::accent());
+            if resp.on_hover_text("restore split layout (Ctrl+Shift+Z)").clicked() {
+                self.actions.push(Action::ToggleZoom);
+            }
         }
     }
 
@@ -979,15 +984,18 @@ impl App {
             }
             icons::paint(&painter, Rect::from_min_size(hr.min + vec2(8.0, 5.0), vec2(14.0, 14.0)), Icon::Terminal, if active { theme::accent() } else { theme::text_faint() });
             let title = if t.title.is_empty() { p.title() } else { format!("{} — {}", p.title(), t.title) };
+            // [zoom]   gap   [close]: window-style icons, and close turns red on
+            // hover, so restoring a zoomed pane is never confused with closing it.
             let bx = hr.right() - 26.0;
-            let title_clip = Rect::from_min_max(hr.min, pos2(bx - 6.0, hr.bottom()));
+            let zx = bx - 34.0;
+            let title_clip = Rect::from_min_max(hr.min, pos2(zx - 6.0, hr.bottom()));
             painter.with_clip_rect(title_clip).text(pos2(hr.left() + 28.0, hr.center().y), Align2::LEFT_CENTER, title, FontId::proportional(12.0), if active { theme::text() } else { theme::text_dim() });
-            if icons::overlay_button(ui, Rect::from_min_size(pos2(bx, hr.top() + 2.0), vec2(20.0, 20.0)), Id::new(("close", id)), Icon::Cross, "close pane (Ctrl+Shift+W)").clicked() {
+            if icons::overlay_button_styled(ui, Rect::from_min_size(pos2(bx, hr.top() + 2.0), vec2(20.0, 20.0)), Id::new(("close", id)), Icon::Cross, "close pane (Ctrl+Shift+W)", true).clicked() {
                 acts.push(Action::ClosePane(id));
             }
             let zoomed = self.tabs.get(self.active_tab).map(|t| t.zoomed).unwrap_or(false);
-            let (zi, ztip) = if zoomed { (Icon::Fold, "restore split (Ctrl+Shift+Z)") } else { (Icon::Unfold, "zoom this pane (Ctrl+Shift+Z)") };
-            if icons::overlay_button(ui, Rect::from_min_size(pos2(bx - 24.0, hr.top() + 2.0), vec2(20.0, 20.0)), Id::new(("zoom", id)), zi, ztip).clicked() {
+            let (zi, ztip) = if zoomed { (Icon::Restore, "restore split layout (Ctrl+Shift+Z)") } else { (Icon::Maximize, "zoom this pane (Ctrl+Shift+Z)") };
+            if icons::overlay_button(ui, Rect::from_min_size(pos2(zx, hr.top() + 2.0), vec2(20.0, 20.0)), Id::new(("zoom", id)), zi, ztip).clicked() {
                 acts.push(Action::Focus(id));
                 acts.push(Action::ToggleZoom);
             }

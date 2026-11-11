@@ -30,6 +30,10 @@ pub enum Icon {
     Terminal,
     Sun,
     Moon,
+    /// Window-style "maximize": one square.
+    Maximize,
+    /// Window-style "restore down": two overlapping squares.
+    Restore,
 }
 
 pub fn paint(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
@@ -124,6 +128,14 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
             line(&[(4.0, 5.5), (12.0, 5.5), (12.0, 8.0), (10.0, 10.5), (6.0, 10.5), (4.0, 8.0), (4.0, 5.5)]);
             line(&[(8.0, 10.5), (8.0, 14.0)]);
         }
+        Icon::Maximize => {
+            p.rect_stroke(r(3.0, 3.0, 13.0, 13.0), CornerRadius::same(1), st, StrokeKind::Middle);
+            line(&[(3.0, 5.0), (13.0, 5.0)]);
+        }
+        Icon::Restore => {
+            p.rect_stroke(r(3.0, 6.0, 10.0, 13.0), CornerRadius::same(1), st, StrokeKind::Middle);
+            line(&[(6.0, 6.0), (6.0, 3.0), (13.0, 3.0), (13.0, 10.0), (10.0, 10.0)]);
+        }
         Icon::Sun => {
             p.circle_stroke(c, 3.0 * u, st);
             for k in 0..8 {
@@ -170,10 +182,25 @@ pub fn button_colored(ui: &mut Ui, icon: Icon, tip: &str, color: Color32) -> Res
 
 /// Icon button drawn at an absolute rect (for overlays on the terminal grid).
 pub fn overlay_button(ui: &mut Ui, rect: Rect, id: egui::Id, icon: Icon, tip: &str) -> Response {
+    overlay_button_styled(ui, rect, id, icon, tip, false)
+}
+
+/// Like `overlay_button`, but destructive actions (close) turn red on hover so
+/// they cannot be mistaken for the buttons next to them.
+pub fn overlay_button_styled(ui: &mut Ui, rect: Rect, id: egui::Id, icon: Icon, tip: &str, danger: bool) -> Response {
     let resp = ui.interact(rect, id, Sense::click());
-    let bg = if resp.hovered() { theme::bg_hover() } else { theme::bg_raised() };
+    let hot = resp.hovered();
+    let bg = match (hot, danger) {
+        (true, true) => theme::error(),
+        (true, false) => theme::bg_hover(),
+        _ => theme::bg_raised(),
+    };
     ui.painter().rect_filled(rect, CornerRadius::same(4), bg);
-    let col = if resp.hovered() { theme::text() } else { theme::text_dim() };
+    let col = match (hot, danger) {
+        (true, true) => theme::bg_term(),
+        (true, false) => theme::text(),
+        _ => theme::text_dim(),
+    };
     paint(ui.painter(), rect.shrink(3.5), icon, col);
     resp.on_hover_text(tip)
 }
