@@ -309,6 +309,7 @@ impl App {
             self.dock_grip(ui, Region::Terms);
             let mut activate = None;
             let mut close = None;
+            let n_tabs = self.tabs.len();
             for (ti, tab) in self.tabs.iter().enumerate() {
                 let Some(p) = self.panes.get(&tab.active) else { continue };
                 let title = p.title();
@@ -357,15 +358,20 @@ impl App {
                     }
                     icons::paint(ui.painter(), cr.shrink(4.5), Icon::Cross, if cresp.hovered() { theme::text() } else { theme::text_faint() });
                     if cresp.clicked() {
-                        close = Some(ti);
+                        close = Some((ti, CloseWhich::This));
                     }
                 }
                 if resp.clicked() {
                     activate = Some(ti);
                 }
                 if resp.middle_clicked() {
-                    close = Some(ti);
+                    close = Some((ti, CloseWhich::This));
                 }
+                resp.context_menu(|ui| {
+                    if let Some(w) = close_menu(ui, ti, n_tabs) {
+                        close = Some((ti, w));
+                    }
+                });
             }
             ui.add_space(4.0);
             if icons::button(ui, Icon::Plus, "new tab on the same host (Ctrl+Shift+T)").clicked() {
@@ -404,8 +410,8 @@ impl App {
                 self.focus_term = true;
                 self.on_active_changed();
             }
-            if let Some(ti) = close {
-                self.close_tab(ti);
+            if let Some((ti, which)) = close {
+                self.close_tabs(ti, which);
             }
         });
     }
@@ -1307,6 +1313,7 @@ impl App {
         ScrollArea::horizontal().id_salt("editor-tabs").show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
+                let n = self.editor.files.len();
                 for (i, f) in self.editor.files.iter().enumerate() {
                     let name = f.path.rsplit('/').next().unwrap_or(&f.path).to_string();
                     let sel = i == self.editor.active;
@@ -1316,24 +1323,25 @@ impl App {
                         self.editor.active = i;
                     }
                     if r.middle_clicked() {
-                        close = Some(i);
+                        close = Some((i, CloseWhich::This));
                     }
-                    if icons::button(ui, Icon::Cross, "close (middle-click also works)").clicked() {
-                        close = Some(i);
+                    r.context_menu(|ui| {
+                        if let Some(w) = close_menu(ui, i, n) {
+                            close = Some((i, w));
+                        }
+                    });
+                    if icons::button(ui, Icon::Cross, "close (middle-click also works; right-click the tab for more)").clicked() {
+                        close = Some((i, CloseWhich::This));
                     }
                 }
             });
         });
         });
-        if let Some(i) = close {
-            if self.editor.files[i].dirty && !self.editor.files[i].scratch {
-                self.toast("closed with unsaved changes discarded", ToastKind::Info);
-            }
-            self.editor.files.remove(i);
+        if let Some((i, which)) = close {
+            self.close_files(i, which);
             if self.editor.files.is_empty() {
                 return;
             }
-            self.editor.active = self.editor.active.min(self.editor.files.len() - 1);
         }
         let idx = self.editor.active;
         // Toolbar.
@@ -2069,4 +2077,18 @@ impl Rect2 {
     fn dot(r: egui::Rect) -> egui::Pos2 {
         pos2(r.left() + 11.0, r.center().y)
     }
+}
+
+/// The tab context menu: close this / others / to the right / to the left /
+/// all. Items with nothing to close are disabled.
+fn close_menu(ui: &mut Ui, at: usize, n: usize) -> Option<CloseWhich> {
+    let mut chosen = None;
+    for (which, label) in CloseWhich::MENU {
+        let any = !tabs_to_close(n, at, which).is_empty();
+        if ui.add_enabled(any, egui::Button::new(label)).clicked() {
+            chosen = Some(which);
+            ui.close_menu();
+        }
+    }
+    chosen
 }

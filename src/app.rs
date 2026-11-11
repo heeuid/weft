@@ -710,6 +710,53 @@ pub enum Pending {
     Tree { root: String },
 }
 
+/// Which tabs a tab's context menu closes, relative to that tab.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum CloseWhich {
+    This,
+    Others,
+    Right,
+    Left,
+    All,
+}
+
+impl CloseWhich {
+    pub const MENU: [(CloseWhich, &'static str); 5] =
+        [(CloseWhich::This, "Close"), (CloseWhich::Others, "Close others"), (CloseWhich::Right, "Close to the right"), (CloseWhich::Left, "Close to the left"), (CloseWhich::All, "Close all")];
+}
+
+/// Indices of the tabs to close among `n` around tab `at`, highest first
+/// (so removing them one by one keeps the rest valid).
+pub fn tabs_to_close(n: usize, at: usize, which: CloseWhich) -> Vec<usize> {
+    (0..n)
+        .rev()
+        .filter(|&i| match which {
+            CloseWhich::This => i == at,
+            CloseWhich::Others => i != at,
+            CloseWhich::Right => i > at,
+            CloseWhich::Left => i < at,
+            CloseWhich::All => true,
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod close_tests {
+    use super::*;
+
+    #[test]
+    fn tab_close_sets() {
+        use CloseWhich::*;
+        assert_eq!(tabs_to_close(5, 2, This), [2]);
+        assert_eq!(tabs_to_close(5, 2, Others), [4, 3, 1, 0]);
+        assert_eq!(tabs_to_close(5, 2, Right), [4, 3]);
+        assert_eq!(tabs_to_close(5, 2, Left), [1, 0]);
+        assert_eq!(tabs_to_close(3, 0, All), [2, 1, 0]);
+        assert!(tabs_to_close(3, 0, Left).is_empty());
+        assert!(tabs_to_close(3, 2, Right).is_empty());
+    }
+}
+
 /// The last filter run: its inputs and the hits (entry index, matched chars).
 pub struct FindResult {
     pub key: (String, String, String, crate::find::FindMode, u64),
@@ -1121,6 +1168,37 @@ impl App {
             self.new_tab("local", None);
         }
         self.focus_term = true;
+    }
+
+    /// Close terminal tabs around tab `at` (tab context menu). The tab that
+    /// was right-clicked stays selected when it survives.
+    pub fn close_tabs(&mut self, at: usize, which: CloseWhich) {
+        let keep = self.tabs.get(at).map(|t| t.active).filter(|_| !matches!(which, CloseWhich::This | CloseWhich::All));
+        for ti in tabs_to_close(self.tabs.len(), at, which) {
+            self.close_tab(ti);
+        }
+        if let Some(id) = keep {
+            self.focus_pane(id);
+        }
+    }
+
+    /// Close editor files around tab `at` (tab context menu).
+    pub fn close_files(&mut self, at: usize, which: CloseWhich) {
+        let kept = self.editor.files.get(self.editor.active).map(|f| (f.host.clone(), f.path.clone()));
+        let target = self.editor.files.get(at).map(|f| (f.host.clone(), f.path.clone()));
+        let mut discarded = 0;
+        for i in tabs_to_close(self.editor.files.len(), at, which) {
+            let f = self.editor.files.remove(i);
+            if f.dirty && !f.scratch {
+                discarded += 1;
+            }
+        }
+        if discarded > 0 {
+            self.toast(format!("closed {discarded} file(s) with unsaved changes discarded"), ToastKind::Info);
+        }
+        // Stay on the right-clicked file when it is still open, else on the one before.
+        let find = |k: &Option<(String, String)>, files: &[EditorFile]| k.as_ref().and_then(|k| files.iter().position(|f| f.host == k.0 && f.path == k.1));
+        self.editor.active = find(&target, &self.editor.files).or(find(&kept, &self.editor.files)).unwrap_or(self.editor.active).min(self.editor.files.len().saturating_sub(1));
     }
 
     pub fn close_tab(&mut self, ti: usize) {
