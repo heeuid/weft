@@ -878,7 +878,7 @@ impl App {
                     if r.middle_clicked() {
                         close = Some(i);
                     }
-                    if sel && icons::button(ui, Icon::Cross, "close").clicked() {
+                    if icons::button(ui, Icon::Cross, "close (middle-click also works)").clicked() {
                         close = Some(i);
                     }
                 }
