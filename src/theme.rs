@@ -1,28 +1,19 @@
 //! Design tokens and font setup.  Every color in the UI comes from here.
 //!
-//! Two palettes with the same structure: graphite neutrals in four elevation
-//! steps, one blue accent, muted semantic colors, and an ANSI set tuned for
-//! its own terminal background (light: "white" is a mid gray so text printed
-//! in white stays readable).  Colors are read through functions so the
-//! active palette can change at runtime.
+//! Selectable themes with one token structure: background elevation steps,
+//! text levels, one accent, semantic colors and a terminal ANSI set tuned for
+//! that background.  Catppuccin flavors (https://catppuccin.com, MIT) use the
+//! official colors and terminal mapping; Graphite is weft's own pair.  Colors
+//! are read through functions so the active theme can change at runtime.
 
 use egui::{Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Stroke, Vec2};
-use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-/// What the user picked in settings.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ThemeMode {
-    #[default]
-    Dark,
-    Light,
-    /// Follow the OS light/dark setting.
-    System,
-}
-
 struct Palette {
+    id: &'static str,
+    name: &'static str,
+    light: bool,
     bg_term: Color32,
     bg_base: Color32,
     bg_raised: Color32,
@@ -40,92 +31,176 @@ struct Palette {
     ansi: [Color32; 16],
 }
 
-const fn rgb(r: u8, g: u8, b: u8) -> Color32 {
-    Color32::from_rgb(r, g, b)
+const fn rgb(v: u32) -> Color32 {
+    Color32::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8)
 }
 
-const DARK: Palette = Palette {
-    bg_term: rgb(0x16, 0x18, 0x1d),
-    bg_base: rgb(0x1b, 0x1e, 0x24),
-    bg_raised: rgb(0x23, 0x27, 0x2f),
-    bg_hover: rgb(0x2c, 0x31, 0x3b),
-    border: rgb(0x2f, 0x34, 0x3e),
-    text: rgb(0xd7, 0xda, 0xe0),
-    text_dim: rgb(0x9a, 0xa1, 0xad),
-    text_faint: rgb(0x64, 0x6b, 0x78),
-    accent: rgb(0x7a, 0xa2, 0xf7),
-    success: rgb(0x73, 0xc9, 0x91),
-    warn: rgb(0xe5, 0xc0, 0x7b),
-    error: rgb(0xf0, 0x71, 0x78),
-    term_fg: rgb(0xc8, 0xcd, 0xd6),
-    cursor: rgb(0xd7, 0xda, 0xe0),
-    ansi: [
-        rgb(0x2a, 0x2e, 0x36), // black
-        rgb(0xe0, 0x6c, 0x75), // red
-        rgb(0x98, 0xc3, 0x79), // green
-        rgb(0xe5, 0xc0, 0x7b), // yellow
-        rgb(0x61, 0xaf, 0xef), // blue
-        rgb(0xc6, 0x78, 0xdd), // magenta
-        rgb(0x56, 0xb6, 0xc2), // cyan
-        rgb(0xab, 0xb2, 0xbf), // white
-        rgb(0x5c, 0x63, 0x70), // bright black
-        rgb(0xf0, 0x87, 0x8e),
-        rgb(0xb0, 0xd7, 0x91),
-        rgb(0xf0, 0xd0, 0x92),
-        rgb(0x82, 0xc3, 0xf8),
-        rgb(0xd6, 0x94, 0xe8),
-        rgb(0x78, 0xce, 0xd8),
-        rgb(0xe6, 0xe9, 0xef),
-    ],
-};
+/// The Catppuccin colors weft uses, by their official names.
+struct Flavor {
+    base: u32,
+    mantle: u32,
+    surface0: u32,
+    surface1: u32,
+    surface2: u32,
+    overlay0: u32,
+    overlay1: u32,
+    subtext0: u32,
+    subtext1: u32,
+    text: u32,
+    rosewater: u32,
+    pink: u32,
+    red: u32,
+    peach: u32,
+    yellow: u32,
+    green: u32,
+    teal: u32,
+    blue: u32,
+}
 
-const LIGHT: Palette = Palette {
-    bg_term: rgb(0xfb, 0xfb, 0xfc),
-    bg_base: rgb(0xf3, 0xf4, 0xf6),
-    bg_raised: rgb(0xff, 0xff, 0xff),
-    bg_hover: rgb(0xe7, 0xe9, 0xee),
-    border: rgb(0xd5, 0xd9, 0xe0),
-    text: rgb(0x1f, 0x23, 0x28),
-    text_dim: rgb(0x55, 0x5e, 0x6b),
-    text_faint: rgb(0x8b, 0x93, 0x9f),
-    accent: rgb(0x2f, 0x6f, 0xeb),
-    success: rgb(0x1a, 0x7f, 0x37),
-    warn: rgb(0x9a, 0x67, 0x00),
-    error: rgb(0xcf, 0x22, 0x2e),
-    term_fg: rgb(0x24, 0x29, 0x2f),
-    cursor: rgb(0x24, 0x29, 0x2f),
-    ansi: [
-        rgb(0x24, 0x29, 0x2f), // black
-        rgb(0xcf, 0x22, 0x2e), // red
-        rgb(0x11, 0x63, 0x29), // green
-        rgb(0x8a, 0x5a, 0x00), // yellow (dark enough to read on white)
-        rgb(0x09, 0x69, 0xda), // blue
-        rgb(0x82, 0x50, 0xdf), // magenta
-        rgb(0x1b, 0x7c, 0x83), // cyan
-        rgb(0x6e, 0x77, 0x81), // white (mid gray on a light background)
-        rgb(0x57, 0x60, 0x6a), // bright black
-        rgb(0xa4, 0x0e, 0x26),
-        rgb(0x1a, 0x7f, 0x37),
-        rgb(0x63, 0x3c, 0x01),
-        rgb(0x21, 0x8b, 0xff),
-        rgb(0xa4, 0x75, 0xf9),
-        rgb(0x31, 0x92, 0xaa),
-        rgb(0x8c, 0x95, 0x9f),
-    ],
-};
-
-static LIGHT_ACTIVE: AtomicBool = AtomicBool::new(false);
-
-fn p() -> &'static Palette {
-    if is_light() {
-        &LIGHT
-    } else {
-        &DARK
+const fn catppuccin(id: &'static str, name: &'static str, light: bool, f: Flavor) -> Palette {
+    // ANSI per Catppuccin's terminal ports: black/white come from the surface
+    // and subtext steps (swapped for Latte), colors are shared by normal/bright.
+    let (black, white, bright_black, bright_white) =
+        if light { (f.subtext1, f.surface2, f.subtext0, f.surface1) } else { (f.surface1, f.subtext1, f.surface2, f.subtext0) };
+    Palette {
+        id,
+        name,
+        light,
+        bg_term: rgb(f.base),
+        bg_base: rgb(f.mantle),
+        bg_raised: rgb(f.surface0),
+        bg_hover: rgb(f.surface1),
+        border: rgb(f.surface1),
+        text: rgb(f.text),
+        text_dim: rgb(f.subtext0),
+        text_faint: if light { rgb(f.overlay1) } else { rgb(f.overlay0) },
+        accent: rgb(f.blue),
+        success: rgb(f.green),
+        // Latte's yellow is too faint for text on a light background.
+        warn: if light { rgb(f.peach) } else { rgb(f.yellow) },
+        error: rgb(f.red),
+        term_fg: rgb(f.text),
+        cursor: rgb(f.rosewater),
+        ansi: [
+            rgb(black),
+            rgb(f.red),
+            rgb(f.green),
+            rgb(f.yellow),
+            rgb(f.blue),
+            rgb(f.pink),
+            rgb(f.teal),
+            rgb(white),
+            rgb(bright_black),
+            rgb(f.red),
+            rgb(f.green),
+            rgb(f.yellow),
+            rgb(f.blue),
+            rgb(f.pink),
+            rgb(f.teal),
+            rgb(bright_white),
+        ],
     }
 }
 
+#[rustfmt::skip]
+const THEMES: [Palette; 6] = [
+    catppuccin("catppuccin-mocha", "Catppuccin Mocha", false, Flavor {
+        base: 0x1e1e2e, mantle: 0x181825, surface0: 0x313244, surface1: 0x45475a, surface2: 0x585b70,
+        overlay0: 0x6c7086, overlay1: 0x7f849c, subtext0: 0xa6adc8, subtext1: 0xbac2de, text: 0xcdd6f4,
+        rosewater: 0xf5e0dc, pink: 0xf5c2e7, red: 0xf38ba8, peach: 0xfab387, yellow: 0xf9e2af,
+        green: 0xa6e3a1, teal: 0x94e2d5, blue: 0x89b4fa,
+    }),
+    catppuccin("catppuccin-macchiato", "Catppuccin Macchiato", false, Flavor {
+        base: 0x24273a, mantle: 0x1e2030, surface0: 0x363a4f, surface1: 0x494d64, surface2: 0x5b6078,
+        overlay0: 0x6e738d, overlay1: 0x8087a2, subtext0: 0xa5adcb, subtext1: 0xb8c0e0, text: 0xcad3f5,
+        rosewater: 0xf4dbd6, pink: 0xf5bde6, red: 0xed8796, peach: 0xf5a97f, yellow: 0xeed49f,
+        green: 0xa6da95, teal: 0x8bd5ca, blue: 0x8aadf4,
+    }),
+    catppuccin("catppuccin-frappe", "Catppuccin Frappé", false, Flavor {
+        base: 0x303446, mantle: 0x292c3c, surface0: 0x414559, surface1: 0x51576d, surface2: 0x626880,
+        overlay0: 0x737994, overlay1: 0x838ba7, subtext0: 0xa5adce, subtext1: 0xb5bfe2, text: 0xc6d0f5,
+        rosewater: 0xf2d5cf, pink: 0xf4b8e4, red: 0xe78284, peach: 0xef9f76, yellow: 0xe5c890,
+        green: 0xa6d189, teal: 0x81c8be, blue: 0x8caaee,
+    }),
+    catppuccin("catppuccin-latte", "Catppuccin Latte", true, Flavor {
+        base: 0xeff1f5, mantle: 0xe6e9ef, surface0: 0xccd0da, surface1: 0xbcc0cc, surface2: 0xacb0be,
+        overlay0: 0x9ca0b0, overlay1: 0x8c8fa1, subtext0: 0x6c6f85, subtext1: 0x5c5f77, text: 0x4c4f69,
+        rosewater: 0xdc8a78, pink: 0xea76cb, red: 0xd20f39, peach: 0xfe640b, yellow: 0xdf8e1d,
+        green: 0x40a02b, teal: 0x179299, blue: 0x1e66f5,
+    }),
+    Palette {
+        id: "graphite-dark", name: "Graphite Dark", light: false,
+        bg_term: rgb(0x16181d), bg_base: rgb(0x1b1e24), bg_raised: rgb(0x23272f), bg_hover: rgb(0x2c313b), border: rgb(0x2f343e),
+        text: rgb(0xd7dae0), text_dim: rgb(0x9aa1ad), text_faint: rgb(0x646b78),
+        accent: rgb(0x7aa2f7), success: rgb(0x73c991), warn: rgb(0xe5c07b), error: rgb(0xf07178),
+        term_fg: rgb(0xc8cdd6), cursor: rgb(0xd7dae0),
+        ansi: [
+            rgb(0x2a2e36), rgb(0xe06c75), rgb(0x98c379), rgb(0xe5c07b), rgb(0x61afef), rgb(0xc678dd), rgb(0x56b6c2), rgb(0xabb2bf),
+            rgb(0x5c6370), rgb(0xf0878e), rgb(0xb0d791), rgb(0xf0d092), rgb(0x82c3f8), rgb(0xd694e8), rgb(0x78ced8), rgb(0xe6e9ef),
+        ],
+    },
+    Palette {
+        id: "graphite-light", name: "Graphite Light", light: true,
+        bg_term: rgb(0xfbfbfc), bg_base: rgb(0xf3f4f6), bg_raised: rgb(0xffffff), bg_hover: rgb(0xe7e9ee), border: rgb(0xd5d9e0),
+        text: rgb(0x1f2328), text_dim: rgb(0x555e6b), text_faint: rgb(0x8b939f),
+        accent: rgb(0x2f6feb), success: rgb(0x1a7f37), warn: rgb(0x9a6700), error: rgb(0xcf222e),
+        term_fg: rgb(0x24292f), cursor: rgb(0x24292f),
+        ansi: [
+            rgb(0x24292f), rgb(0xcf222e), rgb(0x116329), rgb(0x8a5a00), rgb(0x0969da), rgb(0x8250df), rgb(0x1b7c83), rgb(0x6e7781),
+            rgb(0x57606a), rgb(0xa40e26), rgb(0x1a7f37), rgb(0x633c01), rgb(0x218bff), rgb(0xa475f9), rgb(0x3192aa), rgb(0x8c959f),
+        ],
+    },
+];
+
+pub const DEFAULT_DARK: &str = "catppuccin-mocha";
+pub const DEFAULT_LIGHT: &str = "catppuccin-latte";
+
+static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+
+fn p() -> &'static Palette {
+    &THEMES[ACTIVE.load(Ordering::Relaxed).min(THEMES.len() - 1)]
+}
+
+pub fn active() -> usize {
+    ACTIVE.load(Ordering::Relaxed)
+}
+
 pub fn is_light() -> bool {
-    LIGHT_ACTIVE.load(Ordering::Relaxed)
+    p().light
+}
+
+/// (index, id, display name, is light) of every selectable theme.
+pub fn themes() -> impl Iterator<Item = (usize, &'static str, &'static str, bool)> {
+    THEMES.iter().enumerate().map(|(i, t)| (i, t.id, t.name, t.light))
+}
+
+/// Background, accent and text color of a theme, for pickers.
+pub fn swatch(i: usize) -> [Color32; 3] {
+    let t = &THEMES[i.min(THEMES.len() - 1)];
+    [t.bg_term, t.accent, t.text]
+}
+
+pub fn index_of(id: &str) -> Option<usize> {
+    THEMES.iter().position(|t| t.id == id)
+}
+
+/// The theme to show for a settings choice: a theme id, or "system" (the OS
+/// light/dark setting picks `light` / `dark`).  "dark"/"light" from older
+/// settings files map to the chosen dark/light theme.
+pub fn resolve(choice: &str, dark: &str, light: &str, ctx: &egui::Context) -> usize {
+    let pick = |id: &str, fallback: &str| index_of(id).or_else(|| index_of(fallback)).unwrap_or(0);
+    match choice {
+        "system" => {
+            if ctx.system_theme() == Some(egui::Theme::Light) {
+                pick(light, DEFAULT_LIGHT)
+            } else {
+                pick(dark, DEFAULT_DARK)
+            }
+        }
+        "light" => pick(light, DEFAULT_LIGHT),
+        "dark" => pick(dark, DEFAULT_DARK),
+        id => index_of(id).unwrap_or_else(|| pick(dark, DEFAULT_DARK)),
+    }
 }
 
 pub fn bg_term() -> Color32 {
@@ -249,18 +324,10 @@ pub fn term_font(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name(TERM_FONT.into()))
 }
 
-/// Light or dark for a settings choice (`System` asks the OS through egui).
-pub fn wants_light(mode: ThemeMode, ctx: &egui::Context) -> bool {
-    match mode {
-        ThemeMode::Dark => false,
-        ThemeMode::Light => true,
-        ThemeMode::System => ctx.system_theme() == Some(egui::Theme::Light),
-    }
-}
-
-/// Switch the active palette and egui's widget visuals together.
-pub fn apply(ctx: &egui::Context, light: bool) {
-    LIGHT_ACTIVE.store(light, Ordering::Relaxed);
+/// Switch the active theme and egui's widget visuals together.
+pub fn apply(ctx: &egui::Context, index: usize) {
+    ACTIVE.store(index.min(THEMES.len() - 1), Ordering::Relaxed);
+    let light = is_light();
     let mut style = (*ctx.style()).clone();
     use egui::TextStyle::*;
     style.text_styles.insert(Body, FontId::proportional(13.5));
@@ -278,7 +345,7 @@ pub fn apply(ctx: &egui::Context, light: bool) {
     v.window_stroke = Stroke::new(1.0_f32, border());
     v.window_corner_radius = CornerRadius::same(8);
     v.menu_corner_radius = CornerRadius::same(6);
-    v.extreme_bg_color = if light { bg_raised() } else { bg_term() };
+    v.extreme_bg_color = bg_term();
     v.faint_bg_color = bg_raised();
     v.code_bg_color = bg_term();
     v.override_text_color = None;
@@ -341,15 +408,26 @@ mod tests {
     }
 
     #[test]
-    fn palettes_keep_text_readable() {
-        for (name, pal) in [("dark", &DARK), ("light", &LIGHT)] {
-            assert!(contrast(pal.text, pal.bg_term) >= 7.0, "{name} text");
-            assert!(contrast(pal.term_fg, pal.bg_term) >= 7.0, "{name} term fg");
-            assert!(contrast(pal.text_dim, pal.bg_base) >= 4.5, "{name} dim text");
-            // ANSI colors 1..=6 and 9..=14 carry meaning (errors, diffs): keep them legible.
+    fn themes_keep_body_text_readable() {
+        for t in THEMES.iter() {
+            assert!(contrast(t.text, t.bg_term) >= 6.5, "{} text {}", t.id, contrast(t.text, t.bg_term));
+            assert!(contrast(t.term_fg, t.bg_term) >= 6.5, "{} term fg", t.id);
+            assert!(contrast(t.text_dim, t.bg_base) >= 3.5, "{} dim text {}", t.id, contrast(t.text_dim, t.bg_base));
+            // ANSI colors are each theme's own; Catppuccin Latte's yellow is
+            // intentionally soft, so only rule out near-invisible ones.
             for i in (1..=6).chain(9..=14) {
-                assert!(contrast(pal.ansi[i], pal.bg_term) >= 3.0, "{name} ansi {i}");
+                assert!(contrast(t.ansi[i], t.bg_term) >= 2.0, "{} ansi {i} {}", t.id, contrast(t.ansi[i], t.bg_term));
             }
         }
+    }
+
+    #[test]
+    fn resolve_choices() {
+        let ctx = egui::Context::default();
+        assert_eq!(THEMES[resolve("catppuccin-frappe", DEFAULT_DARK, DEFAULT_LIGHT, &ctx)].id, "catppuccin-frappe");
+        assert_eq!(THEMES[resolve("light", DEFAULT_DARK, "graphite-light", &ctx)].id, "graphite-light");
+        assert_eq!(THEMES[resolve("dark", "catppuccin-macchiato", DEFAULT_LIGHT, &ctx)].id, "catppuccin-macchiato");
+        assert_eq!(THEMES[resolve("no-such-theme", DEFAULT_DARK, DEFAULT_LIGHT, &ctx)].id, DEFAULT_DARK);
+        assert!(index_of(DEFAULT_DARK).is_some() && index_of(DEFAULT_LIGHT).is_some());
     }
 }

@@ -43,9 +43,9 @@ enum Cmd {
     Reconnect,
     FontUp,
     FontDown,
-    ThemeDark,
-    ThemeLight,
+    Theme(usize),
     ThemeSystem,
+    ThemePicker,
     Hidden,
     Settings,
     AgentLog,
@@ -71,9 +71,8 @@ const COMMANDS: &[(Cmd, &str, &str)] = &[
     (Cmd::Reconnect, "Reconnect agent for this host", ""),
     (Cmd::FontUp, "Bigger font", "Ctrl+="),
     (Cmd::FontDown, "Smaller font", "Ctrl+-"),
-    (Cmd::ThemeDark, "Theme: dark", ""),
-    (Cmd::ThemeLight, "Theme: light", ""),
-    (Cmd::ThemeSystem, "Theme: follow system", ""),
+    (Cmd::ThemePicker, "Theme…", ""),
+    (Cmd::ThemeSystem, "Theme: follow system (dark/light)", ""),
     (Cmd::Settings, "Open settings.json", ""),
     (Cmd::AgentLog, "Open agent log for this host", ""),
 ];
@@ -156,9 +155,9 @@ impl App {
             }
             Cmd::FontUp => self.settings.font_size = (self.settings.font_size + 1.0).min(32.0),
             Cmd::FontDown => self.settings.font_size = (self.settings.font_size - 1.0).max(8.0),
-            Cmd::ThemeDark => self.settings.theme = theme::ThemeMode::Dark,
-            Cmd::ThemeLight => self.settings.theme = theme::ThemeMode::Light,
-            Cmd::ThemeSystem => self.settings.theme = theme::ThemeMode::System,
+            Cmd::Theme(i) => self.pick_theme(i),
+            Cmd::ThemeSystem => self.settings.theme = "system".into(),
+            Cmd::ThemePicker => self.theme_menu = Some(egui::Rect::from_min_size(pos2(f32::MAX, 34.0), vec2(0.0, 0.0))),
             Cmd::Hidden => {
                 self.settings.show_hidden = !self.settings.show_hidden;
                 self.dir_cache.clear();
@@ -310,9 +309,10 @@ impl App {
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.add_space(6.0);
-                let (ti, tip) = if theme::is_light() { (Icon::Moon, "switch to dark theme") } else { (Icon::Sun, "switch to light theme") };
-                if icons::button(ui, ti, tip).clicked() {
-                    self.settings.theme = if theme::is_light() { theme::ThemeMode::Dark } else { theme::ThemeMode::Light };
+                let ti = if theme::is_light() { Icon::Sun } else { Icon::Moon };
+                let tr = icons::button(ui, ti, "theme");
+                if tr.clicked() {
+                    self.theme_menu = if self.theme_menu.is_some() { None } else { Some(tr.rect) };
                 }
                 let ec = if self.editor.visible { theme::accent() } else { theme::text_dim() };
                 if icons::button_colored(ui, Icon::Editor, "editor (Ctrl+Shift+J)", ec).clicked() {
@@ -1011,7 +1011,14 @@ impl App {
     pub fn ui_palette(&mut self, ctx: &egui::Context) {
         let Some(mut st) = self.palette.take() else { return };
         let q = st.query.to_lowercase();
-        let items: Vec<(Cmd, &str, &str)> = COMMANDS.iter().copied().filter(|(_, l, _)| q.is_empty() || l.to_lowercase().contains(&q)).collect();
+        let theme_items: Vec<(Cmd, String, String)> =
+            theme::themes().map(|(i, _, name, light)| (Cmd::Theme(i), format!("Theme: {name}"), if light { "light".into() } else { "dark".into() })).collect();
+        let items: Vec<(Cmd, String, String)> = COMMANDS
+            .iter()
+            .map(|(c, l, k)| (*c, l.to_string(), k.to_string()))
+            .chain(theme_items)
+            .filter(|(_, l, _)| q.is_empty() || l.to_lowercase().contains(&q))
+            .collect();
         let mut run = None;
         let mut keep = true;
         let area = egui::Area::new(Id::new("palette")).anchor(Align2::CENTER_TOP, vec2(0.0, 70.0)).order(egui::Order::Foreground).show(ctx, |ui| {
@@ -1048,8 +1055,8 @@ impl App {
                     if i == st.sel || resp.hovered() {
                         ui.painter().rect_filled(rect, CornerRadius::same(5), if i == st.sel { theme::tint(theme::accent(), 45) } else { theme::bg_hover() });
                     }
-                    ui.painter().text(pos2(rect.left() + 10.0, rect.center().y), Align2::LEFT_CENTER, *label, FontId::proportional(13.0), theme::text());
-                    ui.painter().text(pos2(rect.right() - 10.0, rect.center().y), Align2::RIGHT_CENTER, *keys, FontId::proportional(11.5), theme::text_faint());
+                    ui.painter().text(pos2(rect.left() + 10.0, rect.center().y), Align2::LEFT_CENTER, label, FontId::proportional(13.0), theme::text());
+                    ui.painter().text(pos2(rect.right() - 10.0, rect.center().y), Align2::RIGHT_CENTER, keys, FontId::proportional(11.5), theme::text_faint());
                     if resp.clicked() {
                         run = Some(*cmd);
                     }
@@ -1233,6 +1240,80 @@ impl App {
             self.auth_prompt = Some((host, password));
         } else {
             self.focus_term = true;
+        }
+    }
+
+    /// Theme picker: every theme with a color swatch, plus "follow system".
+    pub fn ui_theme_menu(&mut self, ctx: &egui::Context) {
+        let Some(button) = self.theme_menu else { return };
+        let width = 260.0;
+        let screen = ctx.screen_rect();
+        let pos = pos2((button.right() - width).clamp(8.0, screen.right() - width - 8.0), button.bottom() + 4.0);
+        let mut pick = None;
+        let mut system = false;
+        let mut keep = true;
+        let current = self.settings.theme.clone();
+        let area = egui::Area::new(Id::new("theme-menu")).fixed_pos(pos).order(egui::Order::Foreground).show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).fill(theme::bg_raised()).corner_radius(CornerRadius::same(8)).inner_margin(6.0).show(ui, |ui| {
+                ui.set_width(width - 12.0);
+                if take_key(ui, Key::Escape, |_| true) {
+                    keep = false;
+                }
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Theme").size(12.5).color(theme::text_dim()));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if icons::button(ui, Icon::Cross, "close (Esc)").clicked() {
+                            keep = false;
+                        }
+                    });
+                });
+                let row = |ui: &mut Ui, swatch: Option<[Color32; 3]>, label: &str, selected: bool| -> bool {
+                    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::click());
+                    if selected || resp.hovered() {
+                        ui.painter().rect_filled(rect, CornerRadius::same(5), if selected { theme::tint(theme::accent(), 40) } else { theme::bg_hover() });
+                    }
+                    let mut x = rect.left() + 8.0;
+                    if let Some([bg, accent, fg]) = swatch {
+                        let chip = egui::Rect::from_min_size(pos2(x, rect.center().y - 8.0), vec2(34.0, 16.0));
+                        ui.painter().rect_filled(chip, CornerRadius::same(4), bg);
+                        ui.painter().rect_stroke(chip, CornerRadius::same(4), Stroke::new(1.0_f32, theme::border()), egui::StrokeKind::Inside);
+                        ui.painter().circle_filled(pos2(chip.left() + 10.0, chip.center().y), 4.0, accent);
+                        ui.painter().circle_filled(pos2(chip.left() + 23.0, chip.center().y), 4.0, fg);
+                        x = chip.right() + 10.0;
+                    }
+                    ui.painter().text(pos2(x, rect.center().y), Align2::LEFT_CENTER, label, FontId::proportional(13.0), theme::text());
+                    if selected {
+                        icons::paint(ui.painter(), egui::Rect::from_min_size(pos2(rect.right() - 22.0, rect.center().y - 7.0), vec2(14.0, 14.0)), Icon::Check, theme::accent());
+                    }
+                    resp.clicked()
+                };
+                for (i, id, name, _) in theme::themes() {
+                    if row(ui, Some(theme::swatch(i)), name, current == id) {
+                        pick = Some(i);
+                    }
+                }
+                ui.separator();
+                let dark = theme::themes().find(|t| t.1 == self.settings.theme_dark).map(|t| t.2).unwrap_or("?");
+                let light = theme::themes().find(|t| t.1 == self.settings.theme_light).map(|t| t.2).unwrap_or("?");
+                if row(ui, None, "Follow system", current == "system") {
+                    system = true;
+                }
+                ui.label(RichText::new(format!("dark: {dark} · light: {light}")).size(11.0).color(theme::text_faint()));
+            });
+        });
+        // The opening button toggles the menu itself; don't count it as "outside".
+        let on_button = ctx.input(|i| i.pointer.press_origin().map(|p| button.contains(p)).unwrap_or(false));
+        if clicked_outside(ctx, area.response.rect) && !on_button {
+            keep = false;
+        }
+        if let Some(i) = pick {
+            self.pick_theme(i);
+        }
+        if system {
+            self.settings.theme = "system".into();
+        }
+        if !keep {
+            self.theme_menu = None;
         }
     }
 

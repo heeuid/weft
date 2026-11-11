@@ -83,7 +83,11 @@ cargo run --release
 ## 디자인
 
 - 색은 전부 `src/theme.rs`의 토큰(배경 4단계, 텍스트 3단계, 단일 액센트, success/warn/error)에서만 나옵니다.
-- 다크·라이트 두 팔레트가 같은 구조로 있습니다. 탭바 오른쪽의 해/달 버튼으로 바꾸거나, 커맨드 팔레트의 `Theme: dark / light / follow system`, 또는 `data/settings.json`의 `"theme": "dark" | "light" | "system"`로 정합니다. 라이트 팔레트의 ANSI "white"는 흰 배경에서도 읽히도록 회색입니다. 두 팔레트 모두 본문 글자 대비 7:1 이상을 테스트로 확인합니다.
+- 테마는 고를 수 있습니다: **Catppuccin Mocha(기본) · Macchiato · Frappé · Latte**, **Graphite Dark · Light**. Catppuccin은 공식 색과 공식 터미널 ANSI 매핑을 그대로 씁니다(MIT, https://catppuccin.com).
+  - 탭바 오른쪽 해/달 버튼 → 색 견본이 있는 테마 목록, 또는 커맨드 팔레트의 `Theme: …`
+  - "Follow system": OS가 다크면 마지막에 고른 다크 테마, 라이트면 마지막에 고른 라이트 테마
+  - `data/settings.json`: `"theme"`(테마 id 또는 `"system"`), `"theme_dark"`, `"theme_light"`
+  - 모든 테마의 본문 글자 대비(6.5:1 이상)를 테스트로 확인합니다. Catppuccin Latte의 노란색은 원래 옅은 색이라 밝은 배경에서 약하게 보입니다.
 - UI 아이콘은 `src/icons.rs`에서 선으로 직접 그립니다 → 폰트에 글리프가 없어 □로 깨지는 일이 없습니다.
 - 폰트 폴백 체인: 터미널 `Cascadia Mono → 맑은 고딕 → Segoe UI Symbol → egui 기본`, UI `Segoe UI → 맑은 고딕 → Segoe UI Symbol`.
   ASCII는 런 단위, 그 외 문자는 셀 단위로 그려 폴백 폰트가 열 정렬을 밀지 않습니다(한글 2칸 정렬).

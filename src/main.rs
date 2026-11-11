@@ -26,9 +26,9 @@ struct WeftApp {
 impl eframe::App for WeftApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let app = &mut self.app;
-        let light = theme::wants_light(app.settings.theme, ctx);
-        if light != theme::is_light() {
-            theme::apply(ctx, light);
+        let wanted = theme::resolve(&app.settings.theme, &app.settings.theme_dark, &app.settings.theme_light, ctx);
+        if wanted != theme::active() {
+            theme::apply(ctx, wanted);
         }
         app.poll();
         app.handle_global_keys(ctx);
@@ -63,6 +63,7 @@ impl eframe::App for WeftApp {
         app.ui_palette(ctx);
         app.ui_connect(ctx);
         app.ui_auth(ctx);
+        app.ui_theme_menu(ctx);
         app.ui_toasts(ctx);
         app.apply_actions();
 
@@ -130,7 +131,7 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(|cc| {
             theme::install_fonts(&cc.egui_ctx);
-            theme::apply(&cc.egui_ctx, false);
+            theme::apply(&cc.egui_ctx, 0);
             cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
             Ok(Box::new(WeftApp { app: App::new(cc.egui_ctx.clone()) }))
         }),

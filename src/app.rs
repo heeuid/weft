@@ -20,6 +20,15 @@ fn d_font() -> f32 {
 fn d_true() -> bool {
     true
 }
+fn d_theme() -> String {
+    crate::theme::DEFAULT_DARK.into()
+}
+fn d_theme_dark() -> String {
+    crate::theme::DEFAULT_DARK.into()
+}
+fn d_theme_light() -> String {
+    crate::theme::DEFAULT_LIGHT.into()
+}
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Settings {
@@ -31,8 +40,14 @@ pub struct Settings {
     pub sidebar: bool,
     #[serde(default)]
     pub show_hidden: bool,
-    #[serde(default)]
-    pub theme: crate::theme::ThemeMode,
+    /// A theme id (see theme.rs), or "system" to follow the OS light/dark setting.
+    #[serde(default = "d_theme")]
+    pub theme: String,
+    /// Themes used for "system": the last dark and light theme picked.
+    #[serde(default = "d_theme_dark")]
+    pub theme_dark: String,
+    #[serde(default = "d_theme_light")]
+    pub theme_light: String,
     #[serde(default)]
     pub session: Vec<SavedNode>,
 }
@@ -52,7 +67,7 @@ impl Default for Settings {
                 },
             });
         }
-        Settings { font_size: d_font(), profiles, sidebar: true, show_hidden: false, theme: Default::default(), session: Vec::new() }
+        Settings { font_size: d_font(), profiles, sidebar: true, show_hidden: false, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), session: Vec::new() }
     }
 }
 
@@ -456,6 +471,8 @@ pub struct App {
     pub connect: Option<ConnectState>,
     /// Agent authentication prompt: (host, password being typed).
     pub auth_prompt: Option<(String, String)>,
+    /// Theme picker popup, anchored below the button (rect) that opened it.
+    pub theme_menu: Option<egui::Rect>,
     /// ssh passwords for this session only; never written to disk or logs.
     pub secrets: HashMap<String, String>,
     auth_prompted: HashSet<String>,
@@ -541,6 +558,7 @@ impl App {
             actions: Vec::new(),
             agent_retried: HashSet::new(),
             auth_prompt: None,
+            theme_menu: None,
             secrets: HashMap::new(),
             auth_prompted: HashSet::new(),
             last_save: Instant::now(),
@@ -728,6 +746,18 @@ impl App {
         }
         tab.zoomed = !tab.zoomed;
         self.focus_term = true;
+    }
+
+    /// Pick a theme; it also becomes the dark/light theme used by "system".
+    pub fn pick_theme(&mut self, index: usize) {
+        if let Some((_, id, _, light)) = crate::theme::themes().find(|t| t.0 == index) {
+            self.settings.theme = id.to_string();
+            if light {
+                self.settings.theme_light = id.to_string();
+            } else {
+                self.settings.theme_dark = id.to_string();
+            }
+        }
     }
 
     pub fn close_pane(&mut self, id: usize) {
