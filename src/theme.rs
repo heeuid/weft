@@ -278,11 +278,115 @@ pub fn xterm256(idx: u8) -> Color32 {
 
 pub const TERM_FONT: &str = "term";
 
+/// Fonts built into weft: Nerd Font builds of well-known coding fonts, so
+/// icons (nvim plugins, prompts, file trees) show on any machine. Their
+/// licenses are next to them in fonts/.
+pub const BUILTIN_FONTS: &[(&str, &str, &[u8])] = &[
+    ("builtin:jetbrains-mono", "JetBrains Mono Nerd Font", include_bytes!("../fonts/JetBrainsMonoNerdFontMono-Regular.ttf")),
+    ("builtin:caskaydia-cove", "CaskaydiaCove Nerd Font (Cascadia)", include_bytes!("../fonts/CaskaydiaCoveNerdFontMono-Regular.ttf")),
+    ("builtin:hack", "Hack Nerd Font", include_bytes!("../fonts/HackNerdFontMono-Regular.ttf")),
+];
+
+/// Default terminal font and icon fallback (settings "term_font", "icon_font").
+pub const DEFAULT_FONT: &str = "builtin:jetbrains-mono";
+
+/// A font setting's display name: a built-in font's name, else the file name.
+pub fn font_label(spec: &str) -> String {
+    if let Some(b) = BUILTIN_FONTS.iter().find(|b| b.0 == spec) {
+        return b.1.to_string();
+    }
+    std::path::Path::new(spec).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| spec.to_string())
+}
+
+/// A font setting's data: "builtin:…" or a .ttf/.otf/.ttc path.
+fn font_data(spec: &str) -> Result<FontData, String> {
+    if let Some(b) = BUILTIN_FONTS.iter().find(|b| b.0 == spec) {
+        return Ok(FontData::from_static(b.2));
+    }
+    let bytes = std::fs::read(spec).map_err(|e| format!("{spec}: {e}"))?;
+    // egui panics later on data that isn't a font; check it now.
+    if bytes.len() < 4 || !matches!(&bytes[..4], [0, 1, 0, 0] | b"OTTO" | b"ttcf" | b"true") {
+        return Err(format!("{}: not a TrueType/OpenType font", font_label(spec)));
+    }
+    Ok(FontData::from_owned(bytes))
+}
+
+/// Font files a user can pick: data/fonts (fonts you downloaded) first, then
+/// the system's. Bold, italic and other weights are left out; a path can
+/// still be entered for those.
+pub fn font_files(own: &std::path::Path) -> Vec<(String, String, bool)> {
+    let mut dirs: Vec<(std::path::PathBuf, bool)> = vec![(own.to_path_buf(), true)];
+    if let Ok(w) = std::env::var("WINDIR") {
+        dirs.push((format!("{w}\\Fonts").into(), false));
+    }
+    if let Ok(l) = std::env::var("LOCALAPPDATA") {
+        dirs.push((format!("{l}\\Microsoft\\Windows\\Fonts").into(), false));
+    }
+    if let Ok(h) = std::env::var("HOME") {
+        dirs.push((format!("{h}/.local/share/fonts").into(), false));
+        dirs.push((format!("{h}/Library/Fonts").into(), false));
+    }
+    dirs.push(("/usr/share/fonts".into(), false));
+    dirs.push(("/usr/local/share/fonts".into(), false));
+    dirs.push(("/System/Library/Fonts".into(), false));
+    let mut out: Vec<(String, String, bool)> = Vec::new();
+    // Linux keeps fonts a folder or two down.
+    let mut stack: Vec<(std::path::PathBuf, bool, u8)> = dirs.into_iter().rev().map(|(d, own)| (d, own, 0)).collect();
+    while let Some((d, own, depth)) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        let mut here: Vec<(String, String, bool)> = Vec::new();
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                if depth < 2 {
+                    stack.push((p, own, depth + 1));
+                }
+                continue;
+            }
+            let name = e.file_name().to_string_lossy().into_owned();
+            if is_regular_face(&name) {
+                here.push((font_label(&name), p.display().to_string().replace('\\', "/"), own));
+            }
+        }
+        here.sort_by_key(|f| f.0.to_lowercase());
+        out.extend(here);
+    }
+    let mut seen = std::collections::HashSet::new();
+    out.retain(|f| seen.insert(f.0.to_lowercase()));
+    out
+}
+
+/// A .ttf/.otf/.ttc file that isn't a bold, italic or other non-regular face.
+fn is_regular_face(file: &str) -> bool {
+    let n = file.to_lowercase();
+    if !(n.ends_with(".ttf") || n.ends_with(".otf") || n.ends_with(".ttc")) {
+        return false;
+    }
+    let stem = n.rsplit_once('.').map(|s| s.0).unwrap_or(&n);
+    !["bold", "italic", "light", "thin", "medium", "semibold", "black", "heavy", "oblique", "condensed"].iter().any(|w| stem.contains(w))
+        // Windows' short names for those faces: arialbd, consolai, seguisb, …
+        && !(stem.ends_with("bd") || stem.ends_with("bi") || stem.ends_with("z") && stem.len() > 4 || stem.ends_with("sb") || stem.ends_with("sl"))
+}
+
 /// Font chain with explicit fallbacks so no glyph renders as tofu:
-/// mono: Cascadia Mono -> Malgun Gothic (Hangul) -> Segoe UI Symbol -> egui defaults (emoji)
-/// ui:   Segoe UI -> Malgun Gothic -> Segoe UI Symbol -> egui defaults
-pub fn install_fonts(ctx: &egui::Context) {
+/// mono: terminal font -> Malgun Gothic (Hangul) -> icon font (Nerd Font) -> Segoe UI Symbol -> egui defaults (emoji)
+/// ui:   Segoe UI -> Malgun Gothic -> icon font -> Segoe UI Symbol -> egui defaults
+///
+/// `term` and `icons` are font settings ("builtin:…" or a file path). One that
+/// can't be read falls back to the default; the problem is returned.
+pub fn install_fonts(ctx: &egui::Context, term: &str, icons: &str) -> Vec<String> {
+    let mut problems = Vec::new();
     let mut fonts = FontDefinitions::default();
+    let mut pick = |spec: &str| match font_data(spec) {
+        Ok(d) => d,
+        Err(e) => {
+            problems.push(e);
+            font_data(DEFAULT_FONT).unwrap()
+        }
+    };
+    let (term_data, icon_data) = (pick(term), pick(icons));
+    fonts.font_data.insert("mono".into(), Arc::new(term_data));
+    fonts.font_data.insert("icons".into(), Arc::new(icon_data));
     let dir = std::env::var("WINDIR").map(|w| format!("{w}\\Fonts")).unwrap_or_else(|_| "C:\\Windows\\Fonts".into());
     let mut load = |key: &str, files: &[&str]| -> Option<String> {
         for f in files {
@@ -295,7 +399,6 @@ pub fn install_fonts(ctx: &egui::Context) {
         }
         None
     };
-    let mono = load("mono", &["CascadiaMono.ttf", "consola.ttf", "DejaVuSansMono.ttf", "Menlo.ttc"]);
     let ui = load("ui", &["segoeui.ttf", "DejaVuSans.ttf"]);
     let kr = load("kr", &["malgun.ttf", "NanumGothic.ttf", "AppleSDGothicNeo.ttc"]);
     let sym = load("sym", &["seguisym.ttf"]);
@@ -307,6 +410,8 @@ pub fn install_fonts(ctx: &egui::Context) {
     let chain = |first: Option<String>, rest: &[String]| -> Vec<String> {
         let mut v: Vec<String> = first.into_iter().collect();
         v.extend(kr.clone());
+        // Before Segoe UI Symbol, which has a few private-use glyphs of its own.
+        v.push("icons".into());
         v.extend(sym.clone());
         for r in rest {
             if !v.contains(r) {
@@ -315,7 +420,7 @@ pub fn install_fonts(ctx: &egui::Context) {
         }
         v
     };
-    let term_chain = chain(mono.clone(), &egui_mono);
+    let term_chain = chain(Some("mono".into()), &egui_mono);
     fonts.families.insert(FontFamily::Monospace, term_chain.clone());
     fonts.families.insert(FontFamily::Name(TERM_FONT.into()), term_chain);
     let prop_chain = chain(ui, &egui_prop);
@@ -330,6 +435,7 @@ pub fn install_fonts(ctx: &egui::Context) {
     fonts.families.insert(FontFamily::Name(crate::md::BOLD_FONT.into()), bold);
     fonts.families.insert(FontFamily::Proportional, prop_chain);
     ctx.set_fonts(fonts);
+    problems
 }
 
 pub fn term_font(size: f32) -> FontId {
@@ -401,6 +507,43 @@ pub fn apply(ctx: &egui::Context, index: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn builtin_fonts_have_nerd_icons() {
+        let ctx = egui::Context::default();
+        for (spec, name, _) in BUILTIN_FONTS {
+            assert!(install_fonts(&ctx, spec, spec).is_empty());
+            let _ = ctx.run(Default::default(), |_| {});
+            // nvim which-key's space key, powerline arrow, folder, git branch.
+            for c in ['\u{f1050}', '\u{e0b0}', '\u{f07c}', '\u{e725}', 'a', '0'] {
+                assert!(ctx.fonts(|f| f.has_glyph(&term_font(14.0), c)), "{name} lacks U+{:X}", c as u32);
+            }
+        }
+    }
+
+    #[test]
+    fn unreadable_fonts_fall_back_to_the_default() {
+        let ctx = egui::Context::default();
+        let junk = std::env::temp_dir().join("weft-not-a-font.ttf");
+        std::fs::write(&junk, b"hello").unwrap();
+        let problems = install_fonts(&ctx, &junk.display().to_string(), "C:/no/such/font.ttf");
+        assert_eq!(problems.len(), 2, "{problems:?}");
+        let _ = ctx.run(Default::default(), |_| {});
+        assert!(ctx.fonts(|f| f.has_glyph(&term_font(14.0), '\u{f1050}')));
+        let _ = std::fs::remove_file(junk);
+    }
+
+    #[test]
+    fn only_regular_faces_are_offered() {
+        for f in ["JetBrainsMonoNerdFont-Regular.ttf", "consola.ttf", "D2Coding.ttc", "Hack-NF.ttf", "malgun.ttf"] {
+            assert!(is_regular_face(f), "{f}");
+        }
+        for f in ["HackNerdFont-Bold.ttf", "consolab.ttf.txt", "arialbd.ttf", "consolaz.ttf", "x-SemiLight.otf", "readme.txt"] {
+            assert!(!is_regular_face(f), "{f}");
+        }
+        assert_eq!(font_label("builtin:hack"), "Hack Nerd Font");
+        assert_eq!(font_label("C:/Fonts/My Font.ttf"), "My Font");
+    }
 
     /// WCAG relative-luminance contrast ratio.
     fn contrast(a: Color32, b: Color32) -> f32 {

@@ -23,6 +23,10 @@ fn d_one() -> f32 {
 fn d_true() -> bool {
     true
 }
+fn d_font_file() -> String {
+    crate::theme::DEFAULT_FONT.into()
+}
+
 fn d_theme() -> String {
     crate::theme::DEFAULT_DARK.into()
 }
@@ -336,6 +340,13 @@ pub struct Settings {
     /// space, as in CommonMark and rendered .md files.
     #[serde(default)]
     pub markdown_breaks: bool,
+    /// Terminal and editor font: "builtin:…" (see theme::BUILTIN_FONTS) or a
+    /// .ttf/.otf/.ttc path.
+    #[serde(default = "d_font_file")]
+    pub term_font: String,
+    /// Where icons the terminal font lacks come from (a Nerd Font), same form.
+    #[serde(default = "d_font_file")]
+    pub icon_font: String,
     #[serde(default)]
     pub session: Vec<SavedNode>,
 }
@@ -355,7 +366,7 @@ impl Default for Settings {
                 },
             });
         }
-        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, layout: Layout::default(), show_hidden: false, find_mode: Default::default(), cursor_style: Default::default(), local_shell: Default::default(), mermaid: Default::default(), follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, session: Vec::new() }
+        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, layout: Layout::default(), show_hidden: false, find_mode: Default::default(), cursor_style: Default::default(), local_shell: Default::default(), mermaid: Default::default(), follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, term_font: d_font_file(), icon_font: d_font_file(), session: Vec::new() }
     }
 }
 
@@ -718,6 +729,17 @@ pub struct Toast {
     pub at: Instant,
 }
 
+/// The font picker: which setting it edits and the fonts it offers.
+pub struct FontMenu {
+    /// Editing the icon font (else the terminal font).
+    pub icons: bool,
+    pub query: String,
+    /// A font file path typed in.
+    pub path: String,
+    /// (name, path, in data/fonts) for each font file found.
+    pub files: Vec<(String, String, bool)>,
+}
+
 pub struct PaletteState {
     pub query: String,
     pub sel: usize,
@@ -867,6 +889,8 @@ pub struct App {
     pub find_index: HashMap<(String, String), FindIndex>,
     pub find_inflight: HashSet<(String, String)>,
     pub find_result: Option<FindResult>,
+    /// The font picker, while open.
+    pub font_menu: Option<FontMenu>,
     /// When the oldest unsaved memo change was made (see autosave_memos).
     pub memo_edited: Option<Instant>,
     /// A panel being dragged by its grip to another window edge.
@@ -974,6 +998,7 @@ impl App {
             auth_prompted: HashSet::new(),
             last_save: Instant::now(),
             memo_edited: None,
+            font_menu: None,
         };
         app.side.follow = app.settings.follow_cwd;
         let session = std::mem::take(&mut app.settings.session);
@@ -1388,6 +1413,38 @@ impl App {
         });
         self.editor.active = self.editor.files.len() - 1;
         self.editor.visible = true;
+    }
+
+    // ---- fonts ------------------------------------------------------------------
+
+    /// Fonts you download go here (or anywhere: a path can be entered).
+    pub fn fonts_dir(&self) -> std::path::PathBuf {
+        self.data.path("fonts")
+    }
+
+    /// Load the fonts in the settings; a font that can't be read is reported
+    /// and the built-in default is used in its place.
+    pub fn apply_fonts(&mut self) {
+        for p in crate::theme::install_fonts(&self.ctx, &self.settings.term_font, &self.settings.icon_font) {
+            self.toast(format!("font: {p} — using the built-in font"), ToastKind::Error);
+        }
+    }
+
+    pub fn open_font_menu(&mut self) {
+        let _ = std::fs::create_dir_all(self.fonts_dir());
+        let files = crate::theme::font_files(&self.fonts_dir());
+        self.font_menu = Some(FontMenu { icons: false, query: String::new(), path: String::new(), files });
+    }
+
+    /// Choose a font for the terminal (or for icons): applied and saved now.
+    pub fn set_font(&mut self, icons: bool, spec: String) {
+        if icons {
+            self.settings.icon_font = spec;
+        } else {
+            self.settings.term_font = spec;
+        }
+        self.apply_fonts();
+        self.save_settings();
     }
 
     // ---- memos: markdown notes in data/memos, opened in the editor like files ----

@@ -59,6 +59,7 @@ impl eframe::App for WeftApp {
         app.ui_connect(ctx);
         app.ui_auth(ctx);
         app.ui_theme_menu(ctx);
+        app.ui_font_menu(ctx);
         app.ui_toasts(ctx);
         app.ui_dock_drop(ctx);
         app.apply_actions();
@@ -166,12 +167,14 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(|cc| {
             let window = since_start();
-            theme::install_fonts(&cc.egui_ctx);
-            let fonts = since_start();
             theme::apply(&cc.egui_ctx, 0);
             highlight::preload(&cc.egui_ctx);
             cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
-            let app = App::new(cc.egui_ctx.clone());
+            let mut app = App::new(cc.egui_ctx.clone());
+            // Fonts come from the settings, which App::new reads.
+            let before_fonts = since_start();
+            app.apply_fonts();
+            let fonts = format!("{} (from {before_fonts})", since_start());
             app.data.log(&format!("startup: window+GL {window}, fonts read {fonts}, app+panes {}", since_start()));
             Ok(Box::new(WeftApp { app, first_frame: true }))
         }),

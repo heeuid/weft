@@ -5,3 +5,5 @@
 *.cmd text eol=crlf
 *.sh text eol=lf
 *.desktop text eol=lf
+*.ttf binary
+*.otf binary

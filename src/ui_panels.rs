@@ -60,6 +60,7 @@ enum Cmd {
     AgentLog,
     NewMemo,
     Memos,
+    Fonts,
 }
 
 const COMMANDS: &[(Cmd, &str, &str)] = &[
@@ -89,6 +90,7 @@ const COMMANDS: &[(Cmd, &str, &str)] = &[
     (Cmd::UiDown, "Smaller UI (icons, tabs, panels)", "Ctrl+Shift+wheel"),
     (Cmd::UiReset, "UI scale 100%", ""),
     (Cmd::ThemePicker, "Theme…", ""),
+    (Cmd::Fonts, "Fonts… (terminal font, icon font)", ""),
     (Cmd::ThemeSystem, "Theme: follow system (dark/light)", ""),
     (Cmd::CursorStyle, "Terminal cursor: block / bar / underline", ""),
     (Cmd::LocalShell(crate::host::LocalShell::Auto), "Local shell: auto (pwsh, else Windows PowerShell)", ""),
@@ -216,6 +218,7 @@ impl App {
                 self.open_file("local", &p, 1);
             }
             Cmd::NewMemo => self.new_memo(),
+            Cmd::Fonts => self.open_font_menu(),
             Cmd::Memos => {
                 let dir = self.memo_dir();
                 let _ = std::fs::create_dir_all(&dir);
@@ -418,6 +421,14 @@ impl App {
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.add_space(6.0);
+                let fr = ui.add(egui::Button::new(RichText::new("Aa").size(12.5).color(theme::text_dim())).frame(false)).on_hover_text("fonts");
+                if fr.clicked() {
+                    if self.font_menu.is_some() {
+                        self.font_menu = None;
+                    } else {
+                        self.open_font_menu();
+                    }
+                }
                 let ti = if theme::is_light() { Icon::Sun } else { Icon::Moon };
                 let tr = icons::button(ui, ti, "theme");
                 if tr.clicked() {
@@ -1846,6 +1857,98 @@ impl App {
     }
 
     /// Theme picker: every theme with a color swatch, plus "follow system".
+    /// Font picker: terminal font and icon font, from the built-in fonts,
+    /// data/fonts, the system's fonts or a path. A click applies at once.
+    pub fn ui_font_menu(&mut self, ctx: &egui::Context) {
+        let Some(mut m) = self.font_menu.take() else { return };
+        let mut open = true;
+        let mut chosen: Option<String> = None;
+        let mut rescan = false;
+        let current = if m.icons { self.settings.icon_font.clone() } else { self.settings.term_font.clone() };
+        let fonts_dir = self.fonts_dir();
+        let size = self.settings.font_size;
+        egui::Window::new("Fonts").open(&mut open).collapsible(false).resizable(true).default_size(vec2(440.0, 520.0)).show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                if ui.selectable_label(!m.icons, "Terminal font").on_hover_text("text in the terminal and the editor").clicked() {
+                    m.icons = false;
+                }
+                if ui.selectable_label(m.icons, "Icon font").on_hover_text("icons the terminal font lacks (pick a Nerd Font)").clicked() {
+                    m.icons = true;
+                }
+            });
+            // Sample in the font in use: Latin, look-alikes, Hangul and Nerd Font icons.
+            let sample = "AaBb 0O 1lI {}=> 한글 \u{f1050} \u{e0b0} \u{f07c} \u{f418} \u{e7a8}";
+            egui::Frame::new().fill(theme::bg_base()).corner_radius(CornerRadius::same(5)).inner_margin(8.0).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(RichText::new(sample).font(theme::term_font(size)).color(theme::text()));
+            });
+            ui.label(RichText::new(format!("now: {}", theme::font_label(&current))).size(11.5).color(theme::text_faint()));
+            ui.add(TextEdit::singleline(&mut m.query).hint_text("filter fonts…").desired_width(f32::INFINITY));
+            let q = m.query.to_lowercase();
+            let shown = |name: &str| q.is_empty() || name.to_lowercase().contains(&q);
+            let row = |ui: &mut Ui, name: &str, spec: &str, chosen: &mut Option<String>| {
+                let sel = spec == current;
+                if ui.selectable_label(sel, RichText::new(name).size(13.0)).on_hover_text(spec).clicked() && !sel {
+                    *chosen = Some(spec.to_string());
+                }
+            };
+            ScrollArea::vertical().max_height(300.0).auto_shrink([false, true]).show(ui, |ui| {
+                ui.label(RichText::new("Built in (Nerd Fonts)").size(11.5).color(theme::text_dim()));
+                for (spec, name, _) in theme::BUILTIN_FONTS {
+                    if shown(name) {
+                        row(ui, name, spec, &mut chosen);
+                    }
+                }
+                ui.add_space(6.0);
+                ui.label(RichText::new("Your fonts (data/fonts)").size(11.5).color(theme::text_dim()));
+                let own: Vec<_> = m.files.iter().filter(|f| f.2).collect();
+                if own.is_empty() {
+                    ui.label(RichText::new("none yet: put .ttf / .otf files in the fonts folder (below), then Rescan").size(11.5).color(theme::text_faint()));
+                }
+                for (name, path, _) in own {
+                    if shown(name) {
+                        row(ui, name, path, &mut chosen);
+                    }
+                }
+                ui.add_space(6.0);
+                ui.label(RichText::new("Installed on this computer").size(11.5).color(theme::text_dim()));
+                for (name, path, own) in &m.files {
+                    if !own && shown(name) {
+                        row(ui, name, path, &mut chosen);
+                    }
+                }
+            });
+            ui.separator();
+            ui.horizontal(|ui| {
+                if ui.button("Open fonts folder").on_hover_text(fonts_dir.display().to_string()).clicked() {
+                    let _ = std::fs::create_dir_all(&fonts_dir);
+                    let opener = if cfg!(windows) { "explorer" } else if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+                    let _ = std::process::Command::new(opener).arg(&fonts_dir).spawn();
+                }
+                if ui.button("Rescan").on_hover_text("look again for fonts added since").clicked() {
+                    rescan = true;
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.add(TextEdit::singleline(&mut m.path).hint_text(r"or a font file: C:\…\MyFont.ttf").desired_width(ui.available_width() - 60.0));
+                if ui.add_enabled(!m.path.trim().is_empty(), egui::Button::new("Use")).clicked() {
+                    chosen = Some(m.path.trim().trim_matches('"').replace('\\', "/"));
+                }
+            });
+            ui.label(RichText::new("Hangul comes from Malgun Gothic when the font has none.").size(11.0).color(theme::text_faint()));
+        });
+        if rescan {
+            m.files = theme::font_files(&fonts_dir);
+        }
+        let icons = m.icons;
+        if open {
+            self.font_menu = Some(m);
+        }
+        if let Some(spec) = chosen {
+            self.set_font(icons, spec);
+        }
+    }
+
     pub fn ui_theme_menu(&mut self, ctx: &egui::Context) {
         let Some(button) = self.theme_menu else { return };
         let width = 260.0;
