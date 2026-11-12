@@ -155,6 +155,7 @@ TUI 그리드(날실) 사이에 GUI(씨실)를 엮어 넣은 터미널. Rust (`e
 | `Ctrl+Shift+P` | 커맨드 팔레트 |
 | `Ctrl+Shift+T` / `Ctrl+Shift+N` | 새 탭(같은 호스트·cwd) / 연결 |
 | `Ctrl+Shift+D` / `Ctrl+Shift+E` / `Ctrl+Shift+W` | 오른쪽 분할 / 아래 분할 / 패널 닫기 |
+| `Ctrl+Shift+Enter` | **집중 모드**: 터미널(분할 포함)만 화면 가득. 사이드 패널·에디터·탭 줄·상태바를 숨기고, 다시 누르면(또는 오른쪽 위 `FOCUS` 클릭) 원래대로 |
 | `Ctrl+Shift+Z` | 현재 패널만 탭 전체로 확대 / 원래 분할로 복귀 (패널 헤더 버튼, 우클릭 메뉴에도 있음) |
 | `Alt+←↑→↓` | (분할 시) 패널 포커스 이동 |
 | `Ctrl+Tab` / `Ctrl+Shift+Tab` | 탭 이동 |

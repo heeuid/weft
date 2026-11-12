@@ -1001,6 +1001,9 @@ pub struct App {
     pub find_result: Option<FindResult>,
     /// The help window, while open.
     pub help: Option<HelpState>,
+    /// Focus mode (terminals only): whether the side panel and the editor
+    /// were shown before, to bring them back.
+    pub focus_mode: Option<(bool, bool)>,
     /// Memos on disk, read at most once a second.
     pub memo_cache: Option<(Instant, Vec<MemoInfo>)>,
     /// Search in the memo list.
@@ -1146,6 +1149,7 @@ impl App {
             memo_edited: None,
             font_menu: None,
             help: None,
+            focus_mode: None,
             memo_cache: None,
             memo_query: String::new(),
             memo_picker: false,

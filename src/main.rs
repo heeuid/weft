@@ -72,10 +72,13 @@ impl eframe::App for WeftApp {
         app.poll();
         app.handle_global_keys(ctx);
 
-        egui::TopBottomPanel::bottom("status")
-            .exact_height(24.0)
-            .frame(egui::Frame::new().fill(theme::bg_base()).inner_margin(egui::Margin::symmetric(10, 0)))
-            .show(ctx, |ui| app.ui_status(ui));
+        // Focus mode: no status bar either.
+        if app.focus_mode.is_none() {
+            egui::TopBottomPanel::bottom("status")
+                .exact_height(24.0)
+                .frame(egui::Frame::new().fill(theme::bg_base()).inner_margin(egui::Margin::symmetric(10, 0)))
+                .show(ctx, |ui| app.ui_status(ui));
+        }
         egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::bg_base())).show(ctx, |ui| app.ui_layout(ui));
 
         app.ui_palette(ctx);

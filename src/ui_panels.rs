@@ -77,6 +77,7 @@ pub(crate) enum Cmd {
     FocusUp,
     FocusDown,
     CopyMode,
+    FocusMode,
 }
 
 /// Every command: (command, id for settings "keys", label, default keys).
@@ -87,6 +88,7 @@ const COMMANDS: &[(Cmd, &str, &str, &[&str])] = &[
     (Cmd::SplitDown, "split_down", "Split down", &["Ctrl+Shift+E"]),
     (Cmd::ClosePane, "close_pane", "Close pane", &["Ctrl+Shift+W"]),
     (Cmd::Zoom, "zoom", "Zoom / restore pane", &["Ctrl+Shift+Z"]),
+    (Cmd::FocusMode, "focus_mode", "Focus mode: terminals only (again to leave)", &["Ctrl+Shift+Enter"]),
     (Cmd::NextTab, "next_tab", "Next tab", &["Ctrl+Tab"]),
     (Cmd::PrevTab, "prev_tab", "Previous tab", &["Ctrl+Shift+Tab"]),
     (Cmd::FocusLeft, "focus_left", "Focus the pane on the left (split)", &["Alt+Left"]),
@@ -286,6 +288,20 @@ impl App {
                         None => Some(crate::copymode::CopyMode { cur: (p.term.cursor_abs(), p.term.cx), g: false }),
                     };
                     p.sel = None;
+                }
+                self.focus_term = true;
+            }
+            Cmd::FocusMode => {
+                match self.focus_mode.take() {
+                    Some((side, editor)) => {
+                        self.settings.sidebar = side;
+                        self.editor.visible = editor;
+                    }
+                    None => {
+                        self.focus_mode = Some((self.settings.sidebar, self.editor.visible));
+                        self.settings.sidebar = false;
+                        self.editor.visible = false;
+                    }
                 }
                 self.focus_term = true;
             }
@@ -2061,6 +2077,24 @@ impl App {
                     }
                     Region::Terms => {
                         // Terminal panel: its tab bar, then the active tab's panes.
+                        // Focus mode: the panes only, and a way out.
+                        if self.focus_mode.is_some() {
+                            ui.painter().rect_filled(r, CornerRadius::ZERO, theme::bg_term());
+                            ui.scope_builder(egui::UiBuilder::new().max_rect(r).id_salt("panes"), |ui| self.ui_panes(ui));
+                            let keys = self.keys_label(Cmd::FocusMode);
+                            let label = if keys.is_empty() { "FOCUS · click to leave".to_string() } else { format!("FOCUS · {keys} or click to leave") };
+                            let g = ui.painter().layout_no_wrap(label, FontId::proportional(11.0), theme::accent());
+                            let pill = egui::Rect::from_min_size(pos2(r.right() - g.size().x - 28.0, r.top() + 6.0), vec2(g.size().x + 16.0, 18.0));
+                            let resp = ui.interact(pill, Id::new("focus-pill"), Sense::click());
+                            let alpha = if resp.hovered() { 90 } else { 28 };
+                            ui.painter().rect_filled(pill, CornerRadius::same(9), theme::tint(theme::accent(), alpha));
+                            let text_alpha = if resp.hovered() { 255 } else { 120 };
+                            ui.painter().galley(pos2(pill.left() + 8.0, pill.center().y - g.size().y / 2.0), g, theme::tint(theme::accent(), text_alpha));
+                            if resp.clicked() {
+                                self.run_cmd(Cmd::FocusMode);
+                            }
+                            return;
+                        }
                         let bar = egui::Rect::from_min_size(r.min, vec2(r.width(), 34.0));
                         let body = egui::Rect::from_min_max(pos2(r.left(), bar.bottom()), r.max);
                         ui.painter().rect_filled(bar, CornerRadius::ZERO, theme::bg_base());
@@ -3180,6 +3214,7 @@ fn group(c: Cmd) -> &'static str {
         | Cmd::SplitDown
         | Cmd::ClosePane
         | Cmd::Zoom
+        | Cmd::FocusMode
         | Cmd::NextTab
         | Cmd::PrevTab
         | Cmd::FocusLeft
