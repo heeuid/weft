@@ -152,8 +152,10 @@ cargo test -- --include-ignored # + Git Bash를 원격 대역으로 쓰는 E2E (
 
 ## 구조
 
+셸 통합·OSC·원격 도구: [docs/shell-integration.md](docs/shell-integration.md)
+
 ```
-remote/rc.sh      bash 통합 (OSC 133/7, w* 헬퍼) — 메모리로만 전달
+shell/            셸 통합 (bash·zsh·fish·pwsh, OSC 133/7) — 압축 묶음으로 메모리로만 전달
 remote/agent.py   python 표준 라이브러리 에이전트 (JSON lines) — stdin으로 전달
 src/term.rs       VT/xterm 그리드, 절대 줄 번호 스크롤백, 블록, OSC 이벤트
 src/host.rs       프로필, 부트스트랩 명령 조립, 에이전트 연결, 로컬 백엔드

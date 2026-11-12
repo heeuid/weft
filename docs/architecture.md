@@ -78,14 +78,15 @@ update()                                   main.rs
 ## 5. 로컬 / 원격
 
 ```
-로컬 페인:  PowerShell (+ PSReadLine 통합 스크립트)  ── ConPTY ── Pty
-원격 페인:  ssh -tt host '<부트스트랩>'  → bash --rcfile <(rc를 메모리로 풀기)
+로컬 페인:  pwsh / Windows PowerShell / cmd / nushell (+ 셸 통합)  ── ConPTY ── Pty
+원격 페인:  ssh -tt host '<부트스트랩>'  → 로그인 셸($SHELL) + 그 셸의 통합 (메모리로만)
 원격 에이전트: ssh -T host '<부트스트랩>' → python3 -c "exec(stdin)" (agent.py를 stdin으로)
 ```
 
 - 원격에는 아무것도 저장하지 않습니다(rc는 프로세스 치환, 에이전트는 stdin).
 - 원격에서 쓰는 건 ssh + POSIX 도구 + python 표준 라이브러리뿐. 렌더링·검색 필터·정렬·히스토리는 전부 로컬.
 - 비밀번호는 입력했을 때만 SSH_ASKPASS(weft.exe 자신)로 넘기고, 아니면 키/ssh-agent.
+- 셸별 통합, 통합이 없는 셸의 추정, OSC 목록, python이 필요한 곳: [shell-integration.md](shell-integration.md).
 
 ## 6. immediate mode에서 레이아웃을 푼 방법
 
