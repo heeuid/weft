@@ -811,6 +811,7 @@ impl App {
                     let (icon, col) = match (b.state(), b.exit) {
                         (BlockState::Running, _) => (Icon::Dot, theme::accent()),
                         (_, Some(0)) => (Icon::Check, theme::success()),
+                        (_, None) => (Icon::Dot, theme::text_faint()),
                         _ => (Icon::Cross, theme::error()),
                     };
                     icons::paint(pt, egui::Rect::from_min_size(rect.min + vec2(6.0, 6.0), vec2(14.0, 14.0)), icon, col);

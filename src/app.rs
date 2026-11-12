@@ -609,6 +609,10 @@ impl Pane {
     }
 
     pub fn send(&mut self, bytes: &[u8]) {
+        // Enter starts a command for shells that don't mark it themselves.
+        if bytes.contains(&b'\r') {
+            self.term.user_enter();
+        }
         if let Some(p) = self.pty.as_mut() {
             p.write(bytes);
         }
@@ -1425,7 +1429,11 @@ impl App {
         let mut events: Vec<(usize, TermEvent)> = Vec::new();
         let mut new_history: Vec<(String, String)> = Vec::new();
         let mut timings: Vec<String> = Vec::new();
+        let mut guessing = false;
         for (id, pane) in self.panes.iter_mut() {
+            // Shells without OSC 133: prompts and command ends are guessed when
+            // output settles, so look again shortly even without new output.
+            guessing |= pane.term.tick();
             if let Some(pty) = pane.pty.as_mut() {
                 let bytes = pty.read();
                 if !bytes.is_empty() {
@@ -1465,6 +1473,9 @@ impl App {
         }
         for t in timings {
             self.data.log(&t);
+        }
+        if guessing {
+            self.ctx.request_repaint_after(Duration::from_millis(150));
         }
         for (host, cmd) in new_history {
             self.record_history(&host, cmd);

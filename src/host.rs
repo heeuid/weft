@@ -934,6 +934,51 @@ mod loopback {
         pty.write(b"\x03");
     }
 
+    /// A shell weft knows nothing about (dash: no OSC 133): prompts and
+    /// commands are still found, by guessing.
+    #[test]
+    #[ignore]
+    #[cfg(windows)]
+    fn unknown_shell_blocks_are_guessed() {
+        let dash = "C:/Program Files/Git/usr/bin/dash.exe";
+        if !Path::new(dash).is_file() {
+            return;
+        }
+        let mut pty = Pty::spawn(&[dash.to_string(), "-i".to_string()], None, &[], 80, 24, || {}).expect("spawn");
+        let mut t = Term::new(80, 24);
+        let mut p = vte::Parser::new();
+        let mut wait = |pty: &mut Pty, t: &mut Term, until: &dyn Fn(&Term) -> bool, secs: u64| {
+            let end = Instant::now() + Duration::from_secs(secs);
+            while Instant::now() < end {
+                let b = pty.read();
+                if !b.is_empty() {
+                    t.feed(&mut p, &b);
+                    let r = std::mem::take(&mut t.replies);
+                    pty.write(&r);
+                }
+                t.tick();
+                if until(t) {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            false
+        };
+        assert!(wait(&mut pty, &mut t, &|t| !t.blocks.is_empty(), 20), "prompt guessed: {:?}", screen(&t));
+        assert!(!t.integrated);
+        pty.write(b"echo hi");
+        wait(&mut pty, &mut t, &|t| t.screen[t.cy].text().contains("echo hi"), 5);
+        t.user_enter();
+        pty.write(b"\r");
+        assert!(wait(&mut pty, &mut t, &|t| t.blocks.first().map(|b| b.state() == BlockState::Done).unwrap_or(false), 10), "end guessed: {:?}", screen(&t));
+        let b = &t.blocks[0];
+        assert_eq!(b.command, "echo hi");
+        assert!(b.guessed && b.exit.is_none());
+        assert_eq!(t.line(b.out_line.unwrap()).unwrap().text().trim_end(), "hi");
+        assert_eq!(b.end_line.unwrap() - b.out_line.unwrap(), 1, "one line of output");
+        assert_eq!(t.blocks.len(), 2, "and the next prompt");
+    }
+
     fn screen(t: &Term) -> Vec<String> {
         (0..t.rows).map(|y| t.screen[y].text()).filter(|s| !s.is_empty()).collect()
     }

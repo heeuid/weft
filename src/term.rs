@@ -141,6 +141,8 @@ pub struct Block {
     pub started: Option<Instant>,
     pub duration: Option<Duration>,
     pub folded: bool,
+    /// Found by guessing (the shell sends no OSC 133): no exit code.
+    pub guessed: bool,
 }
 
 impl Block {
@@ -203,6 +205,13 @@ pub struct Term {
     next_block: u64,
     /// Bumped on every mutation; lets the UI know something changed.
     pub generation: u64,
+    /// The shell marks its prompts (OSC 133); until then blocks are guessed.
+    pub integrated: bool,
+    /// The shell also marks command starts (133;C); without them Enter does.
+    saw_start: bool,
+    last_output: Option<Instant>,
+    /// Guessing: the last character of the prompt ('$', '>', '#', '%', '❯' ...).
+    prompt_end: Option<char>,
     /// Set by a reflow: (first old absolute line, new absolute line per old line).
     line_remap: Option<(u64, Vec<u64>)>,
 }
@@ -244,11 +253,18 @@ impl Term {
             blocks: Vec::new(),
             next_block: 1,
             generation: 0,
+            integrated: false,
+            saw_start: false,
+            last_output: None,
+            prompt_end: None,
             line_remap: None,
         }
     }
 
     pub fn feed(&mut self, parser: &mut vte::Parser, bytes: &[u8]) {
+        if !bytes.is_empty() {
+            self.last_output = Some(Instant::now());
+        }
         parser.advance(self, bytes);
         self.generation = self.generation.wrapping_add(1);
     }
@@ -749,6 +765,7 @@ impl Term {
         let id = self.next_block;
         self.next_block += 1;
         self.blocks.push(Block {
+            guessed: false,
             id,
             prompt_line: line,
             input: None,
@@ -789,14 +806,104 @@ impl Term {
         b.started = Some(Instant::now());
     }
 
-    fn mark_done(&mut self, exit: i32) {
+    fn mark_done(&mut self, exit: Option<i32>) {
         let end = self.cursor_abs() + if self.cx > 0 { 1 } else { 0 };
+        self.finish_block(end, exit);
+    }
+
+    fn finish_block(&mut self, end: u64, exit: Option<i32>) {
         if let Some(b) = self.blocks.last_mut() {
             if b.state() == BlockState::Running {
                 b.end_line = Some(end.max(b.out_line.unwrap_or(end)));
-                b.exit = Some(exit);
+                b.exit = exit;
                 b.duration = b.started.map(|s| s.elapsed());
             }
+        }
+    }
+
+    // ---- guessing blocks for shells without OSC 133 -------------------------
+    //
+    // A prompt: output stopped with the cursor after some text on its line
+    // (command output normally ends with a newline, leaving the cursor at
+    // column 0). A command starts when the user presses Enter at that prompt,
+    // and ends when output stops again with the cursor after text ending in
+    // the same character as the prompt did. "Password: " or a REPL's ">>> "
+    // end differently, so they don't end the command. No exit code.
+
+    /// The user sent Enter to the shell (call before writing it).
+    pub fn user_enter(&mut self) {
+        if self.alt_active || self.saw_start {
+            return;
+        }
+        if self.blocks.last().map(|b| b.state() == BlockState::Prompt).unwrap_or(false) {
+            self.mark_output();
+            if !self.integrated {
+                if let Some(b) = self.blocks.last_mut() {
+                    b.guessed = true;
+                }
+            }
+        }
+    }
+
+    /// Text before the cursor on its line, and whether the rest is blank.
+    fn at_prompt_like(&self) -> Option<char> {
+        let row = self.line(self.cursor_abs())?;
+        if self.cx == 0 || !row.text_range(self.cx, row.cells.len()).trim().is_empty() {
+            return None;
+        }
+        row.text_range(0, self.cx).trim_end().chars().last()
+    }
+
+    /// Advance the guesses; true while output is recent (call again soon).
+    pub fn tick(&mut self) -> bool {
+        self.tick_at(Instant::now())
+    }
+
+    fn tick_at(&mut self, now: Instant) -> bool {
+        if self.integrated || self.alt_active {
+            return false;
+        }
+        let Some(last) = self.last_output else { return false };
+        let idle = now.saturating_duration_since(last);
+        let state = self.blocks.last().map(|b| b.state());
+        match state {
+            None | Some(BlockState::Done) => {
+                if idle < Duration::from_millis(250) {
+                    return true;
+                }
+                if let Some(c) = self.at_prompt_like() {
+                    self.prompt_end = Some(c);
+                    self.mark_prompt();
+                    self.mark_input();
+                    if let Some(b) = self.blocks.last_mut() {
+                        b.guessed = true;
+                    }
+                }
+                false
+            }
+            Some(BlockState::Running) => {
+                if !self.blocks.last().map(|b| b.guessed).unwrap_or(false) {
+                    return false;
+                }
+                if idle < Duration::from_millis(400) {
+                    return true;
+                }
+                match self.at_prompt_like() {
+                    Some(c) if Some(c) == self.prompt_end => {
+                        // The prompt line itself is not output.
+                        let end = self.cursor_abs();
+                        self.finish_block(end, None);
+                        self.mark_prompt();
+                        self.mark_input();
+                        if let Some(b) = self.blocks.last_mut() {
+                            b.guessed = true;
+                        }
+                        false
+                    }
+                    _ => idle < Duration::from_secs(5),
+                }
+            }
+            Some(BlockState::Prompt) => false,
         }
     }
 
@@ -1374,13 +1481,24 @@ impl Perform for Term {
                     }
                 }
             }
-            b"133" => match arg(1).as_str() {
-                "A" => self.mark_prompt(),
-                "B" => self.mark_input(),
-                "C" => self.mark_output(),
-                "D" => self.mark_done(arg(2).trim().parse().unwrap_or(0)),
-                _ => {}
-            },
+            b"133" => {
+                if !self.integrated {
+                    // Guessed blocks so far give way to the shell's own marks.
+                    self.blocks.retain(|b| !(b.guessed && b.state() != BlockState::Done));
+                    self.integrated = true;
+                }
+                match arg(1).as_str() {
+                    "A" => self.mark_prompt(),
+                    "B" => self.mark_input(),
+                    "C" => {
+                        self.saw_start = true;
+                        self.mark_output()
+                    }
+                    // Shells without exit codes (cmd) send a bare D.
+                    "D" => self.mark_done(arg(2).trim().parse().ok()),
+                    _ => {}
+                }
+            }
             b"7777" => {
                 let raw = rest();
                 let raw = raw.trim();
@@ -1414,6 +1532,73 @@ impl Perform for Term {
     fn hook(&mut self, _params: &Params, _intermediates: &[u8], _ignore: bool, _action: char) {}
     fn put(&mut self, _byte: u8) {}
     fn unhook(&mut self) {}
+}
+
+#[cfg(test)]
+mod guess_tests {
+    use super::*;
+
+    fn feed(t: &mut Term, s: &str) {
+        let mut p = vte::Parser::new();
+        t.feed(&mut p, s.as_bytes());
+    }
+
+    fn later(t: &Term, ms: u64) -> Instant {
+        t.last_output.unwrap() + Duration::from_millis(ms)
+    }
+
+    #[test]
+    fn blocks_are_guessed_without_osc_133() {
+        let mut t = Term::new(80, 24);
+        feed(&mut t, "welcome\r\n$ ");
+        assert!(t.tick_at(later(&t, 100)), "still waiting for output to settle");
+        assert!(!t.tick_at(later(&t, 300)));
+        assert_eq!(t.blocks.len(), 1, "prompt found");
+        // The user types `ls` and Enter.
+        feed(&mut t, "ls");
+        t.user_enter();
+        assert_eq!(t.blocks[0].state(), BlockState::Running);
+        assert_eq!(t.blocks[0].command, "ls");
+        feed(&mut t, "\r\na.txt  b.txt\r\n");
+        assert!(t.tick_at(later(&t, 500)), "output ended at column 0: not a prompt");
+        feed(&mut t, "$ ");
+        t.tick_at(later(&t, 500));
+        let b = &t.blocks[0];
+        assert_eq!(b.state(), BlockState::Done);
+        assert!(b.guessed && b.exit.is_none(), "no exit code when guessed");
+        assert_eq!(t.line(b.out_line.unwrap()).unwrap().text().trim_end(), "a.txt  b.txt");
+        assert_eq!(b.end_line, Some(t.cursor_abs()), "the next prompt is not output");
+        assert_eq!(t.blocks.len(), 2, "next prompt");
+    }
+
+    #[test]
+    fn other_waits_dont_end_a_command() {
+        let mut t = Term::new(80, 24);
+        feed(&mut t, "$ ");
+        t.tick_at(later(&t, 300));
+        feed(&mut t, "sudo true");
+        t.user_enter();
+        feed(&mut t, "\r\n[sudo] password: ");
+        t.tick_at(later(&t, 1000));
+        assert_eq!(t.blocks[0].state(), BlockState::Running, "':' is not the prompt's '$'");
+    }
+
+    #[test]
+    fn osc_133_replaces_guessing() {
+        let mut t = Term::new(80, 24);
+        feed(&mut t, "$ ");
+        t.tick_at(later(&t, 300));
+        feed(&mut t, "\x1b]133;A\x07$ \x1b]133;B\x07");
+        assert!(t.integrated);
+        assert_eq!(t.blocks.len(), 1);
+        assert!(!t.blocks[0].guessed);
+        // cmd style: no C, a bare D. Enter starts the command; no exit code.
+        t.user_enter();
+        assert_eq!(t.blocks[0].state(), BlockState::Running);
+        feed(&mut t, "\r\nout\r\n\x1b]133;D\x07");
+        assert_eq!(t.blocks[0].state(), BlockState::Done);
+        assert_eq!(t.blocks[0].exit, None);
+    }
 }
 
 #[cfg(test)]

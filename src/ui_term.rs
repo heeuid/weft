@@ -892,7 +892,12 @@ impl App {
                 let color = match state {
                     BlockState::Prompt => None,
                     BlockState::Running => Some(theme::accent()),
-                    BlockState::Done => Some(if b.exit == Some(0) { theme::tint(theme::success(), 150) } else { theme::error() }),
+                    BlockState::Done => Some(match b.exit {
+                        Some(0) => theme::tint(theme::success(), 150),
+                        Some(_) => theme::error(),
+                        // Guessed (or the shell gives no code): neutral.
+                        None => theme::tint(theme::text_faint(), 150),
+                    }),
                 };
                 let gut = Rect::from_min_max(pos2(body.left() + 4.0, y0 + 1.0), pos2(body.left() + 7.0, y1 - 1.0));
                 if let Some(c) = color {
