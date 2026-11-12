@@ -438,6 +438,15 @@ pub fn install_fonts(ctx: &egui::Context, term: &str, icons: &str) -> Vec<String
     problems
 }
 
+/// Width of a terminal cell. Taken from a laid-out run, not a single glyph:
+/// egui rounds each glyph's advance to whole pixels inside a run, and ASCII
+/// is drawn in runs, so a single glyph's width let text drift off the grid
+/// (up to more than a cell across a line: the cursor hid the last letter).
+pub fn cell_width(fonts: &egui::text::Fonts, font: &FontId) -> f32 {
+    const N: usize = 64;
+    fonts.layout_no_wrap("M".repeat(N), font.clone(), Color32::WHITE).size().x / N as f32
+}
+
 pub fn term_font(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name(TERM_FONT.into()))
 }
@@ -507,6 +516,27 @@ pub fn apply(ctx: &egui::Context, index: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_runs_stay_on_the_cell_grid() {
+        // ASCII runs are drawn as one string; their glyphs must land on the
+        // columns the grid (cursor, backgrounds) uses, at any size and scale.
+        let line: String = "nvim ~/.config/nvim/init.lua && cargo build --release 2>&1 | tee log.txt; ".repeat(2).chars().take(120).collect();
+        for (spec, name, _) in BUILTIN_FONTS {
+            for ppp in [1.0f32, 1.25, 1.5, 1.75, 2.0] {
+                let ctx = egui::Context::default();
+                install_fonts(&ctx, spec, spec);
+                ctx.set_pixels_per_point(ppp);
+                let _ = ctx.run(Default::default(), |_| {});
+                for size in [11.0f32, 13.0, 14.0, 15.0, 17.5, 20.0] {
+                    let f = term_font(size);
+                    let (cw, run) = ctx.fonts(|fo| (cell_width(fo, &f), fo.layout_no_wrap(line.clone(), f.clone(), Color32::WHITE).size().x));
+                    let drift = run - cw * 120.0;
+                    assert!(drift.abs() < 1.0, "{name} ×{ppp} {size}pt: 120 columns off by {drift:.2}px");
+                }
+            }
+        }
+    }
 
     #[test]
     fn builtin_fonts_have_nerd_icons() {

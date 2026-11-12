@@ -530,7 +530,7 @@ impl App {
 
     fn ui_pane(&mut self, ui: &mut Ui, id: usize, rect: Rect, active: bool, multi: bool) {
         let font = theme::term_font(self.settings.font_size);
-        let (cw, ch) = ui.fonts(|f| (f.glyph_width(&font, 'M'), f.row_height(&font).ceil()));
+        let (cw, ch) = ui.fonts(|f| (theme::cell_width(f, &font), f.row_height(&font).ceil()));
         let header_h = if multi { 24.0 } else { 0.0 };
         let gutter = 14.0;
         let body = Rect::from_min_max(pos2(rect.left(), rect.top() + header_h), rect.max);
