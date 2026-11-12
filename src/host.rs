@@ -20,13 +20,47 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::UNIX_EPOCH;
 
-pub const RC_SH: &str = include_str!("../remote/rc.sh");
+/// Shell integrations (prompt and command marks, current directory), one per
+/// shell. They travel to a remote host as one gzipped bundle in memory.
+pub const BASH_SH: &str = include_str!("../shell/bash.sh");
+pub const ZSH_ZSH: &str = include_str!("../shell/zsh.zsh");
+pub const FISH_FISH: &str = include_str!("../shell/fish.fish");
+pub const PWSH_PS1: &str = include_str!("../shell/pwsh.ps1");
+
+/// All integrations in one text: sections start with `#@<name>` lines; the
+/// bootstrap cuts out the one it needs with awk. Comment and blank lines are
+/// left out (the command line that carries it is limited to about 8 KB).
+pub fn integration_bundle() -> String {
+    let mut out = String::new();
+    for (name, src) in [("boot", SHELL_BOOT), ("bash", BASH_SH), ("zsh", ZSH_ZSH), ("fish", FISH_FISH), ("pwsh", PWSH_PS1)] {
+        out.push_str(&format!("#@{name}\n{}", strip_comments(src)));
+    }
+    out
+}
+
+/// Without whole-line comments and blank lines (`#!` lines stay).
+fn strip_comments(src: &str) -> String {
+    src.lines()
+        .filter(|l| {
+            let t = l.trim_start();
+            !t.is_empty() && !(t.starts_with('#') && !t.starts_with("#!"))
+        })
+        .map(|l| format!("{l}\n"))
+        .collect()
+}
 pub const AGENT_PY: &str = include_str!("../remote/agent.py");
 
-/// Pane bootstrap (one logical line, run via `eval`): pick a base64 decoder
-/// from POSIX tools (or python), then start bash with the gzipped rc fed
-/// through process substitution.  Falls back to a plain `sh -i` without bash.
-const SHELL_BOOT: &str = r#"D="base64 -d"; printf QQ== | $D >/dev/null 2>&1 || D="base64 -D"; printf QQ== | $D >/dev/null 2>&1 || D="python3 -m base64 -d"; export W D WEFT_CWD; if command -v bash >/dev/null 2>&1; then exec bash -c 'z() { if command -v gzip >/dev/null 2>&1; then gzip -dc; else python3 -c "import sys,gzip;sys.stdout.buffer.write(gzip.decompress(sys.stdin.buffer.read()))"; fi; }; exec bash --rcfile <(printf %s "$W" | $D | z) -i'; fi; exec sh -i"#;
+/// Pane bootstrap (one logical line, run via `eval` by sh): pick a base64
+/// decoder from POSIX tools (or python), then start the user's login shell
+/// ($SHELL, or WEFT_SHELL) with its integration from the bundle in $W:
+/// bash `--rcfile <(...)`, fish `-C`, pwsh `-Command`, nushell's own OSC 133
+/// switched on, zsh through WEFT_ZSH typed in by weft (see shell/zsh.zsh).
+/// Any other shell starts as is; weft guesses its command blocks.
+const SHELL_BOOT: &str = r##"WP=${WEFT_SHELL:-$SHELL}; WS=${WP##*/}; WS=${WS%.exe}; export WEFT=1; case "$WS" in bash|'') if command -v bash >/dev/null 2>&1; then R=$(sect bash); export R D WEFT_CWD; exec bash -c 'exec bash --rcfile <(printf %s "$R") -i'; fi ;; esac; if [ -n "$WEFT_CWD" ]; then C=$(printf %s "$WEFT_CWD" | $D 2>/dev/null) && [ -d "$C" ] && cd "$C"; fi; unset WEFT_CWD; case "$WS" in zsh) WEFT_ZSH=$(sect zsh); export WEFT_ZSH; printf ']7777;{"t":"inject","shell":"zsh"}'; exec "$WP" -l -i ;; fish) WEFT_FISH=$(sect fish); export WEFT_FISH; exec "$WP" -l -C 'eval $WEFT_FISH' ;; nu) exec "$WP" -l -e 'try { $env.config.shell_integration.osc133 = true; $env.config.shell_integration.osc7 = true } catch { $env.config.shell_integration = true }' ;; pwsh|powershell) WEFT_PS=$(sect pwsh); export WEFT_PS; exec "$WP" -NoLogo -NoExit -Command '. ([ScriptBlock]::Create($env:WEFT_PS))' ;; esac; if [ -n "$WP" ]; then exec "$WP" -i; fi; exec sh -i"##;
+
+/// On the command line: find a base64 decoder and gunzip among POSIX tools (or
+/// python), unpack the bundle in $W and run its `boot` section.
+const SHELL_UNPACK: &str = r##"D="base64 -d"; printf QQ== | $D >/dev/null 2>&1 || D="base64 -D"; printf QQ== | $D >/dev/null 2>&1 || D="python3 -m base64 -d"; z() { if command -v gzip >/dev/null 2>&1; then gzip -dc; else python3 -c "import sys,gzip;sys.stdout.buffer.write(gzip.decompress(sys.stdin.buffer.read()))"; fi; }; WB=$(printf %s "$W" | $D | z); sect() { printf %s "$WB" | awk -v s="#@$1" '$0==s{f=1;next} /^#@/{f=0} f'; }; eval "$(sect boot)""##;
 
 /// Windows ConPTY truncates command lines around 8 KB, so the rc travels gzipped.
 fn gz_b64(s: &str) -> String {
@@ -58,7 +92,7 @@ fn posix_wrap(vars: &[(&str, String)], script: &str) -> String {
 }
 
 pub fn remote_shell_command(cwd: Option<&str>) -> String {
-    posix_wrap(&[("W", gz_b64(RC_SH)), ("WEFT_CWD", cwd.map(b64).unwrap_or_default())], SHELL_BOOT)
+    posix_wrap(&[("W", gz_b64(&integration_bundle())), ("WEFT_CWD", cwd.map(b64).unwrap_or_default())], SHELL_UNPACK)
 }
 
 pub fn agent_command() -> String {
@@ -208,30 +242,7 @@ pub fn sh_quote(s: &str) -> String {
 }
 
 fn local_shell_argv() -> Vec<String> {
-    let init = r#"
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$OutputEncoding = [System.Text.Encoding]::UTF8
-$env:WEFT = '1'
-$global:__weft_prompt = $function:prompt
-function global:prompt {
-    $ok = $global:?
-    $e = [char]27; $b = [char]7
-    $code = if ($ok) { 0 } elseif ($global:LASTEXITCODE) { $global:LASTEXITCODE } else { 1 }
-    $loc = Get-Location
-    $osc7 = ''
-    if ($loc.Provider.Name -eq 'FileSystem') { $osc7 = "$e]7;file://$env:COMPUTERNAME/" + ($loc.ProviderPath -replace '\\', '/') + $b }
-    # End the block now: the user's own prompt (starship, oh-my-posh) can take
-    # 50-150 ms and must not count as the command's duration.
-    [Console]::Write("$e]133;D;$code$b$osc7")
-    "$e]133;A$b" + (& $global:__weft_prompt) + "$e]133;B$b"
-}
-if (Get-Module PSReadLine) {
-    Set-PSReadLineKeyHandler -Key Enter -ScriptBlock {
-        [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()
-        [Console]::Write("$([char]27)]133;C$([char]7)")
-    }
-}
-"#;
+    let init = PWSH_PS1;
     let utf16: Vec<u8> = init.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
     let encoded = base64::engine::general_purpose::STANDARD.encode(utf16);
     let shell = if cfg!(windows) {
@@ -746,6 +757,45 @@ mod tests {
         }
     }
 
+    /// Windows ConPTY cuts command lines around 8 KB, and the ssh argv also
+    /// carries the target and options.
+    #[test]
+    fn bootstrap_fits_the_command_line() {
+        let n = remote_shell_command(Some("/home/someone/projects/a long directory name")).len();
+        println!("remote shell command: {n} bytes");
+        assert!(n < 7000, "{n} bytes");
+    }
+
+    /// Each shell's integration is cut out of the bundle intact.
+    #[test]
+    fn bundle_sections_are_intact() {
+        let b = integration_bundle();
+        let sect = |name: &str| -> String {
+            let mut out = String::new();
+            let mut on = false;
+            for l in b.lines() {
+                if l == format!("#@{name}") {
+                    on = true;
+                    continue;
+                }
+                if l.starts_with("#@") {
+                    on = false;
+                }
+                if on {
+                    out.push_str(l);
+                    out.push('\n');
+                }
+            }
+            out
+        };
+        for (name, src) in [("boot", SHELL_BOOT), ("bash", BASH_SH), ("zsh", ZSH_ZSH), ("fish", FISH_FISH), ("pwsh", PWSH_PS1)] {
+            assert_eq!(sect(name), strip_comments(src), "{name}");
+            assert!(!src.lines().any(|l| l.starts_with("#@")), "{name} must not contain section markers");
+        }
+        assert!(ZSH_ZSH.contains("precmd_functions") && ZSH_ZSH.contains("preexec_functions"));
+        assert!(FISH_FISH.contains("fish_preexec") && FISH_FISH.contains("fish_prompt"));
+    }
+
     #[test]
     fn askpass_answers() {
         let s = || Some("pw".to_string());
@@ -981,6 +1031,78 @@ mod loopback {
 
     fn screen(t: &Term) -> Vec<String> {
         (0..t.rows).map(|y| t.screen[y].text()).filter(|s| !s.is_empty()).collect()
+    }
+
+    /// The bootstrap starts the shell named by WEFT_SHELL (normally the login
+    /// shell, $SHELL) with its integration; `cmd` runs and its block must end
+    /// with `exit` (None: guessed, no code).
+    fn login_shell_check(shell: &str, cmd: &str, exit: Option<i32>, integrated: bool) {
+        let Some(prof) = profile() else { return };
+        if !Path::new(shell).is_file() {
+            println!("skip: {shell} not installed");
+            return;
+        }
+        let env = [("WEFT_SHELL".to_string(), shell.to_string())];
+        let mut pty = Pty::spawn(&prof.pty_argv(Some("/"), false), None, &env, 100, 30, || {}).unwrap();
+        let mut t = Term::new(100, 30);
+        let mut p = vte::Parser::new();
+        let mut wait = |pty: &mut Pty, t: &mut Term, until: &dyn Fn(&Term) -> bool, secs: u64| {
+            let end = Instant::now() + Duration::from_secs(secs);
+            while Instant::now() < end {
+                let b = pty.read();
+                if !b.is_empty() {
+                    t.feed(&mut p, &b);
+                    let r = std::mem::take(&mut t.replies);
+                    pty.write(&r);
+                }
+                t.tick();
+                if until(t) {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            false
+        };
+        assert!(wait(&mut pty, &mut t, &|t| !t.blocks.is_empty(), 40), "{shell}: no prompt: {:?}", screen(&t));
+        assert_eq!(t.integrated, integrated, "{shell}: integration");
+        wait(&mut pty, &mut t, &|_| false, 1);
+        pty.write(cmd.as_bytes());
+        wait(&mut pty, &mut t, &|t| t.screen[t.cy].text().contains(cmd), 5);
+        // As the app does: Enter goes through user_enter.
+        t.user_enter();
+        pty.write(b"\r");
+        let done = wait(&mut pty, &mut t, &|t| t.blocks.iter().any(|b| b.command.contains(cmd) && b.state() == BlockState::Done), 20);
+        assert!(done, "{shell}: blocks {:?} screen {:?}", t.blocks.iter().map(|b| (&b.command, b.exit)).collect::<Vec<_>>(), screen(&t));
+        let b = t.blocks.iter().find(|b| b.command.contains(cmd)).unwrap();
+        assert_eq!(b.exit, exit, "{shell}: exit code");
+        if integrated {
+            assert!(t.cwd.is_some(), "{shell}: OSC 7 cwd");
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn login_shell_nushell() {
+        login_shell_check("C:/Program Files/nu/bin/nu.exe", "echo weft-ok", Some(0), true);
+    }
+
+    #[test]
+    #[ignore]
+    fn login_shell_pwsh_remote_style() {
+        let pwsh = which("pwsh.exe").map(|p| p.display().to_string().replace('\\', "/")).unwrap_or_default();
+        login_shell_check(&pwsh, "Write-Output weft-ok", Some(0), true);
+    }
+
+    #[test]
+    #[ignore]
+    fn login_shell_windows_powershell() {
+        login_shell_check("C:/WINDOWS/System32/WindowsPowerShell/v1.0/powershell.exe", "Write-Output weft-ok", Some(0), true);
+    }
+
+    #[test]
+    #[ignore]
+    fn login_shell_unknown_is_guessed() {
+        login_shell_check("C:/Program Files/Git/usr/bin/dash.exe", "echo weft-ok", None, false);
     }
 
     #[test]

@@ -540,6 +540,8 @@ pub struct InlineWidget {
 }
 
 pub struct Pane {
+    /// The zsh integration was typed in for this shell start.
+    pub injected: bool,
     /// Startup timing logged: first output, first prompt.
     pub seen: (bool, bool),
     pub id: usize,
@@ -572,6 +574,7 @@ pub struct Pane {
 impl Pane {
     fn new(id: usize, host: &str, cwd: Option<String>) -> Pane {
         Pane {
+            injected: false,
             id,
             host: host.to_string(),
             term: Term::new(100, 30),
@@ -1081,6 +1084,7 @@ impl App {
             argv.iter().map(|a| if a.len() > 120 { format!("{}…({} bytes)", &a[..60], a.len()) } else { a.clone() }).collect();
         self.data.log(&format!("pane {} [{}] spawn {:?}", pane.id, pane.host, shown));
         pane.term = Term::new(pane.term.cols, pane.term.rows);
+        pane.injected = false;
         pane.parser = vte::Parser::new();
         pane.widgets.clear();
         pane.hist_seen = 0;
@@ -1581,6 +1585,16 @@ impl App {
                 self.open_file(host, &s("path"), line);
             }
             "notify" => self.toast(format!("{host}: {}", s("msg")), ToastKind::Info),
+            // A remote zsh takes its integration only by typing it (see
+            // shell/zsh.zsh): once per shell start, before it has integrated.
+            "inject" if s("shell") == "zsh" => {
+                if let Some(p) = self.panes.get_mut(&pane_id) {
+                    if !p.injected && !p.term.integrated {
+                        p.injected = true;
+                        p.send(b" eval \"$WEFT_ZSH\"\r");
+                    }
+                }
+            }
             "widget" => {
                 let Some(kind) = parse_widget(&v) else { return };
                 let id = s("id");

@@ -1,13 +1,13 @@
 # weft shell integration for bash.
 #
-# Delivered in memory only: weft runs `bash --rcfile <(printf %s "$W" | $D) -i`
+# Delivered in memory only: the bootstrap runs `bash --rcfile <(printf %s "$R") -i`
 # over the ssh PTY, so nothing is ever written to the remote disk.
 # Everything here uses plain POSIX tools; python is only used by the rich
 # helpers (wls/wtable) and they fall back to plain text without it.
 
 __weft_dec=$D
 __weft_cwd=$WEFT_CWD
-unset W D WEFT_CWD
+unset W D R WEFT_CWD
 
 # --rcfile replaces the normal startup files: emulate a login shell.
 if [ -f ~/.bash_profile ]; then . ~/.bash_profile

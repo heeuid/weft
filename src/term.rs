@@ -212,6 +212,10 @@ pub struct Term {
     last_output: Option<Instant>,
     /// Guessing: the last character of the prompt ('$', '>', '#', '%', '❯' ...).
     prompt_end: Option<char>,
+    /// Enter at a marked prompt before the shell has ever sent 133;C: what
+    /// was typed, where output starts, when. Used only if a D comes without a
+    /// C (cmd marks prompts but not command starts).
+    pending_start: Option<(String, u64, Instant)>,
     /// Set by a reflow: (first old absolute line, new absolute line per old line).
     line_remap: Option<(u64, Vec<u64>)>,
 }
@@ -257,6 +261,7 @@ impl Term {
             saw_start: false,
             last_output: None,
             prompt_end: None,
+            pending_start: None,
             line_remap: None,
         }
     }
@@ -835,13 +840,21 @@ impl Term {
         if self.alt_active || self.saw_start {
             return;
         }
-        if self.blocks.last().map(|b| b.state() == BlockState::Prompt).unwrap_or(false) {
-            self.mark_output();
-            if !self.integrated {
-                if let Some(b) = self.blocks.last_mut() {
-                    b.guessed = true;
-                }
-            }
+        let Some(b) = self.blocks.last() else { return };
+        if b.state() != BlockState::Prompt {
+            return;
+        }
+        if self.integrated {
+            // The shell may yet send 133;C (this may be its first command):
+            // only note what was typed.
+            let here = (self.cursor_abs(), self.cx);
+            let cmd = b.input.map(|inp| self.text_between(inp, here)).unwrap_or_default();
+            self.pending_start = Some((cmd.trim().to_string(), here.0 + if here.1 > 0 { 1 } else { 0 }, Instant::now()));
+            return;
+        }
+        self.mark_output();
+        if let Some(b) = self.blocks.last_mut() {
+            b.guessed = true;
         }
     }
 
@@ -1488,14 +1501,28 @@ impl Perform for Term {
                     self.integrated = true;
                 }
                 match arg(1).as_str() {
-                    "A" => self.mark_prompt(),
+                    "A" => {
+                        self.pending_start = None;
+                        self.mark_prompt()
+                    }
                     "B" => self.mark_input(),
                     "C" => {
                         self.saw_start = true;
+                        self.pending_start = None;
                         self.mark_output()
                     }
-                    // Shells without exit codes (cmd) send a bare D.
-                    "D" => self.mark_done(arg(2).trim().parse().ok()),
+                    "D" => {
+                        // No C from this shell: the command started at Enter.
+                        if let Some((cmd, out, at)) = self.pending_start.take() {
+                            if let Some(b) = self.blocks.last_mut().filter(|b| b.state() == BlockState::Prompt) {
+                                b.command = cmd;
+                                b.out_line = Some(out);
+                                b.started = Some(at);
+                            }
+                        }
+                        // Shells without exit codes (cmd) send a bare D.
+                        self.mark_done(arg(2).trim().parse().ok())
+                    }
                     _ => {}
                 }
             }
@@ -1592,12 +1619,21 @@ mod guess_tests {
         assert!(t.integrated);
         assert_eq!(t.blocks.len(), 1);
         assert!(!t.blocks[0].guessed);
-        // cmd style: no C, a bare D. Enter starts the command; no exit code.
+        // cmd style: no C, a bare D. The command dates from Enter; no exit code.
+        feed(&mut t, "dir");
         t.user_enter();
-        assert_eq!(t.blocks[0].state(), BlockState::Running);
         feed(&mut t, "\r\nout\r\n\x1b]133;D\x07");
-        assert_eq!(t.blocks[0].state(), BlockState::Done);
-        assert_eq!(t.blocks[0].exit, None);
+        let b = &t.blocks[0];
+        assert_eq!(b.state(), BlockState::Done);
+        assert_eq!((b.command.as_str(), b.exit), ("dir", None));
+        assert_eq!(t.line(b.out_line.unwrap()).unwrap().text().trim_end(), "out");
+        // A shell that does send C: Enter before its first C changes nothing.
+        let mut t = Term::new(80, 24);
+        feed(&mut t, "\x1b]133;A\x07> \x1b]133;B\x07ls");
+        t.user_enter();
+        feed(&mut t, "\r\n\x1b]133;C\x07a\r\n\x1b]133;D;0\x07");
+        assert_eq!(t.blocks.len(), 1);
+        assert_eq!((t.blocks[0].command.as_str(), t.blocks[0].exit), ("ls", Some(0)));
     }
 }
 
