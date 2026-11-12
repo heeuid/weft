@@ -1044,20 +1044,27 @@ impl App {
         }
     }
 
-    /// The ☰ menu: every command by group.
+    /// The ☰ menu: every command under its group's heading, one level only
+    /// (submenus opened on hover and switched while moving to them).
     fn commands_menu(&mut self, ui: &mut Ui) {
         let mut run = None;
         ui.menu_button(RichText::new("☰").size(14.0).color(theme::text_dim()), |ui| {
-            for g in GROUPS {
-                ui.menu_button(g, |ui| {
-                    for (cmd, label, keys) in COMMANDS.iter().filter(|c| group(c.0) == g) {
-                        if ui.add(egui::Button::new(*label).shortcut_text(*keys)).clicked() {
+            ui.set_min_width(340.0);
+            let height = (ui.ctx().screen_rect().height() - 80.0).max(200.0);
+            ScrollArea::vertical().max_height(height).show(ui, |ui| {
+                for (gi, g) in GROUPS.iter().enumerate() {
+                    if gi > 0 {
+                        ui.separator();
+                    }
+                    ui.label(RichText::new(*g).size(11.5).strong().color(theme::text_dim()));
+                    for (cmd, label, keys) in COMMANDS.iter().filter(|c| group(c.0) == *g) {
+                        if ui.add(egui::Button::new(*label).shortcut_text(*keys).min_size(vec2(ui.available_width(), 0.0))).clicked() {
                             run = Some(*cmd);
                             ui.close_menu();
                         }
                     }
-                });
-            }
+                }
+            });
         })
         .response
         .on_hover_text("all commands");
