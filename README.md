@@ -165,6 +165,7 @@ TUI 그리드(날실) 사이에 GUI(씨실)를 엮어 넣은 터미널. Rust (`e
 | `Ctrl+V` | 붙여넣기 (bracketed paste) |
 | `Ctrl+= / Ctrl+-` | 글꼴 크기 |
 | `Ctrl+S` | (에디터) 저장 |
+| `Ctrl+F` / `Ctrl+H` | (에디터) 찾기 / 바꾸기: 글자 그대로 또는 정규식(`.*`, 바꿀 말에 `$1`), 대소문자(`Aa`), `Enter`·`F3` 다음, `Shift+Enter`·`Shift+F3` 이전, `Replace`(하나) / `All`(전부), `Esc` 닫기 |
 
 ## 디자인
 

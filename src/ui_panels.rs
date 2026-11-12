@@ -3,6 +3,7 @@
 
 use crate::app::*;
 use crate::find::{self, FindMode};
+use crate::editfind;
 use crate::highlight;
 use crate::md;
 use crate::host::{ConnStatus, HostKind};
@@ -2069,6 +2070,7 @@ impl App {
         let mut force = false;
         let mut settings_changed = false;
         let mut delete = false;
+        let mut open_find = false;
         let memo = self.is_memo(&self.editor.files[idx]);
         {
             let f = &mut self.editor.files[idx];
@@ -2127,8 +2129,11 @@ impl App {
                             settings_changed = true;
                         }
                     });
-                } else if !crate::media::is_image(&f.path) && !crate::media::is_pdf(&f.path) {
-                    ui.add(TextEdit::singleline(&mut f.find).hint_text("highlight…").desired_width(140.0));
+                }
+                if !f.binary && !crate::media::is_image(&f.path) && !crate::media::is_pdf(&f.path) {
+                    if ui.button(RichText::new("Find").size(12.5)).on_hover_text("find (Ctrl+F) and replace (Ctrl+H)").clicked() {
+                        open_find = true;
+                    }
                 }
                 if f.loading {
                     ui.spinner();
@@ -2165,6 +2170,156 @@ impl App {
         if ui.memory(|m| m.has_focus(edit_id)) && ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::S)) {
             save = true;
         }
+        // Find / replace (Ctrl+F / Ctrl+H while the editor has the keyboard).
+        let text_file = {
+            let f = &self.editor.files[idx];
+            !f.binary && !crate::media::is_image(&f.path) && !crate::media::is_pdf(&f.path)
+        };
+        let editing = ui.memory(|m| m.has_focus(edit_id)) || ui.memory(|m| m.has_focus(Id::new("editor-find-q")) || m.has_focus(Id::new("editor-find-r")));
+        if text_file && editing {
+            let (ctrl_f, ctrl_h) = ui.input_mut(|i| (i.consume_key(Modifiers::CTRL, Key::F), i.consume_key(Modifiers::CTRL, Key::H)));
+            if ctrl_f || ctrl_h || open_find {
+                let f = &self.editor.files[idx];
+                // Start from the selected text when it is one line.
+                let picked = TextEdit::load_state(ui.ctx(), edit_id).and_then(|s| s.cursor.char_range()).and_then(|r| {
+                    let (a, b) = (r.primary.index.min(r.secondary.index), r.primary.index.max(r.secondary.index));
+                    let s: String = f.text.chars().skip(a).take(b - a).collect();
+                    (!s.is_empty() && !s.contains('\n')).then_some(s)
+                });
+                let bar = self.editor.find.get_or_insert_with(Default::default);
+                if let Some(s) = picked {
+                    bar.query = s;
+                    bar.cur = 0;
+                }
+                bar.replacing |= ctrl_h;
+                bar.focus = true;
+            }
+        } else if open_find && text_file {
+            let bar = self.editor.find.get_or_insert_with(Default::default);
+            bar.focus = true;
+        }
+        if !text_file {
+            self.editor.find = None;
+        }
+        let mut replaced: Option<usize> = None;
+        let mut find_error: Option<String> = None;
+        if let Some(mut bar) = self.editor.find.take() {
+            let f = &mut self.editor.files[idx];
+            let ms = bar.matches(&f.text);
+            let count = ms.as_ref().map(|m| m.len()).unwrap_or(0);
+            bar.cur = if count == 0 { 0 } else { bar.cur.min(count - 1) };
+            let mut nav: i32 = 0;
+            let mut close = false;
+            let mut rep_one = false;
+            let mut rep_all = false;
+            let shift = ui.input(|i| i.modifiers.shift);
+            if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F3)) {
+                nav = 1;
+            } else if ui.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::F3)) {
+                nav = -1;
+            }
+            ui.horizontal(|ui| {
+                let q = ui.add(TextEdit::singleline(&mut bar.query).id(Id::new("editor-find-q")).hint_text("find…").desired_width(220.0));
+                if bar.focus {
+                    q.request_focus();
+                    bar.focus = false;
+                }
+                if q.changed() {
+                    bar.cur = 0;
+                    nav = 2;
+                }
+                if q.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                    nav = if shift { -1 } else { 1 };
+                    q.request_focus();
+                }
+                if q.has_focus() && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+                    close = true;
+                }
+                if ui.selectable_label(bar.case, RichText::new("Aa").size(12.0)).on_hover_text("match case").clicked() {
+                    bar.case = !bar.case;
+                    nav = 2;
+                }
+                if ui.selectable_label(bar.regex, RichText::new(".*").monospace().size(12.0)).on_hover_text("regular expression ($1 in the replacement for a group)").clicked() {
+                    bar.regex = !bar.regex;
+                    nav = 2;
+                }
+                match &ms {
+                    Ok(_) if count > 0 => ui.label(RichText::new(format!("{}/{count}", bar.cur + 1)).size(11.5).color(theme::text_dim())),
+                    Ok(_) if !bar.query.is_empty() => ui.label(RichText::new("no match").size(11.5).color(theme::warn())),
+                    Ok(_) => ui.label(""),
+                    Err(e) => ui.label(RichText::new(e).size(11.5).color(theme::error())),
+                };
+                if ui.add_enabled(count > 0, egui::Button::new("↑").small()).on_hover_text("previous (Shift+Enter, Shift+F3)").clicked() {
+                    nav = -1;
+                }
+                if ui.add_enabled(count > 0, egui::Button::new("↓").small()).on_hover_text("next (Enter, F3)").clicked() {
+                    nav = 1;
+                }
+                if ui.selectable_label(bar.replacing, RichText::new("replace").size(12.0)).on_hover_text("Ctrl+H").clicked() {
+                    bar.replacing = !bar.replacing;
+                }
+                if icons::button(ui, Icon::Cross, "close (Esc)").clicked() {
+                    close = true;
+                }
+            });
+            if bar.replacing {
+                ui.horizontal(|ui| {
+                    let hint = if bar.regex { "replace with… ($1, $2: groups)" } else { "replace with…" };
+                    ui.add(TextEdit::singleline(&mut bar.replace).id(Id::new("editor-find-r")).hint_text(hint).desired_width(220.0));
+                    if ui.add_enabled(count > 0 && !f.loading, egui::Button::new("Replace")).on_hover_text("this match, then on to the next").clicked() {
+                        rep_one = true;
+                    }
+                    if ui.add_enabled(count > 0 && !f.loading, egui::Button::new("All")).on_hover_text("every match").clicked() {
+                        rep_all = true;
+                    }
+                });
+            }
+            let ms = ms.unwrap_or_default();
+            if rep_one && count > 0 {
+                match bar.replace_at(&mut f.text, ms[bar.cur]) {
+                    Ok(_) => {
+                        replaced = Some(1);
+                        nav = 2;
+                    }
+                    Err(e) => find_error = Some(e),
+                }
+            } else if rep_all {
+                match bar.replace_all(&mut f.text) {
+                    Ok(n) => replaced = Some(n),
+                    Err(e) => find_error = Some(e),
+                }
+            }
+            // Go to a match: select it (shown once the editor has the keyboard) and scroll to it.
+            let ms = if replaced.is_some() { bar.matches(&f.text).unwrap_or_default() } else { ms };
+            if nav != 0 && !ms.is_empty() {
+                let n = ms.len();
+                bar.cur = match nav {
+                    1 => (bar.cur + 1) % n,
+                    -1 => (bar.cur + n - 1) % n,
+                    _ => bar.cur.min(n - 1),
+                };
+                let (a, b) = ms[bar.cur];
+                self.editor.select = Some((editfind::char_index(&f.text, a), editfind::char_index(&f.text, b)));
+                f.goto = Some(editfind::line_of(&f.text, a));
+            }
+            // Code view: matches get a background (text mode).
+            f.find = if bar.regex { String::new() } else { bar.query.clone() };
+            if replaced.is_some() && !f.scratch {
+                f.dirty = true;
+            }
+            if close {
+                f.find.clear();
+                ui.memory_mut(|m| m.request_focus(edit_id));
+            } else {
+                self.editor.find = Some(bar);
+            }
+        }
+        if let Some(n) = replaced.filter(|n| *n != 1) {
+            self.toast(format!("replaced {n}"), ToastKind::Info);
+        }
+        if let Some(e) = find_error {
+            self.toast(format!("replace: {e}"), ToastKind::Error);
+        }
         let font = FontId::monospace(self.settings.font_size - 1.0);
         let row_h = ui.fonts(|f| f.row_height(&font));
         if settings_changed {
@@ -2195,6 +2350,12 @@ impl App {
             if changed && !f.scratch {
                 f.dirty = true;
             }
+        // A match picked in the find bar: select it.
+        if let Some((a, b)) = self.editor.select.take() {
+            let mut st = TextEdit::load_state(ui.ctx(), edit_id).unwrap_or_default();
+            st.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(a), egui::text::CCursor::new(b))));
+            st.store(ui.ctx(), edit_id);
+        }
             if save {
                 self.actions.push(Action::Save(idx));
             }
@@ -2263,6 +2424,12 @@ impl App {
         });
         if changed && !f.scratch {
             f.dirty = true;
+        }
+        // A match picked in the find bar: select it.
+        if let Some((a, b)) = self.editor.select.take() {
+            let mut st = TextEdit::load_state(ui.ctx(), edit_id).unwrap_or_default();
+            st.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(a), egui::text::CCursor::new(b))));
+            st.store(ui.ctx(), edit_id);
         }
         if save {
             self.actions.push(Action::Save(idx));

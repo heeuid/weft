@@ -751,6 +751,10 @@ pub struct EditorState {
     pub files: Vec<EditorFile>,
     pub active: usize,
     pub visible: bool,
+    /// The find / replace bar, while open (applies to the active file).
+    pub find: Option<crate::editfind::FindBar>,
+    /// A char range to select in the active file next (a find result).
+    pub select: Option<(usize, usize)>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -1044,7 +1048,7 @@ impl App {
                 procs_host: String::new(),
                 selected: None,
             },
-            editor: EditorState { files: Vec::new(), active: 0, visible: false },
+            editor: EditorState { files: Vec::new(), active: 0, visible: false, find: None, select: None },
             sys: HashMap::new(),
             sys_at: HashMap::new(),
             history: HashMap::new(),

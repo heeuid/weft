@@ -7,6 +7,7 @@
 
 mod app;
 mod copymode;
+mod editfind;
 mod help;
 mod highlight;
 mod host;

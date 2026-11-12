@@ -7,6 +7,7 @@ pub const KEYS: &[(&str, &str)] = &[
     ("Ctrl+C", "선택한 글자 복사 (선택이 없으면 ^C로 중단)"),
     ("Ctrl+V", "붙여넣기 (bracketed paste)"),
     ("Ctrl+S", "에디터: 파일 저장"),
+    ("Ctrl+F / Ctrl+H", "에디터: 찾기 / 바꾸기 (Aa 대소문자, .* 정규식, Enter·F3 다음, Shift+Enter·Shift+F3 이전, Replace 하나 / All 전부, Esc 닫기)"),
     ("Ctrl+클릭", "경로(src/main.rs:12 포함)는 에디터로, URL은 브라우저로"),
     ("드래그", "글자 단위로 선택"),
     ("더블클릭 (+드래그)", "단어 단위로 선택"),
