@@ -160,6 +160,7 @@ TUI 그리드(날실) 사이에 GUI(씨실)를 엮어 넣은 터미널. Rust (`e
 | `Ctrl+Tab` / `Ctrl+Shift+Tab` | 탭 이동 |
 | `Ctrl+Shift+↑/↓` | 이전/다음 명령 블록으로 스크롤 |
 | 드래그 / 더블클릭 / 세 번 클릭 / `Alt+드래그` | 글자 / 단어 / 줄 / 사각형(열) 단위 선택 (더블·세 번 클릭 후 드래그하면 그 단위로 늘어남; 마우스를 쓰는 앱 안에서는 Shift와 함께) |
+| `Ctrl+Shift+X` | **복사 모드**(WezTerm처럼): `hjkl` `w b e` `0 ^ $` `gg G` `H M L` `Ctrl+u/d/b/f`로 이동, `v` 글자 / `V` 줄 / `Ctrl+v` 사각형 선택, `o` 반대쪽 끝, `y`·`Enter` 복사(선택 없으면 그 줄), `Esc`·`q` 나가기. 스크롤백과 nvim 같은 전체 화면 앱 화면 모두 |
 | `Ctrl+C` | 선택 영역 있으면 복사, 없으면 `^C` |
 | `Ctrl+V` | 붙여넣기 (bracketed paste) |
 | `Ctrl+= / Ctrl+-` | 글꼴 크기 |

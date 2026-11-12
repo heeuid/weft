@@ -610,6 +610,8 @@ pub struct Pane {
     /// The first size was applied (the first layout applies immediately).
     pub sized: bool,
     pub hist_seen: u64,
+    /// Copy mode (Ctrl+Shift+X): keys move a cursor and select, nothing goes to the shell.
+    pub copy: Option<crate::copymode::CopyMode>,
     /// Last block written to the records, and where the running one started.
     pub rec_seen: u64,
     pub rec_cwd: Option<(u64, String)>,
@@ -641,6 +643,7 @@ impl Pane {
             pending_size: None,
             sized: false,
             hist_seen: 0,
+            copy: None,
             rec_seen: 0,
             rec_cwd: None,
             seen: (false, false),

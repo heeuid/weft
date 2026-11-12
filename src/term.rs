@@ -302,6 +302,16 @@ impl Term {
         self.screen_base() + self.cy as u64
     }
 
+    /// A line of what is on screen: the alternate screen while a full-screen
+    /// app runs, else the primary buffer.
+    pub fn visible_row(&self, abs: u64) -> Option<&Row> {
+        if self.alt_active {
+            self.screen.get(abs.checked_sub(self.screen_base())? as usize)
+        } else {
+            self.line(abs)
+        }
+    }
+
     /// A line of the primary buffer (scrollback + primary screen).
     pub fn line(&self, abs: u64) -> Option<&Row> {
         if abs < self.dropped {

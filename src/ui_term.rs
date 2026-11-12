@@ -664,6 +664,17 @@ impl App {
                 let n = all.len();
                 let p = self.panes.get_mut(&id).unwrap();
                 p.scroll = p.scroll.min(n.saturating_sub(rows));
+                // Copy mode: scroll so its cursor stays on screen.
+                if let Some(cm) = p.copy {
+                    if let Some(idx) = all.iter().position(|v| matches!(v, VRow::Line(a) if *a == cm.cur.0)) {
+                        let bottom = n - p.scroll;
+                        if idx < bottom.saturating_sub(rows) {
+                            p.scroll = n - (idx + rows).min(n);
+                        } else if idx >= bottom {
+                            p.scroll = n - idx - 1;
+                        }
+                    }
+                }
                 let bottom = n - p.scroll;
                 let top = bottom.saturating_sub(rows);
                 let w = all[top..bottom].to_vec();
@@ -709,7 +720,46 @@ impl App {
             let mut mouse_out: Vec<u8> = Vec::new();
 
             // Keyboard (only when this pane owns focus).
-            if focused {
+            if focused && p.copy.is_some() {
+                let mut cm = p.copy.unwrap();
+                let t = &p.term;
+                let view = (window.first().and_then(|v| v.abs(t)).unwrap_or(0), window.last().and_then(|v| v.abs(t)).unwrap_or(0));
+                let (lo, hi) = if t.alt_active { (t.screen_base(), t.screen_base() + t.rows as u64 - 1) } else { (t.first_line(), t.end_line() - 1) };
+                let b = crate::copymode::Bounds { lo, hi, view, cols };
+                // Ctrl+C / Ctrl+V may come as Copy / Paste events instead of keys.
+                let ctrl_key = |k: Key| events.iter().any(|e| matches!(e, Event::Key { key, pressed: true, modifiers, .. } if *key == k && modifiers.ctrl));
+                let (has_c, has_v) = (ctrl_key(Key::C), ctrl_key(Key::V));
+                let mut outcome = crate::copymode::Outcome::Stay;
+                for ev in &events {
+                    let (k, m) = match ev {
+                        Event::Key { key, pressed: true, modifiers, .. } => (*key, *modifiers),
+                        Event::Copy if !has_c => (Key::C, Modifiers::CTRL),
+                        Event::Paste(_) if !has_v => (Key::V, Modifiers::CTRL),
+                        _ => continue,
+                    };
+                    outcome = crate::copymode::key(&mut cm, &mut p.sel, &p.term, &b, k, m);
+                    if outcome != crate::copymode::Outcome::Stay {
+                        break;
+                    }
+                }
+                match outcome {
+                    crate::copymode::Outcome::Stay => p.copy = Some(cm),
+                    crate::copymode::Outcome::Copy => {
+                        // Nothing selected: the cursor's line.
+                        let text = match p.sel {
+                            Some(s) => selection_text(&p.term, s),
+                            None => p.term.visible_row(cm.cur.0).map(|r| r.text()).unwrap_or_default(),
+                        };
+                        acts.push(Action::Copy(text));
+                        p.sel = None;
+                        p.copy = None;
+                    }
+                    crate::copymode::Outcome::Exit => {
+                        p.sel = None;
+                        p.copy = None;
+                    }
+                }
+            } else if focused {
                 if p.exited && events.iter().any(|e| matches!(e, Event::Key { key: Key::Enter, pressed: true, .. })) {
                     acts.push(Action::Restart(id));
                 } else {
@@ -937,6 +987,18 @@ impl App {
                 let r = Rect::from_min_size(pos2(inner.left() + c0 as f32 * cw, row_y(i)), vec2((c1.saturating_sub(c0)) as f32 * cw, ch));
                 painter.rect_filled(r, CornerRadius::ZERO, theme::selection());
             }
+        }
+        if let Some(cm) = p.copy {
+            if let Some(i) = vis_index(cm.cur.0) {
+                let r = Rect::from_min_size(pos2(inner.left() + cm.cur.1 as f32 * cw, row_y(i)), vec2(cw, ch));
+                painter.rect_filled(r, CornerRadius::ZERO, theme::tint(theme::accent(), 90));
+                painter.rect_stroke(r, CornerRadius::ZERO, Stroke::new(1.5_f32, theme::accent()), StrokeKind::Inside);
+            }
+            let label = "COPY · hjkl w b e 0 $ gg G · v V Ctrl+v select · y copy · Esc";
+            let g = painter.layout_no_wrap(label.into(), FontId::proportional(11.0), theme::accent());
+            let pill = Rect::from_min_size(pos2(inner.right() - g.size().x - 16.0, inner.top()), vec2(g.size().x + 16.0, 18.0));
+            painter.rect_filled(pill, CornerRadius::same(9), theme::tint(theme::accent(), 45));
+            painter.galley(pos2(pill.left() + 8.0, pill.center().y - g.size().y / 2.0), g, theme::accent());
         }
 
         // Ctrl-hover: underline clickable paths/URLs.

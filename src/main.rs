@@ -6,6 +6,7 @@
 //! tools and python, and nothing is written to the remote disk.
 
 mod app;
+mod copymode;
 mod help;
 mod highlight;
 mod host;

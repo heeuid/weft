@@ -74,6 +74,7 @@ pub(crate) enum Cmd {
     FocusRight,
     FocusUp,
     FocusDown,
+    CopyMode,
 }
 
 /// Every command: (command, id for settings "keys", label, default keys).
@@ -92,6 +93,7 @@ const COMMANDS: &[(Cmd, &str, &str, &[&str])] = &[
     (Cmd::FocusDown, "focus_down", "Focus the pane below (split)", &["Alt+Down"]),
     (Cmd::Composer, "composer", "Open composer (GUI command line)", &["Ctrl+Space"]),
     (Cmd::Find, "find", "Find in scrollback", &["Ctrl+Shift+F"]),
+    (Cmd::CopyMode, "copy_mode", "Copy mode: select with the keyboard (vim keys; again to leave)", &["Ctrl+Shift+X"]),
     (Cmd::PrevBlock, "prev_command", "Jump to previous command", &["Ctrl+Shift+Up"]),
     (Cmd::NextBlock, "next_command", "Jump to next command", &["Ctrl+Shift+Down"]),
     (Cmd::FoldAll, "fold_all", "Fold all command outputs", &[]),
@@ -260,6 +262,16 @@ impl App {
                     self.focus_term = true;
                     self.on_active_changed();
                 }
+            }
+            Cmd::CopyMode => {
+                if let Some(p) = pane.and_then(|id| self.panes.get_mut(&id)) {
+                    p.copy = match p.copy {
+                        Some(_) => None,
+                        None => Some(crate::copymode::CopyMode { cur: (p.term.cursor_abs(), p.term.cx), g: false }),
+                    };
+                    p.sel = None;
+                }
+                self.focus_term = true;
             }
             Cmd::FocusLeft => self.focus_dir(-1.0, 0.0),
             Cmd::FocusRight => self.focus_dir(1.0, 0.0),
@@ -2804,6 +2816,7 @@ fn group(c: Cmd) -> &'static str {
         | Cmd::FocusDown => GROUPS[0],
         Cmd::Composer
         | Cmd::Find
+        | Cmd::CopyMode
         | Cmd::PrevBlock
         | Cmd::NextBlock
         | Cmd::FoldAll
