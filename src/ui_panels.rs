@@ -2150,8 +2150,21 @@ impl App {
         // Where a vertical border meets a horizontal one (three panels
         // around a point): one grip moves both, laid over the borders.
         let junctions = crate::app::panel_junctions(&dividers);
-        for (id, handle, vertical, parent) in dividers {
-            let resp = ui.interact(handle.expand(2.0), Id::new(("panel-divider", id)), Sense::drag());
+        // Over a junction the two borders under it stand aside (unless one
+        // is already being dragged): right on the point, the thin border
+        // used to win and the junction only caught the pointer a little off it.
+        const JUNCTION: f32 = 20.0;
+        let pointer = ui.input(|i| i.pointer.hover_pos());
+        let near = |i: usize| {
+            pointer.is_some_and(|p| junctions.iter().any(|j| (j.0.contains(&i) || j.1.contains(&i)) && egui::Rect::from_center_size(j.2, vec2(JUNCTION, JUNCTION)).contains(p)))
+        };
+        for (i, &(id, handle, vertical, parent)) in dividers.iter().enumerate() {
+            let did = Id::new(("panel-divider", id));
+            if near(i) && !ui.ctx().is_being_dragged(did) {
+                ui.painter().rect_filled(handle, CornerRadius::ZERO, theme::border());
+                continue;
+            }
+            let resp = ui.interact(handle.expand(2.0), did, Sense::drag());
             let hot = resp.hovered() || resp.dragged();
             if hot {
                 ui.ctx().set_cursor_icon(if vertical { egui::CursorIcon::ResizeHorizontal } else { egui::CursorIcon::ResizeVertical });
@@ -2169,20 +2182,28 @@ impl App {
                 self.save_settings();
             }
         }
-        for (vid, vparent, hid, hparent, at) in junctions {
-            let zone = egui::Rect::from_center_size(at, vec2(16.0, 16.0));
-            let resp = ui.interact(zone, Id::new(("panel-junction", vid, hid)), Sense::drag());
+        for (vs, hs, at) in junctions {
+            let ids: Vec<u32> = vs.iter().chain(&hs).map(|&i| dividers[i].0).collect();
+            let zone = egui::Rect::from_center_size(at, vec2(JUNCTION, JUNCTION));
+            let resp = ui.interact(zone, Id::new(("panel-junction", ids)), Sense::drag());
             if resp.hovered() || resp.dragged() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::Move);
                 ui.painter().circle_filled(at, 5.0, theme::accent());
             }
             if resp.dragged() {
                 if let Some(p) = resp.interact_pointer_pos() {
-                    if let Some(r) = self.settings.layout.ratio_mut(vid) {
-                        *r = ((p.x - vparent.left()) / vparent.width()).clamp(0.08, 0.92);
+                    // Every border there: verticals follow x, horizontals y.
+                    for &i in &vs {
+                        let (id, _, _, parent) = dividers[i];
+                        if let Some(r) = self.settings.layout.ratio_mut(id) {
+                            *r = ((p.x - parent.left()) / parent.width()).clamp(0.08, 0.92);
+                        }
                     }
-                    if let Some(r) = self.settings.layout.ratio_mut(hid) {
-                        *r = ((p.y - hparent.top()) / hparent.height()).clamp(0.08, 0.92);
+                    for &i in &hs {
+                        let (id, _, _, parent) = dividers[i];
+                        if let Some(r) = self.settings.layout.ratio_mut(id) {
+                            *r = ((p.y - parent.top()) / parent.height()).clamp(0.08, 0.92);
+                        }
                     }
                 }
             }

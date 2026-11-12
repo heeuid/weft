@@ -274,11 +274,23 @@ mod layout_tests {
         l.rects(Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1000.0, 1000.0)), &mut Vec::new(), &mut dividers);
         let j = super::panel_junctions(&dividers);
         assert_eq!(j.len(), 1, "{dividers:?}");
-        let (v, _, h, _, at) = j[0];
-        assert_ne!(v, h);
-        let vx = dividers.iter().find(|d| d.0 == v).unwrap().1.center().x;
-        let hy = dividers.iter().find(|d| d.0 == h).unwrap().1.center().y;
-        assert_eq!((at.x, at.y), (vx, hy));
+        let (vs, hs, at) = &j[0];
+        assert_eq!((vs.len(), hs.len()), (1, 1));
+        assert_eq!((at.x, at.y), (dividers[vs[0]].1.center().x, dividers[hs[0]].1.center().y));
+        // Four panels in a +: both columns split at the same height. One
+        // junction holding the vertical border and both horizontal ones.
+        let plus = Layout::Split {
+            id: 1,
+            vertical: true,
+            ratio: 0.5,
+            a: Box::new(Layout::Split { id: 2, vertical: false, ratio: 0.5, a: Box::new(Layout::Panel { region: Side }), b: Box::new(Layout::Panel { region: Editor }) }),
+            b: Box::new(Layout::Split { id: 3, vertical: false, ratio: 0.5, a: Box::new(Layout::Panel { region: Terms }), b: Box::new(Layout::Panel { region: Side }) }),
+        };
+        let mut dividers = Vec::new();
+        plus.rects(Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1000.0, 1000.0)), &mut Vec::new(), &mut dividers);
+        let j = super::panel_junctions(&dividers);
+        assert_eq!(j.len(), 1, "{j:?}");
+        assert_eq!((j[0].0.len(), j[0].1.len()), (1, 2), "one vertical, two horizontal");
         // Side by side only (the default): borders never meet.
         let mut dividers = Vec::new();
         Layout::default().rects(Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1000.0, 1000.0)), &mut Vec::new(), &mut dividers);
@@ -814,16 +826,42 @@ pub struct KeysWindow {
     pub capture: Option<&'static str>,
 }
 
-/// Points where a vertical panel border meets a horizontal one:
-/// (vertical id, its parent, horizontal id, its parent, the point).
-pub fn panel_junctions(dividers: &[(u32, Rect, bool, Rect)]) -> Vec<(u32, Rect, u32, Rect, egui::Pos2)> {
-    dividers
-        .iter()
-        .filter(|v| v.2)
-        .flat_map(|v| dividers.iter().filter(|h| !h.2).map(move |h| (v, h)))
-        .filter(|(v, h)| v.1.expand(3.0).intersects(h.1.expand(3.0)))
-        .map(|(v, h)| (v.0, v.3, h.0, h.3, egui::pos2(v.1.center().x, h.1.center().y)))
-        .collect()
+/// A point where borders meet: the vertical ones and the horizontal ones
+/// there (indices), so one grip moves them all. Three areas around it: one
+/// of each; four (a +): two of one kind.
+pub type Junction = (Vec<usize>, Vec<usize>, egui::Pos2);
+
+/// Gather touching (vertical, horizontal, point) pairs into junctions: pairs
+/// at the same point belong to one.
+pub fn group_junctions(pairs: Vec<(usize, usize, egui::Pos2)>) -> Vec<Junction> {
+    let mut out: Vec<Junction> = Vec::new();
+    for (v, h, at) in pairs {
+        match out.iter_mut().find(|j| (j.2.x - at.x).abs() <= 6.0 && (j.2.y - at.y).abs() <= 6.0) {
+            Some(j) => {
+                if !j.0.contains(&v) {
+                    j.0.push(v);
+                }
+                if !j.1.contains(&h) {
+                    j.1.push(h);
+                }
+            }
+            None => out.push((vec![v], vec![h], at)),
+        }
+    }
+    out
+}
+
+/// Where panel borders meet (indices into `dividers`).
+pub fn panel_junctions(dividers: &[(u32, Rect, bool, Rect)]) -> Vec<Junction> {
+    let mut pairs = Vec::new();
+    for (vi, v) in dividers.iter().enumerate().filter(|d| d.1 .2) {
+        for (hi, h) in dividers.iter().enumerate().filter(|d| !d.1 .2) {
+            if v.1.expand(3.0).intersects(h.1.expand(3.0)) {
+                pairs.push((vi, hi, egui::pos2(v.1.center().x, h.1.center().y)));
+            }
+        }
+    }
+    group_junctions(pairs)
 }
 
 /// A memo on disk, for the memo list.

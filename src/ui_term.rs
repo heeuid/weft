@@ -498,9 +498,9 @@ pub fn tab_layout(tab: &Tab, rect: Rect, panes: &mut Vec<(usize, Rect)>, splits:
     zoomed
 }
 
-/// Points where a vertical splitter and a horizontal one meet end-to-side:
-/// (vertical index, horizontal index, meeting point).
-pub fn split_junctions(splits: &[SplitHandle]) -> Vec<(usize, usize, egui::Pos2)> {
+/// Points where splitters meet (indices into `splits`): three panes around
+/// one, or four (a +).
+pub fn split_junctions(splits: &[SplitHandle]) -> Vec<crate::app::Junction> {
     let near = |a: f32, b: f32| (a - b).abs() <= 6.0;
     let mut out = Vec::new();
     for (vi, (_, v, vertical, _)) in splits.iter().enumerate() {
@@ -520,7 +520,7 @@ pub fn split_junctions(splits: &[SplitHandle]) -> Vec<(usize, usize, egui::Pos2)
             }
         }
     }
-    out
+    crate::app::group_junctions(out)
 }
 
 impl App {
@@ -533,8 +533,18 @@ impl App {
         let zoomed = tab_layout(tab, rect, &mut panes, &mut splits);
         self.pane_rects = panes.clone();
         let multi = panes.len() > 1 || zoomed;
-        for (path, handle, vertical, parent) in splits.iter().cloned() {
+        // Over a junction the splitters under it stand aside (see the panel
+        // borders): right on the point the thin splitter used to win.
+        const JUNCTION: f32 = 20.0;
+        let junctions = split_junctions(&splits);
+        let pointer = ui.input(|i| i.pointer.hover_pos());
+        let near = |i: usize| pointer.is_some_and(|p| junctions.iter().any(|j| (j.0.contains(&i) || j.1.contains(&i)) && Rect::from_center_size(j.2, vec2(JUNCTION, JUNCTION)).contains(p)));
+        for (i, (path, handle, vertical, parent)) in splits.iter().cloned().enumerate() {
             let id = Id::new(("split", self.active_tab, path.clone()));
+            if near(i) && !ui.ctx().is_being_dragged(id) {
+                ui.painter().rect_filled(handle, CornerRadius::ZERO, theme::bg_base());
+                continue;
+            }
             let resp = ui.interact(handle.expand(2.0), id, Sense::drag());
             let hot = resp.hovered() || resp.dragged();
             if hot {
@@ -556,11 +566,10 @@ impl App {
         }
         // Where a vertical and a horizontal splitter meet (three panes touch),
         // a handle drags both at once.
-        for (vi, hi, at) in split_junctions(&splits) {
-            let (vpath, _, _, vparent) = splits[vi].clone();
-            let (hpath, _, _, hparent) = splits[hi].clone();
-            let zone = Rect::from_center_size(at, vec2(14.0, 14.0));
-            let resp = ui.interact(zone, Id::new(("junction", self.active_tab, vpath.clone(), hpath.clone())), Sense::drag());
+        for (vs, hs, at) in junctions {
+            let paths: Vec<Vec<bool>> = vs.iter().chain(&hs).map(|&i| splits[i].0.clone()).collect();
+            let zone = Rect::from_center_size(at, vec2(JUNCTION, JUNCTION));
+            let resp = ui.interact(zone, Id::new(("junction", self.active_tab, paths)), Sense::drag());
             let hot = resp.hovered() || resp.dragged();
             if hot {
                 ui.ctx().set_cursor_icon(CursorIcon::Move);
@@ -568,12 +577,19 @@ impl App {
             }
             if resp.dragged() {
                 if let Some(pos) = resp.interact_pointer_pos() {
+                    // Every splitter there: verticals follow x, horizontals y.
                     let root = &mut self.tabs[self.active_tab].root;
-                    if let Some(r) = root.ratio_at(&vpath) {
-                        *r = ((pos.x - vparent.left()) / vparent.width()).clamp(0.1, 0.9);
+                    for &i in &vs {
+                        let (path, _, _, parent) = &splits[i];
+                        if let Some(r) = root.ratio_at(path) {
+                            *r = ((pos.x - parent.left()) / parent.width()).clamp(0.1, 0.9);
+                        }
                     }
-                    if let Some(r) = root.ratio_at(&hpath) {
-                        *r = ((pos.y - hparent.top()) / hparent.height()).clamp(0.1, 0.9);
+                    for &i in &hs {
+                        let (path, _, _, parent) = &splits[i];
+                        if let Some(r) = root.ratio_at(path) {
+                            *r = ((pos.y - parent.top()) / parent.height()).clamp(0.1, 0.9);
+                        }
                     }
                 }
             }
@@ -1730,6 +1746,20 @@ mod tests {
         });
         assert_eq!(j.len(), 1);
         assert!((j[0].2.x - 400.0).abs() < 1.0 && (j[0].2.y - 300.0).abs() < 1.0, "{:?}", j[0].2);
+        // [[1 / 2] | [3 / 4]]: four panes in a +, one junction with the
+        // vertical splitter and both horizontal ones.
+        let half = |a, b| Box::new(Node::Split { vertical: false, ratio: 0.5, a: Box::new(Node::Leaf(a)), b: Box::new(Node::Leaf(b)) });
+        let j = layout(Node::Split { vertical: true, ratio: 0.5, a: half(1, 2), b: half(3, 4) });
+        assert_eq!(j.len(), 1, "{j:?}");
+        assert_eq!((j[0].0.len(), j[0].1.len()), (1, 2));
+        // Not at the same height: two separate T junctions.
+        let j = layout(Node::Split {
+            vertical: true,
+            ratio: 0.5,
+            a: Box::new(Node::Split { vertical: false, ratio: 0.3, a: Box::new(Node::Leaf(1)), b: Box::new(Node::Leaf(2)) }),
+            b: half(3, 4),
+        });
+        assert_eq!(j.len(), 2);
         // [[1 | 2] / 3]: top split left/right -> junction where the vertical one ends.
         let j = layout(Node::Split {
             vertical: false,

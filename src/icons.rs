@@ -104,18 +104,29 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
             line(&[(13.0, 3.0), (7.5, 8.5)]);
             line(&[(11.0, 9.5), (11.0, 13.0), (3.0, 13.0), (3.0, 5.0), (6.5, 5.0)]);
         }
-        Icon::SplitRight | Icon::SplitDown | Icon::Sidebar | Icon::Editor => {
+        Icon::SplitRight | Icon::SplitDown => {
             p.rect_stroke(r(2.0, 3.0, 14.0, 13.0), CornerRadius::same(2), st, StrokeKind::Middle);
             match icon {
                 Icon::SplitRight => line(&[(8.0, 3.0), (8.0, 13.0)]),
-                Icon::SplitDown => line(&[(2.0, 8.0), (14.0, 8.0)]),
-                Icon::Sidebar => {
-                    p.rect_filled(r(2.0, 3.0, 6.0, 13.0), CornerRadius::same(1), theme::tint(color, 110));
-                }
-                _ => {
-                    p.rect_filled(r(10.0, 3.0, 14.0, 13.0), CornerRadius::same(1), theme::tint(color, 110));
-                }
+                _ => line(&[(2.0, 8.0), (14.0, 8.0)]),
             }
+        }
+        // The panel toggles show what is inside, not a side: panels can be
+        // anywhere. Side panel: a file tree.
+        Icon::Sidebar => {
+            p.rect_stroke(r(2.0, 2.0, 7.0, 6.0), CornerRadius::same(1), st, StrokeKind::Middle);
+            line(&[(4.5, 6.0), (4.5, 12.0)]);
+            line(&[(4.5, 8.5), (8.0, 8.5)]);
+            line(&[(4.5, 12.0), (8.0, 12.0)]);
+            p.rect_stroke(r(8.0, 7.0, 14.0, 10.0), CornerRadius::same(1), st, StrokeKind::Middle);
+            p.rect_stroke(r(8.0, 10.5, 14.0, 13.5), CornerRadius::same(1), st, StrokeKind::Middle);
+        }
+        // Editor: a page with lines of text.
+        Icon::Editor => {
+            line(&[(10.0, 2.0), (3.5, 2.0), (3.5, 14.0), (12.5, 14.0), (12.5, 4.5), (10.0, 2.0), (10.0, 4.5), (12.5, 4.5)]);
+            line(&[(5.5, 7.0), (10.5, 7.0)]);
+            line(&[(5.5, 9.5), (10.5, 9.5)]);
+            line(&[(5.5, 12.0), (8.5, 12.0)]);
         }
         Icon::Search => {
             p.circle_stroke(at(7.0, 7.0), 4.0 * u, st);
