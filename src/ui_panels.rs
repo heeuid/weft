@@ -1279,6 +1279,10 @@ impl App {
         let hits = res["hits"].as_array().cloned().unwrap_or_default();
         let base = res["root"].as_str().unwrap_or("").replace('\\', "/");
         ui.label(RichText::new(format!("{} matches{}", hits.len(), if res["truncated"].as_bool().unwrap_or(false) { " (truncated)" } else { "" })).size(11.5).color(theme::text_dim()));
+        // The active terminal can be sent to a result's folder when it is on
+        // this host and waiting at a prompt (as in the Files tab).
+        let cd_target = self.active_pane_id().filter(|id| self.panes.get(id).map(|p| p.host == host && p.term.at_prompt()).unwrap_or(false));
+        let mut chosen: Option<HitAction> = None;
         ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             let mut last_file = String::new();
             for h in hits {
@@ -1288,7 +1292,13 @@ impl App {
                 if path != last_file {
                     ui.add_space(4.0);
                     let rel = path.strip_prefix(&base).unwrap_or(&path).trim_start_matches('/');
-                    ui.label(RichText::new(rel).size(12.0).color(theme::ansi(12)));
+                    let r = ui.add(egui::Label::new(RichText::new(rel).size(12.0).color(theme::ansi(12))).sense(Sense::click()));
+                    if r.clicked() {
+                        chosen = Some(HitAction::Open(path.clone(), 1));
+                    }
+                    r.on_hover_text("click: open · right-click: cd the terminal, show in Files, copy").context_menu(|ui| {
+                        hit_menu(ui, &path, None, cd_target.is_some(), &mut chosen);
+                    });
                     last_file = path.clone();
                 }
                 let r = ui.add(egui::Label::new(RichText::new(format!("{line:>5}  {}", text.chars().take(120).collect::<String>())).monospace().size(12.0).color(theme::text_dim())).sense(Sense::click()));
@@ -1296,10 +1306,31 @@ impl App {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 }
                 if r.clicked() {
-                    self.actions.push(Action::OpenFile(host.clone(), path.clone(), line));
+                    chosen = Some(HitAction::Open(path.clone(), line));
                 }
+                r.on_hover_text("click: open at this line · right-click: more").context_menu(|ui| {
+                    hit_menu(ui, &path, Some((line, text)), cd_target.is_some(), &mut chosen);
+                });
             }
         });
+        match chosen {
+            Some(HitAction::Open(path, line)) => self.actions.push(Action::OpenFile(host.clone(), path, line)),
+            Some(HitAction::Cd(dir)) => {
+                if let Some(id) = cd_target {
+                    let cmd = self.profile(&host).cd_command(&dir);
+                    self.actions.push(Action::Run(id, cmd));
+                    self.actions.push(Action::Focus(id));
+                }
+            }
+            Some(HitAction::Reveal(dir, path)) => {
+                self.side.tab = SideTab::Files;
+                self.side.follow = false;
+                self.side.selected = Some(path);
+                self.set_root(&host, &dir);
+            }
+            Some(HitAction::Copy(t)) => self.actions.push(Action::Copy(t)),
+            None => {}
+        }
     }
 
     fn ui_procs(&mut self, ui: &mut Ui) {
@@ -2449,6 +2480,48 @@ fn history_matches(all: &[crate::records::Record], q: &str, mode: FindMode, in_o
             host_ok(r) && (m.matches(&r.cmd).is_some() || out_re.as_ref().map(|re| re.is_match(&r.out)).unwrap_or(false))
         })
         .collect())
+}
+
+/// What a Search result's click or menu asked for.
+enum HitAction {
+    Open(String, usize),
+    Cd(String),
+    /// Folder to browse, file to select in it.
+    Reveal(String, String),
+    Copy(String),
+}
+
+/// Right-click menu of a Search result: a file (`line` None) or one match.
+fn hit_menu(ui: &mut Ui, path: &str, line: Option<(usize, &str)>, can_cd: bool, chosen: &mut Option<HitAction>) {
+    let dir = path.rsplit_once('/').map(|(d, _)| if d.is_empty() { "/" } else { d }).unwrap_or(path).to_string();
+    let mut pick = |ui: &mut Ui, a: HitAction| {
+        *chosen = Some(a);
+        ui.close_menu();
+    };
+    let open_label = if line.is_some() { "Open at this line" } else { "Open" };
+    if ui.button(open_label).clicked() {
+        pick(ui, HitAction::Open(path.to_string(), line.map(|l| l.0).unwrap_or(1)));
+    }
+    let cd = ui.add_enabled(can_cd, egui::Button::new("cd terminal to its folder"));
+    let cd = if can_cd { cd.on_hover_text(dir.as_str()) } else { cd.on_disabled_hover_text("needs a terminal on this host, waiting at a prompt") };
+    if cd.clicked() {
+        pick(ui, HitAction::Cd(dir.clone()));
+    }
+    if ui.button("Show in Files").clicked() {
+        pick(ui, HitAction::Reveal(dir.clone(), path.to_string()));
+    }
+    ui.separator();
+    if ui.button("Copy path").clicked() {
+        pick(ui, HitAction::Copy(path.to_string()));
+    }
+    if let Some((n, text)) = line {
+        if ui.button("Copy path:line").clicked() {
+            pick(ui, HitAction::Copy(format!("{path}:{n}")));
+        }
+        if ui.button("Copy line text").clicked() {
+            pick(ui, HitAction::Copy(text.to_string()));
+        }
+    }
 }
 
 /// Command groups, in the order the menu and help show them.
