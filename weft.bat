@@ -4,6 +4,15 @@ rem terminal. weft runs on its own; closing the terminal doesn't close it.
 rem When cargo is installed, the release build is brought up to date first.
 setlocal
 cd /d "%~dp0"
+set "BUILT=%~dp0target\release\weft.exe"
+
+rem A weft started from target\release itself (not from a copy, as below)
+rem keeps weft.exe from being replaced, and cargo then fails with "Access is
+rem denied". Windows does let a running .exe be renamed: move it aside.
+del /q "%~dp0target\release\weft-old-*.exe" >nul 2>&1
+if exist "%BUILT%" (
+    2>nul (>>"%BUILT%" (call )) || move /y "%BUILT%" "%~dp0target\release\weft-old-%RANDOM%.exe" >nul
+)
 
 where cargo >nul 2>&1
 if not errorlevel 1 (
@@ -11,15 +20,13 @@ if not errorlevel 1 (
     if errorlevel 1 (
         echo.
         echo weft: the build failed, see above.
-        echo       "Access is denied" on weft.exe: a weft started from target\release
-        echo       is still open ^(close it^), or antivirus is scanning the new file
-        echo       ^(run this again in a moment^).
+        echo       "Access is denied" on weft.exe: antivirus may be scanning the
+        echo       new file; run this again in a moment.
         pause
         exit /b 1
     )
 )
 
-set "BUILT=%~dp0target\release\weft.exe"
 if not exist "%BUILT%" (
     echo weft: target\release\weft.exe not found. Install Rust from https://rustup.rs and run this again.
     pause
