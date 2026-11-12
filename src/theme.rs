@@ -285,7 +285,6 @@ pub const BUILTIN_FONTS: &[(&str, &str, &[u8])] = &[
     // Hangul of its own, two cells wide exactly, and the widest symbol range.
     ("builtin:d2coding", "D2Coding Nerd Font (한글)", include_bytes!("../fonts/D2CodingLigatureNerdFontMono-Regular.ttf")),
     ("builtin:jetbrains-mono", "JetBrains Mono Nerd Font", include_bytes!("../fonts/JetBrainsMonoNerdFontMono-Regular.ttf")),
-    ("builtin:caskaydia-cove", "CaskaydiaCove Nerd Font (Cascadia)", include_bytes!("../fonts/CaskaydiaCoveNerdFontMono-Regular.ttf")),
     ("builtin:hack", "Hack Nerd Font", include_bytes!("../fonts/HackNerdFontMono-Regular.ttf")),
 ];
 
