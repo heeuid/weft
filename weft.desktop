@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=weft
+Comment=Terminal with GUI woven into the text grid
+Exec=sh -c "cd \\"\\$(dirname \\"\\$0\\")\\" && exec ./weft.sh" %k
+Terminal=false
+Categories=System;TerminalEmulator;

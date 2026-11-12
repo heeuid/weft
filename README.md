@@ -9,10 +9,19 @@ TUI 그리드(날실) 사이에 GUI(씨실)를 엮어 넣은 터미널. Rust (`e
 
 ## 빌드 / 실행
 
-```powershell
-cd C:\Users\sunghee\claude-workspace\weft
-cargo run --release
-```
+실행 스크립트: 필요하면 먼저 빌드(`cargo build --release`, 최신이면 1초 이내)하고, weft를 **터미널과 분리해** 띄운 뒤 바로 끝납니다.
+띄운 터미널을 닫아도 weft는 계속 동작합니다.
+
+| OS | 더블클릭 | 터미널에서 |
+|---|---|---|
+| Windows | 탐색기에서 `weft.cmd` | `weft.cmd` |
+| Linux | 파일 관리자에서 `weft.desktop` (처음엔 "실행 허용"/"Allow Launching" 필요할 수 있음) | `./weft.sh` |
+
+- Windows는 PowerShell `Start-Process`(탐색기 더블클릭과 같은 방식)로 띄워 터미널의 핸들을 하나도 물려주지 않습니다.
+- Linux는 `setsid`(없으면 `nohup`)로 새 세션에서 띄워 터미널을 닫을 때의 종료 신호가 가지 않습니다.
+- 빌드에 실패하면 오류를 보여 주고 멈춥니다. `cargo`가 없으면 이미 빌드된 실행 파일을 띄웁니다.
+
+개발 중에는 그냥 `cargo run --release`도 됩니다.
 
 설정·로그·히스토리는 실행 파일 옆 `data/`에 저장됩니다 (`WEFT_DATA_DIR`로 변경 가능).
 
