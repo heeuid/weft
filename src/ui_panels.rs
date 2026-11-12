@@ -819,12 +819,34 @@ impl App {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             self.dock_grip(ui, Region::Side);
-            for (tab, label) in [(SideTab::Files, "Files"), (SideTab::Blocks, "Commands"), (SideTab::History, "History"), (SideTab::Search, "Search"), (SideTab::Procs, "Procs")] {
+            const TABS: [(SideTab, &str); 5] = [(SideTab::Files, "Files"), (SideTab::Blocks, "Commands"), (SideTab::History, "History"), (SideTab::Search, "Search"), (SideTab::Procs, "Procs")];
+            // A narrow panel shows the tabs that fit (the open one always) and
+            // the rest under ».
+            let pad = ui.spacing().button_padding.x * 2.0 + ui.spacing().item_spacing.x;
+            let widths: Vec<f32> = TABS.iter().map(|(_, l)| ui.painter().layout_no_wrap(l.to_string(), FontId::proportional(12.5), theme::text()).size().x + pad).collect();
+            let active = TABS.iter().position(|t| t.0 == self.side.tab).unwrap_or(0);
+            let (shown, hidden) = fit_tabs(&widths, ui.available_width(), 28.0, active);
+            for i in shown {
+                let (tab, label) = TABS[i];
                 let sel = self.side.tab == tab;
                 let txt = RichText::new(label).size(12.5).color(if sel { theme::text() } else { theme::text_dim() });
                 if ui.selectable_label(sel, txt).clicked() {
                     self.side.tab = tab;
                 }
+            }
+            if !hidden.is_empty() {
+                let names: Vec<&str> = hidden.iter().map(|&i| TABS[i].1).collect();
+                ui.menu_button(RichText::new("»").size(13.0).color(theme::text_dim()), |ui| {
+                    for &i in &hidden {
+                        let (tab, label) = TABS[i];
+                        if ui.selectable_label(false, RichText::new(label).size(12.5)).clicked() {
+                            self.side.tab = tab;
+                            ui.close_menu();
+                        }
+                    }
+                })
+                .response
+                .on_hover_text(format!("more: {}", names.join(", ")));
             }
         });
         ui.add_space(4.0);
@@ -3156,6 +3178,36 @@ fn history_matches(all: &[crate::records::Record], q: &str, mode: FindMode, in_o
         .collect())
 }
 
+/// Which tabs fit in `room` (by index, in order) and which go under a "more"
+/// button `more` wide. The `active` one is always shown.
+fn fit_tabs(widths: &[f32], room: f32, more: f32, active: usize) -> (Vec<usize>, Vec<usize>) {
+    if widths.iter().sum::<f32>() <= room {
+        return ((0..widths.len()).collect(), Vec::new());
+    }
+    let room = room - more;
+    let mut shown: Vec<usize> = Vec::new();
+    let mut used = 0.0;
+    for (i, w) in widths.iter().enumerate() {
+        if used + w > room {
+            break;
+        }
+        shown.push(i);
+        used += w;
+    }
+    if !shown.contains(&active) {
+        while let Some(&last) = shown.last() {
+            if used + widths[active] <= room {
+                break;
+            }
+            used -= widths[last];
+            shown.pop();
+        }
+        shown.push(active);
+    }
+    let hidden = (0..widths.len()).filter(|i| !shown.contains(i)).collect();
+    (shown, hidden)
+}
+
 /// Where a dragged tab lands: the index of the tab it goes before (len: the end).
 fn tab_drop_index(rects: &[egui::Rect], x: f32) -> usize {
     rects.iter().position(|r| r.is_positive() && x < r.center().x).unwrap_or(rects.len())
@@ -3480,6 +3532,16 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn narrow_tab_rows_keep_the_open_tab() {
+        let w = [40.0, 70.0, 55.0, 50.0, 45.0];
+        assert_eq!(super::fit_tabs(&w, 300.0, 28.0, 0), (vec![0, 1, 2, 3, 4], vec![]), "all fit");
+        assert_eq!(super::fit_tabs(&w, 200.0, 28.0, 0), (vec![0, 1, 2], vec![3, 4]));
+        // The open tab is past the edge: it takes the last places shown.
+        assert_eq!(super::fit_tabs(&w, 200.0, 28.0, 4), (vec![0, 1, 4], vec![2, 3]));
+        assert_eq!(super::fit_tabs(&w, 60.0, 28.0, 3), (vec![3], vec![0, 1, 2, 4]), "only the open one");
     }
 
     #[test]
