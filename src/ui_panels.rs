@@ -27,6 +27,7 @@ pub fn host_color(host: &str) -> Color32 {
 
 #[derive(Clone, Copy, PartialEq)]
 enum Cmd {
+    LocalShell(crate::host::LocalShell),
     CursorStyle,
     MarkdownBreaks,
     NewTab,
@@ -86,6 +87,11 @@ const COMMANDS: &[(Cmd, &str, &str)] = &[
     (Cmd::ThemePicker, "Theme…", ""),
     (Cmd::ThemeSystem, "Theme: follow system (dark/light)", ""),
     (Cmd::CursorStyle, "Terminal cursor: block / bar / underline", ""),
+    (Cmd::LocalShell(crate::host::LocalShell::Auto), "Local shell: auto (pwsh, else Windows PowerShell)", ""),
+    (Cmd::LocalShell(crate::host::LocalShell::Pwsh), "Local shell: PowerShell 7 (pwsh)", ""),
+    (Cmd::LocalShell(crate::host::LocalShell::Powershell), "Local shell: Windows PowerShell 5.1", ""),
+    (Cmd::LocalShell(crate::host::LocalShell::Cmd), "Local shell: cmd", ""),
+    (Cmd::LocalShell(crate::host::LocalShell::Nu), "Local shell: nushell", ""),
     (Cmd::MarkdownBreaks, "Markdown: toggle line breaks (GitHub PR style / CommonMark)", ""),
     (Cmd::Settings, "Open settings.json", ""),
     (Cmd::AgentLog, "Open agent log for this host", ""),
@@ -177,6 +183,11 @@ impl App {
             Cmd::UiReset => self.settings.ui_scale = 1.0,
             Cmd::Theme(i) => self.pick_theme(i),
             Cmd::ThemeSystem => self.settings.theme = "system".into(),
+            Cmd::LocalShell(sh) => {
+                self.settings.local_shell = sh;
+                self.toast(format!("local shell: {} (new tabs)", sh.label()), crate::app::ToastKind::Info);
+                self.save_settings();
+            }
             Cmd::CursorStyle => {
                 self.settings.cursor_style = match self.settings.cursor_style {
                     CursorStyle::Block => CursorStyle::Bar,

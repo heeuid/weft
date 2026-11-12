@@ -310,7 +310,11 @@ pub struct Settings {
     /// Who draws mermaid diagrams: built-in, mermaid-cli on PATH, or at a path.
     #[serde(default)]
     pub mermaid: crate::mermaid::Renderer,
-    /// Terminal cursor: bar (default), block or underline.
+    /// Shell for local panes: auto (pwsh, else Windows PowerShell), pwsh,
+    /// powershell, cmd or nu.
+    #[serde(default)]
+    pub local_shell: host::LocalShell,
+    /// Terminal cursor: block (default), bar or underline.
     #[serde(default)]
     pub cursor_style: CursorStyle,
     /// File panel filter: fuzzy, glob or regex.
@@ -351,7 +355,7 @@ impl Default for Settings {
                 },
             });
         }
-        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, layout: Layout::default(), show_hidden: false, find_mode: Default::default(), cursor_style: Default::default(), mermaid: Default::default(), follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, session: Vec::new() }
+        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, layout: Layout::default(), show_hidden: false, find_mode: Default::default(), cursor_style: Default::default(), local_shell: Default::default(), mermaid: Default::default(), follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, session: Vec::new() }
     }
 }
 
@@ -1077,8 +1081,13 @@ impl App {
     fn start_pty(&self, pane: &mut Pane) {
         let prof = self.profile(&pane.host);
         let secret = if prof.is_local() { None } else { self.secrets.get(&pane.host) };
-        let argv = prof.pty_argv(pane.initial_cwd.as_deref(), secret.is_some());
-        let env = secret.map(|s| host::askpass_env(s)).unwrap_or_default();
+        let mut argv = prof.pty_argv(pane.initial_cwd.as_deref(), secret.is_some());
+        let mut env = secret.map(|s| host::askpass_env(s)).unwrap_or_default();
+        if prof.is_local() {
+            let (a, e) = host::local_shell(self.settings.local_shell);
+            argv = a;
+            env.extend(e);
+        }
         let local_cwd = if prof.is_local() { pane.initial_cwd.clone() } else { None };
         let shown: Vec<String> =
             argv.iter().map(|a| if a.len() > 120 { format!("{}…({} bytes)", &a[..60], a.len()) } else { a.clone() }).collect();

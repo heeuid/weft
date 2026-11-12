@@ -1024,7 +1024,13 @@ impl Term {
         if path.len() >= 3 && path.as_bytes()[0] == b'/' && path.as_bytes()[2] == b':' {
             path.remove(0);
         }
-        self.cwd_host = Some(host.to_string());
+        self.set_cwd(Some(host.to_string()), path);
+    }
+
+    fn set_cwd(&mut self, host: Option<String>, path: String) {
+        if host.is_some() {
+            self.cwd_host = host;
+        }
         if self.cwd.as_deref() != Some(path.as_str()) {
             self.cwd = Some(path);
             self.events.push(TermEvent::CwdChanged);
@@ -1541,11 +1547,18 @@ impl Perform for Term {
                     self.events.push(TermEvent::Weft { anchor: self.cursor_abs(), value });
                 }
             }
-            b"9" => {
-                if arg(1) != "4" {
-                    self.events.push(TermEvent::Notify(rest()));
+            b"9" => match arg(1).as_str() {
+                // ConEmu / Windows Terminal: the current directory (cmd, oh-my-posh).
+                "9" => {
+                    let path = arg(2).trim().trim_matches('"').replace('\\', "/");
+                    if !path.is_empty() {
+                        self.set_cwd(None, path);
+                    }
                 }
-            }
+                // Progress: not shown.
+                "4" => {}
+                _ => self.events.push(TermEvent::Notify(rest())),
+            },
             b"777" => {
                 if arg(1) == "notify" {
                     let msg = params[2..].iter().map(|p| String::from_utf8_lossy(p)).collect::<Vec<_>>().join(": ");
@@ -1724,6 +1737,14 @@ mod tests {
         let (anchor, v) = ev.unwrap();
         assert_eq!(anchor, 1);
         assert_eq!(v["msg"], "한글");
+    }
+
+    #[test]
+    fn osc_9_9_is_the_current_directory() {
+        let mut t = Term::new(40, 3);
+        run(&mut t, "\x1b]9;9;C:\\Users\\me\x1b\\\x1b]9;9;\"D:\\a b\"\x07");
+        assert_eq!(t.cwd.as_deref(), Some("D:/a b"));
+        assert!(t.events.iter().all(|e| !matches!(e, TermEvent::Notify(_))), "not a notification");
     }
 
     #[test]

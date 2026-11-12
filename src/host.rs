@@ -139,7 +139,7 @@ impl Profile {
     /// from weft's askpass (see `askpass_env`) instead of the terminal.
     pub fn pty_argv(&self, cwd: Option<&str>, password: bool) -> Vec<String> {
         match &self.kind {
-            HostKind::Local => local_shell_argv(),
+            HostKind::Local => local_shell(LocalShell::Auto).0,
             HostKind::Ssh { target, args } => {
                 let mut v = vec!["ssh".to_string(), "-tt".to_string()];
                 if password {
@@ -239,6 +239,61 @@ pub fn askpass_answer(prompt: &str, secret: Option<String>) -> AskpassAnswer {
 
 pub fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// The local shell for new panes (settings "local_shell").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LocalShell {
+    /// pwsh if installed, else Windows PowerShell.
+    #[default]
+    Auto,
+    Pwsh,
+    Powershell,
+    Cmd,
+    Nu,
+}
+
+impl LocalShell {
+    pub fn label(self) -> &'static str {
+        match self {
+            LocalShell::Auto => "auto (pwsh, else Windows PowerShell)",
+            LocalShell::Pwsh => "PowerShell 7 (pwsh)",
+            LocalShell::Powershell => "Windows PowerShell 5.1",
+            LocalShell::Cmd => "cmd",
+            LocalShell::Nu => "nushell",
+        }
+    }
+}
+
+/// cmd has no hooks, but its PROMPT can carry escapes ($E): mark the prompt
+/// (133 A/B), end the previous command (a bare 133;D: cmd can't report exit
+/// codes) and report the directory ($P) as OSC 9;9. Enter starts a command.
+fn cmd_prompt() -> String {
+    let user = std::env::var("PROMPT").ok().filter(|p| !p.is_empty() && !p.contains("133;")).unwrap_or_else(|| "$P$G".into());
+    format!("$E]133;D$E\\$E]9;9;$P$E\\$E]133;A$E\\{user}$E]133;B$E\\")
+}
+
+/// argv and extra environment for a local pane's shell.
+pub fn local_shell(choice: LocalShell) -> (Vec<String>, Vec<(String, String)>) {
+    if !cfg!(windows) {
+        return (vec![std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into()), "-i".into()], Vec::new());
+    }
+    match choice {
+        LocalShell::Cmd => (vec!["cmd.exe".into(), "/k".into(), "chcp 65001 >nul".into()], vec![("PROMPT".into(), cmd_prompt())]),
+        LocalShell::Nu if which("nu.exe").is_some() => (
+            vec!["nu.exe".into(), "-e".into(), "try { $env.config.shell_integration.osc133 = true; $env.config.shell_integration.osc7 = true } catch { $env.config.shell_integration = true }".into()],
+            Vec::new(),
+        ),
+        LocalShell::Powershell => (powershell_argv("powershell.exe"), Vec::new()),
+        _ => (local_shell_argv(), Vec::new()),
+    }
+}
+
+fn powershell_argv(exe: &str) -> Vec<String> {
+    let utf16: Vec<u8> = PWSH_PS1.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+    let encoded = base64::engine::general_purpose::STANDARD.encode(utf16);
+    vec![exe.into(), "-NoLogo".into(), "-NoExit".into(), "-EncodedCommand".into(), encoded]
 }
 
 fn local_shell_argv() -> Vec<String> {
@@ -1078,6 +1133,54 @@ mod loopback {
         if integrated {
             assert!(t.cwd.is_some(), "{shell}: OSC 7 cwd");
         }
+    }
+
+    /// A local pane with each local shell choice: marks, cwd, exit codes
+    /// where the shell has them.
+    fn local_shell_check(choice: LocalShell, cmd: &str, exit: Option<i32>) {
+        let (argv, env) = local_shell(choice);
+        if which(&argv[0]).is_none() && !Path::new(&argv[0]).is_file() {
+            println!("skip: {} not installed", argv[0]);
+            return;
+        }
+        let mut pty = Pty::spawn(&argv, Some(env!("CARGO_MANIFEST_DIR")), &env, 100, 30, || {}).unwrap();
+        let mut t = Term::new(100, 30);
+        let mut p = vte::Parser::new();
+        // nushell reports the directory only from its first command on.
+        assert!(pump(&mut pty, &mut t, &mut p, |t| !t.blocks.is_empty(), 30), "{choice:?}: prompt: {:?}", screen(&t));
+        assert!(t.integrated, "{choice:?}");
+        pump(&mut pty, &mut t, &mut p, |_| false, 1);
+        pty.write(cmd.as_bytes());
+        pump(&mut pty, &mut t, &mut p, |t| t.screen[t.cy].text().contains(cmd), 5);
+        t.user_enter();
+        pty.write(b"\r");
+        let done = pump(&mut pty, &mut t, &mut p, |t| t.blocks.iter().any(|b| b.command.contains(cmd) && b.state() == BlockState::Done), 15);
+        assert!(done, "{choice:?}: {:?} {:?}", t.blocks.iter().map(|b| (&b.command, b.exit)).collect::<Vec<_>>(), screen(&t));
+        let b = t.blocks.iter().find(|b| b.command.contains(cmd)).unwrap();
+        assert_eq!(b.exit, exit, "{choice:?}");
+        assert_eq!(t.block_output(b).trim(), "weft-ok", "{choice:?}");
+        assert!(t.cwd.as_deref().map(|c| c.ends_with("weft-initial")).unwrap_or(false), "{choice:?}: cwd {:?}", t.cwd);
+    }
+
+    #[test]
+    #[ignore]
+    #[cfg(windows)]
+    fn local_cmd() {
+        local_shell_check(LocalShell::Cmd, "echo weft-ok", None);
+    }
+
+    #[test]
+    #[ignore]
+    #[cfg(windows)]
+    fn local_nushell() {
+        local_shell_check(LocalShell::Nu, "echo weft-ok", Some(0));
+    }
+
+    #[test]
+    #[ignore]
+    #[cfg(windows)]
+    fn local_windows_powershell() {
+        local_shell_check(LocalShell::Powershell, "Write-Output weft-ok", Some(0));
     }
 
     #[test]
