@@ -407,7 +407,8 @@ fn sel_ends(t: &Term, s: Selection) -> ((u64, usize), (u64, usize)) {
         }
         SelMode::Line => {
             a.1 = 0;
-            b.1 = row_at(t, b.0).map(|r| r.cells.len()).unwrap_or(1).saturating_sub(1);
+            // The full width: rows in scrollback are stored without trailing blanks.
+            b.1 = t.cols.saturating_sub(1);
         }
         SelMode::Block => {
             a.1 = s.a.1.min(s.b.1);

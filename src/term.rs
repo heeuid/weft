@@ -565,7 +565,17 @@ impl Term {
         }
     }
 
-    fn push_history(&mut self, row: Row) {
+    fn push_history(&mut self, mut row: Row) {
+        // Trailing plain blanks take no room in scrollback: every row held the
+        // full width (16 bytes a column), so 20k short lines at 200 columns
+        // cost ~60 MB. A soft-wrapped row keeps them (those spaces are text),
+        // and so does a blank with an attribute (inverse, underline) that shows.
+        if !row.wrapped {
+            let plain = Cell::blank(Attr::default());
+            let keep = row.cells.iter().rposition(|c| *c != plain).map_or(0, |i| i + 1);
+            row.cells.truncate(keep);
+            row.cells.shrink_to_fit();
+        }
         self.history.push_back(row);
         while self.history.len() > self.max_history {
             self.history.pop_front();
@@ -1727,6 +1737,24 @@ mod tests {
         assert_eq!(t.screen[0].text(), "xy");
         assert_eq!(t.screen[1].text(), "z");
         assert_eq!(t.lines_text(0, 4), "abcdefg\nxy\nz");
+    }
+
+    #[test]
+    fn scrollback_keeps_no_trailing_blanks() {
+        let mut t = Term::new(200, 3);
+        run(&mut t, "short\r\n\x1b[7m \x1b[0m\r\n\r\nabc\r\nd\r\ne\r\nf");
+        let lens: Vec<usize> = t.history.iter().map(|r| r.cells.len()).collect();
+        // "short", an inverse blank (shows), an empty line, "abc".
+        assert_eq!(lens, [5, 1, 0, 3]);
+        // A soft-wrapped row keeps its spaces: they are text.
+        let mut w = Term::new(4, 2);
+        run(&mut w, "ab  cd\r\nx\r\ny");
+        assert_eq!(w.history[0].cells.len(), 4);
+        assert_eq!(w.lines_text(0, 2), "ab  cd");
+        // Still whole after a resize rewraps it all.
+        t.resize(10, 3);
+        t.resize(200, 3);
+        assert_eq!(t.lines_text(0, 7), "short\n\n\nabc\nd\ne\nf");
     }
 
     #[test]
