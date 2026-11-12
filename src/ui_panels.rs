@@ -62,6 +62,7 @@ pub(crate) enum Cmd {
     AgentLog,
     NewMemo,
     Memos,
+    OpenMemo,
     Fonts,
     History,
     Records,
@@ -103,6 +104,7 @@ const COMMANDS: &[(Cmd, &str, &str, &[&str])] = &[
     (Cmd::Sidebar, "side_panel", "Toggle side panel", &["Ctrl+Shift+B"]),
     (Cmd::Editor, "editor", "Toggle editor", &["Ctrl+Shift+J"]),
     (Cmd::NewMemo, "new_memo", "New memo (markdown, saved automatically)", &["Ctrl+Shift+M"]),
+    (Cmd::OpenMemo, "open_memo", "Open memo… (list, search)", &[]),
     (Cmd::Memos, "memos", "Show memos in Files", &[]),
     (Cmd::Hidden, "hidden_files", "Toggle hidden files", &[]),
     (Cmd::Reconnect, "reconnect", "Reconnect agent for this host", &[]),
@@ -256,6 +258,10 @@ impl App {
                 self.open_file("local", &p, 1);
             }
             Cmd::NewMemo => self.new_memo(),
+            Cmd::OpenMemo => {
+                self.memo_query.clear();
+                self.memo_picker = true;
+            }
             Cmd::Fonts => self.open_font_menu(),
             Cmd::History => {
                 self.settings.sidebar = true;
@@ -1390,6 +1396,80 @@ impl App {
         }
     }
 
+    /// The memo list (editor tab bar, palette, empty editor): newest first,
+    /// filtered by `query`; returns what was clicked.
+    fn memo_rows(&mut self, ui: &mut Ui, max: usize, search: bool) -> Option<MemoPick> {
+        let mut pick = None;
+        if search {
+            ui.add(TextEdit::singleline(&mut self.memo_query).hint_text("search memos…").desired_width(f32::INFINITY));
+        }
+        let q = self.memo_query.to_lowercase();
+        let memos: Vec<MemoInfo> = self.memos().into_iter().filter(|m| q.is_empty() || m.title.to_lowercase().contains(&q) || m.preview.to_lowercase().contains(&q)).take(max).collect();
+        if memos.is_empty() {
+            let msg = if q.is_empty() { "no memos yet" } else { "no memo matches" };
+            ui.label(RichText::new(msg).size(12.0).color(theme::text_faint()));
+        }
+        for m in memos {
+            let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width().max(260.0), 38.0), Sense::click());
+            if resp.hovered() {
+                ui.painter().rect_filled(rect, CornerRadius::same(5), theme::bg_hover());
+            }
+            ui.painter().text(rect.min + vec2(8.0, 4.0), Align2::LEFT_TOP, &m.title, FontId::proportional(13.0), theme::text());
+            let sub = format!("{} · {}", crate::records::local_time(m.modified), m.preview);
+            let g = ui.painter().layout_no_wrap(sub, FontId::proportional(11.0), theme::text_faint());
+            ui.painter().with_clip_rect(rect.shrink2(vec2(8.0, 0.0))).galley(rect.min + vec2(8.0, 21.0), g, theme::text_faint());
+            let resp = resp.on_hover_text("click: open · right-click: delete");
+            if resp.clicked() {
+                pick = Some(MemoPick::Open(m.path.clone()));
+            }
+            resp.context_menu(|ui| {
+                if ui.button(RichText::new("Delete this memo").color(theme::error())).clicked() {
+                    pick = Some(MemoPick::Delete(m.path.clone()));
+                    ui.close_menu();
+                }
+            });
+        }
+        pick
+    }
+
+    fn apply_memo_pick(&mut self, pick: MemoPick) {
+        match pick {
+            MemoPick::Open(p) => {
+                self.memo_picker = false;
+                self.open_file("local", &p, 1);
+            }
+            MemoPick::Delete(p) => self.delete_memo_file(&p),
+        }
+    }
+
+    /// "Open memo…" from the palette: the memo list in a window.
+    pub fn ui_memo_picker(&mut self, ctx: &egui::Context) {
+        if !self.memo_picker {
+            return;
+        }
+        let mut open = true;
+        let mut pick = None;
+        let mut new = false;
+        egui::Window::new("Memos").open(&mut open).collapsible(false).resizable(true).default_size(vec2(380.0, 460.0)).show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                if ui.button("New memo").on_hover_text("Ctrl+Shift+M").clicked() {
+                    new = true;
+                }
+                ui.label(RichText::new("saved in data/memos").size(11.0).color(theme::text_faint()));
+            });
+            ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                pick = self.memo_rows(ui, usize::MAX, true);
+            });
+        });
+        self.memo_picker = open && !new;
+        if new {
+            self.new_memo();
+        }
+        if let Some(p) = pick {
+            self.apply_memo_pick(p);
+        }
+    }
+
     pub fn open_records_window(&mut self) {
         let root = self.data.root.clone();
         self.records_window = Some(crate::records::Item::ALL.iter().map(|&i| (i, i.size(&root))).collect());
@@ -2071,6 +2151,14 @@ impl App {
                     self.new_memo();
                 }
             });
+            if !self.memos().is_empty() {
+                ui.add_space(14.0);
+                ui.label(RichText::new("Recent memos").size(12.0).color(theme::text_dim()));
+                self.memo_query.clear();
+                if let Some(p) = self.memo_rows(ui, 6, false) {
+                    self.apply_memo_pick(p);
+                }
+            }
             return;
         }
         self.editor.active = self.editor.active.min(self.editor.files.len() - 1);
@@ -2080,6 +2168,21 @@ impl App {
         self.dock_grip(ui, Region::Editor);
         if icons::button(ui, Icon::Plus, "new memo — a markdown note, saved automatically (Ctrl+Shift+M)").clicked() {
             self.actions.push(Action::NewMemo);
+        }
+        let mut pick = None;
+        ui.menu_button(RichText::new("Memos").size(12.0).color(theme::text_dim()), |ui| {
+            ui.set_width(340.0);
+            ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                pick = self.memo_rows(ui, usize::MAX, true);
+            });
+            if pick.is_some() {
+                ui.close_menu();
+            }
+        })
+        .response
+        .on_hover_text("open a memo (Open memo… in the palette)");
+        if let Some(p) = pick {
+            self.apply_memo_pick(p);
         }
         let memo_dir = format!("{}/", self.memo_dir());
         // A thin scrollbar of its own below the tabs: egui's default floats
@@ -3094,7 +3197,7 @@ fn group(c: Cmd) -> &'static str {
         | Cmd::Reconnect
         | Cmd::CursorStyle
         | Cmd::LocalShell(_) => GROUPS[1],
-        Cmd::Sidebar | Cmd::Editor | Cmd::Hidden | Cmd::History | Cmd::NewMemo | Cmd::Memos => GROUPS[2],
+        Cmd::Sidebar | Cmd::Editor | Cmd::Hidden | Cmd::History | Cmd::NewMemo | Cmd::Memos | Cmd::OpenMemo => GROUPS[2],
         Cmd::FontUp
         | Cmd::FontDown
         | Cmd::FontReset
@@ -3135,17 +3238,6 @@ fn secs_input(ui: &mut Ui, id: &str, secs: &mut u64, zero: &str) -> bool {
         *secs = v * UNITS[u].1;
     }
     changed
-}
-
-/// A memo's tab name: its first line without markdown marks.
-fn memo_title(text: &str) -> String {
-    const MAX: usize = 24;
-    let line = text.lines().map(|l| l.trim_start_matches(|c: char| "#>-*+".contains(c) || c.is_whitespace()).trim_end()).find(|l| !l.is_empty()).unwrap_or("");
-    if line.is_empty() {
-        return "new memo".into();
-    }
-    let short: String = line.chars().take(MAX).collect();
-    if line.chars().count() > MAX { format!("{short}…") } else { short }
 }
 
 fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size: f32, breaks: bool, renderer: &crate::mermaid::Renderer, readonly: bool, goto: Option<usize>, cache_dir: &std::path::Path) -> bool {
@@ -3336,7 +3428,8 @@ fn close_menu(ui: &mut Ui, at: usize, n: usize) -> Option<CloseWhich> {
 
 #[cfg(test)]
 mod tests {
-    use super::{history_matches, memo_title, FindMode};
+    use super::{history_matches, FindMode};
+    use crate::app::memo_title;
     use crate::records::Record;
 
     #[test]

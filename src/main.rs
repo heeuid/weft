@@ -85,6 +85,7 @@ impl eframe::App for WeftApp {
         app.ui_font_menu(ctx);
         app.ui_records_window(ctx);
         app.ui_help(ctx);
+        app.ui_memo_picker(ctx);
         app.ui_keys_window(ctx);
         app.ui_toasts(ctx);
         app.ui_dock_drop(ctx);

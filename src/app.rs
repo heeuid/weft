@@ -794,6 +794,56 @@ pub struct KeysWindow {
     pub capture: Option<&'static str>,
 }
 
+/// A memo on disk, for the memo list.
+#[derive(Clone)]
+pub struct MemoInfo {
+    pub path: String,
+    pub title: String,
+    /// The line after the title.
+    pub preview: String,
+    /// Last change, unix seconds.
+    pub modified: f64,
+}
+
+/// What was clicked in the memo list.
+pub enum MemoPick {
+    Open(String),
+    Delete(String),
+}
+
+/// A memo's tab name: its first line without markdown marks.
+pub fn memo_title(text: &str) -> String {
+    const MAX: usize = 24;
+    let line = text.lines().map(|l| l.trim_start_matches(|c: char| "#>-*+".contains(c) || c.is_whitespace()).trim_end()).find(|l| !l.is_empty()).unwrap_or("");
+    if line.is_empty() {
+        return "new memo".into();
+    }
+    let short: String = line.chars().take(MAX).collect();
+    if line.chars().count() > MAX { format!("{short}…") } else { short }
+}
+
+/// The memos in `dir` (*.md), newest first.
+pub fn read_memos(dir: &str) -> Vec<MemoInfo> {
+    let mut list: Vec<MemoInfo> = std::fs::read_dir(dir)
+        .map(|rd| {
+            rd.flatten()
+                .filter(|e| e.file_name().to_string_lossy().ends_with(".md"))
+                .filter_map(|e| {
+                    let path = e.path().display().to_string().replace('\\', "/");
+                    let modified = e.metadata().ok()?.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs_f64();
+                    let text = std::fs::read_to_string(&path).unwrap_or_default();
+                    let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty());
+                    let title = memo_title(lines.next().unwrap_or(""));
+                    let preview: String = lines.next().unwrap_or("").chars().take(80).collect();
+                    Some(MemoInfo { path, title, preview, modified })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    list.sort_by(|a, b| b.modified.total_cmp(&a.modified));
+    list
+}
+
 /// The help window: which tab, and the search.
 pub struct HelpState {
     pub features: bool,
@@ -951,6 +1001,12 @@ pub struct App {
     pub find_result: Option<FindResult>,
     /// The help window, while open.
     pub help: Option<HelpState>,
+    /// Memos on disk, read at most once a second.
+    pub memo_cache: Option<(Instant, Vec<MemoInfo>)>,
+    /// Search in the memo list.
+    pub memo_query: String,
+    /// The "Open memo…" window is open.
+    pub memo_picker: bool,
     /// Keys in force per command (see rebuild_keys).
     pub keymap: Vec<(crate::ui_panels::Cmd, Vec<crate::keys::Shortcut>)>,
     /// The keyboard shortcuts window, while open.
@@ -1090,6 +1146,9 @@ impl App {
             memo_edited: None,
             font_menu: None,
             help: None,
+            memo_cache: None,
+            memo_query: String::new(),
+            memo_picker: false,
             keymap: Vec::new(),
             keys_window: None,
         };
@@ -1651,6 +1710,30 @@ impl App {
         if self.dir_cache.remove(&key).is_some() {
             self.list_dir(&key.0, &key.1);
         }
+    }
+
+    /// The memos on disk, newest first (re-read at most once a second).
+    pub fn memos(&mut self) -> Vec<MemoInfo> {
+        if let Some((at, list)) = &self.memo_cache {
+            if at.elapsed() < Duration::from_secs(1) {
+                return list.clone();
+            }
+        }
+        let list = read_memos(&self.memo_dir());
+        self.memo_cache = Some((Instant::now(), list.clone()));
+        list
+    }
+
+    /// Delete a memo file, closing its tab if open.
+    pub fn delete_memo_file(&mut self, path: &str) {
+        if let Some(i) = self.editor.files.iter().position(|f| f.host == "local" && f.path == path) {
+            self.delete_memo(i);
+        } else {
+            let _ = std::fs::remove_file(path);
+            self.forget_memo_listing();
+            self.toast(format!("deleted {}", path.rsplit('/').next().unwrap_or(path)), ToastKind::Info);
+        }
+        self.memo_cache = None;
     }
 
     /// Delete a memo's file and close its tab.
@@ -2316,6 +2399,22 @@ fn parse_widget(v: &Value) -> Option<WidgetKind> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn memo_list_newest_first_with_titles() {
+        let d = std::env::temp_dir().join(format!("weft-memos-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("memo-1.md"), "# 회의 메모\n\n결정: 금요일 배포\n").unwrap();
+        std::thread::sleep(Duration::from_millis(30));
+        std::fs::write(d.join("memo-2.md"), "- [ ] buy milk\n- [ ] eggs\n").unwrap();
+        std::fs::write(d.join("notes.txt"), "not a memo").unwrap();
+        let list = read_memos(&d.display().to_string());
+        let got: Vec<(&str, &str)> = list.iter().map(|m| (m.title.as_str(), m.preview.as_str())).collect();
+        assert_eq!(got, [("[ ] buy milk", "- [ ] eggs"), ("회의 메모", "결정: 금요일 배포")]);
+        assert!(list[0].path.ends_with("memo-2.md") && list[0].modified >= list[1].modified);
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     #[test]
     fn paths() {
