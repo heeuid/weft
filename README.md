@@ -42,7 +42,7 @@ TUI 그리드(날실) 사이에 GUI(씨실)를 엮어 넣은 터미널. Rust (`e
 | **스크롤백 검색** (`Ctrl+Shift+F`) | 로컬 검색, 일치 하이라이트, Enter/Shift+Enter 이동. |
 | **Ctrl+클릭** | 경로(`src/main.rs:12:3` 포함) → 로컬 에디터에서 해당 줄, URL → 브라우저. Ctrl을 누르면 밑줄 미리보기. |
 | **TUI 앱** | 대체 화면(vim/htop/less)은 순수 TUI로 표시, 마우스 리포팅(SGR 1006), 대체 화면 휠 → 화살표. |
-| **마우스를 쓰는 앱** (nvim `mouse=a`, htop…) | 드래그·우클릭은 앱으로 갑니다(nvim: 드래그 = visual 모드, 우클릭 = nvim 메뉴). **Shift+드래그** = weft 선택(Ctrl+C로 복사), **Shift+우클릭** = weft 메뉴. 앱이 마우스를 안 쓰면 그냥 드래그/우클릭이 weft 것. |
+| **마우스를 쓰는 앱** (nvim `mouse=a`, htop…) | 드래그 = weft 선택(Ctrl+C로 복사), 우클릭 = weft 메뉴. 그냥 클릭·휠·가운데 버튼은 앱으로(nvim 커서 이동, 스크롤). **Shift+드래그 / Shift+우클릭** = 앱으로(nvim visual 모드, nvim 메뉴). 앱이 마우스를 안 쓰면 Shift를 눌러도 weft 것. |
 | **앱에서 복사** | OSC 52 클립보드 쓰기 지원을 DA1(`52`)과 XTGETTCAP(`Ms`)로 알립니다. ssh 너머 Neovim 0.10+는 이를 보고 `"+y`(또는 `clipboard=unnamedplus`의 `y`)를 이 컴퓨터 클립보드로 보냅니다. |
 | **메모** (`Ctrl+Shift+M`) | 에디터 탭 옆 `+`. `data/memos/memo-N.md`에 마크다운으로, 자동 저장. 탭 이름은 첫 줄, 빈 채로 닫으면 삭제. |
 | **폰트** (탭 줄 `Aa`) | 터미널 폰트와 아이콘 폰트를 고릅니다. 내장 Nerd Font 3종(JetBrains Mono 기본, CaskaydiaCove, Hack, 라이선스는 `fonts/`), `data/fonts/`에 넣은 폰트, 설치된 폰트, 또는 경로. 한글은 맑은 고딕으로 보충. |
