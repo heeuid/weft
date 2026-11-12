@@ -106,6 +106,37 @@ fn confirm_host_key(text: &str) -> bool {
     unsafe { MessageBoxW(std::ptr::null_mut(), t.as_ptr(), c.as_ptr(), 0x4 | 0x20 | 0x10000 | 0x40000) == 6 }
 }
 
+/// Started from a terminal (`cargo run --release`, `weft.exe` in a shell),
+/// weft inherits that terminal's console handles. A window app never uses
+/// them, but while any process holds them the terminal can't close its tab
+/// (it waits for them), and the processes weft spawns would inherit them
+/// too. Let go of them at once.
+#[cfg(all(windows, not(debug_assertions)))]
+fn release_console() {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetStdHandle(which: u32) -> isize;
+        fn SetStdHandle(which: u32, handle: isize) -> i32;
+        fn CloseHandle(handle: isize) -> i32;
+        fn FreeConsole() -> i32;
+    }
+    // STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE
+    let which = [-10i32 as u32, -11i32 as u32, -12i32 as u32];
+    unsafe {
+        let mut seen: Vec<isize> = Vec::new();
+        for w in which {
+            let h = GetStdHandle(w);
+            // 0: none; -1: INVALID_HANDLE_VALUE. stdout and stderr may share one.
+            if h != 0 && h != -1 && !seen.contains(&h) {
+                seen.push(h);
+                CloseHandle(h);
+            }
+            SetStdHandle(w, 0);
+        }
+        FreeConsole();
+    }
+}
+
 #[cfg(not(windows))]
 fn confirm_host_key(_text: &str) -> bool {
     false
@@ -120,6 +151,8 @@ fn main() -> eframe::Result<()> {
     if as_askpass {
         std::process::exit(askpass(args.last().map(|s| s.as_str()).unwrap_or("")));
     }
+    #[cfg(all(windows, not(debug_assertions)))]
+    release_console();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("weft")
