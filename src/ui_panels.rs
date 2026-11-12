@@ -27,7 +27,6 @@ pub fn host_color(host: &str) -> Color32 {
 
 #[derive(Clone, Copy, PartialEq)]
 enum Cmd {
-    OscGuard,
     CursorStyle,
     MarkdownBreaks,
     NewTab,
@@ -86,7 +85,6 @@ const COMMANDS: &[(Cmd, &str, &str)] = &[
     (Cmd::UiReset, "UI scale 100%", ""),
     (Cmd::ThemePicker, "Theme…", ""),
     (Cmd::ThemeSystem, "Theme: follow system (dark/light)", ""),
-    (Cmd::OscGuard, "Security: OSC from program output on/off (7/9/52/133/7777)", ""),
     (Cmd::CursorStyle, "Terminal cursor: block / bar / underline", ""),
     (Cmd::MarkdownBreaks, "Markdown: toggle line breaks (GitHub PR style / CommonMark)", ""),
     (Cmd::Settings, "Open settings.json", ""),
@@ -179,16 +177,6 @@ impl App {
             Cmd::UiReset => self.settings.ui_scale = 1.0,
             Cmd::Theme(i) => self.pick_theme(i),
             Cmd::ThemeSystem => self.settings.theme = "system".into(),
-            Cmd::OscGuard => {
-                self.settings.osc_guard = !self.settings.osc_guard;
-                let on = self.settings.osc_guard;
-                for p in self.panes.values_mut() {
-                    p.term.osc_token = on.then(|| p.osc_token.clone());
-                }
-                let msg = if on { "OSC guard on: only weft's own sequences (and wosc) are accepted" } else { "OSC guard off: program output may set the clipboard, cwd, notifications" };
-                self.toast(msg.to_string(), crate::app::ToastKind::Info);
-                self.save_settings();
-            }
             Cmd::CursorStyle => {
                 self.settings.cursor_style = match self.settings.cursor_style {
                     CursorStyle::Block => CursorStyle::Bar,

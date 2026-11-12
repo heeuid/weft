@@ -26,7 +26,7 @@ pub const AGENT_PY: &str = include_str!("../remote/agent.py");
 /// Pane bootstrap (one logical line, run via `eval`): pick a base64 decoder
 /// from POSIX tools (or python), then start bash with the gzipped rc fed
 /// through process substitution.  Falls back to a plain `sh -i` without bash.
-const SHELL_BOOT: &str = r#"D="base64 -d"; printf QQ== | $D >/dev/null 2>&1 || D="base64 -D"; printf QQ== | $D >/dev/null 2>&1 || D="python3 -m base64 -d"; export W D WEFT_CWD WEFT_TOKEN; if command -v bash >/dev/null 2>&1; then exec bash -c 'z() { if command -v gzip >/dev/null 2>&1; then gzip -dc; else python3 -c "import sys,gzip;sys.stdout.buffer.write(gzip.decompress(sys.stdin.buffer.read()))"; fi; }; exec bash --rcfile <(printf %s "$W" | $D | z) -i'; fi; exec sh -i"#;
+const SHELL_BOOT: &str = r#"D="base64 -d"; printf QQ== | $D >/dev/null 2>&1 || D="base64 -D"; printf QQ== | $D >/dev/null 2>&1 || D="python3 -m base64 -d"; export W D WEFT_CWD; if command -v bash >/dev/null 2>&1; then exec bash -c 'z() { if command -v gzip >/dev/null 2>&1; then gzip -dc; else python3 -c "import sys,gzip;sys.stdout.buffer.write(gzip.decompress(sys.stdin.buffer.read()))"; fi; }; exec bash --rcfile <(printf %s "$W" | $D | z) -i'; fi; exec sh -i"#;
 
 /// Windows ConPTY truncates command lines around 8 KB, so the rc travels gzipped.
 fn gz_b64(s: &str) -> String {
@@ -57,26 +57,8 @@ fn posix_wrap(vars: &[(&str, String)], script: &str) -> String {
     s
 }
 
-/// `token`: the pane's OSC token (hex), handed to the rc (see term.rs `osc_token`).
-pub fn remote_shell_command(cwd: Option<&str>, token: &str) -> String {
-    posix_wrap(&[("W", gz_b64(RC_SH)), ("WEFT_CWD", cwd.map(b64).unwrap_or_default()), ("WEFT_TOKEN", token.to_string())], SHELL_BOOT)
-}
-
-/// A random token for a pane's OSC guard (not cryptographic: it only has to
-/// be unknowable to whoever wrote a file or a program's output).
-pub fn new_osc_token() -> String {
-    use std::hash::{BuildHasher, Hasher};
-    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let mut out = String::new();
-    for i in 0..2u64 {
-        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
-        h.write_u64(n);
-        h.write_u64(i);
-        h.write_u128(std::time::SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
-        out.push_str(&format!("{:016x}", h.finish()));
-    }
-    out
+pub fn remote_shell_command(cwd: Option<&str>) -> String {
+    posix_wrap(&[("W", gz_b64(RC_SH)), ("WEFT_CWD", cwd.map(b64).unwrap_or_default())], SHELL_BOOT)
 }
 
 pub fn agent_command() -> String {
@@ -121,8 +103,7 @@ impl Profile {
 
     /// argv for an interactive pane.  With `password` the ssh password comes
     /// from weft's askpass (see `askpass_env`) instead of the terminal.
-    /// `token`: the pane's OSC token (local panes get it through the environment).
-    pub fn pty_argv(&self, cwd: Option<&str>, password: bool, token: &str) -> Vec<String> {
+    pub fn pty_argv(&self, cwd: Option<&str>, password: bool) -> Vec<String> {
         match &self.kind {
             HostKind::Local => local_shell_argv(),
             HostKind::Ssh { target, args } => {
@@ -132,12 +113,12 @@ impl Profile {
                 }
                 v.extend(args.iter().cloned());
                 v.push(target.clone());
-                v.push(remote_shell_command(cwd, token));
+                v.push(remote_shell_command(cwd));
                 v
             }
             HostKind::Custom { pty, .. } => {
                 let mut v = pty.clone();
-                v.push(remote_shell_command(cwd, token));
+                v.push(remote_shell_command(cwd));
                 v
             }
         }
@@ -231,34 +212,24 @@ fn local_shell_argv() -> Vec<String> {
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 $env:WEFT = '1'
-# weft's OSC token: a variable only, removed from the environment so programs
-# and files can't produce sequences weft would trust.
-$global:__weft_tok = $env:WEFT_TOKEN
-Remove-Item Env:WEFT_TOKEN -ErrorAction SilentlyContinue
 $global:__weft_prompt = $function:prompt
 function global:prompt {
     $ok = $global:?
-    $e = [char]27; $b = [char]7; $t = "weft=$global:__weft_tok"
+    $e = [char]27; $b = [char]7
     $code = if ($ok) { 0 } elseif ($global:LASTEXITCODE) { $global:LASTEXITCODE } else { 1 }
     $loc = Get-Location
     $osc7 = ''
-    if ($loc.Provider.Name -eq 'FileSystem') { $osc7 = "$e]7;$t;file://$env:COMPUTERNAME/" + ($loc.ProviderPath -replace '\\', '/') + $b }
+    if ($loc.Provider.Name -eq 'FileSystem') { $osc7 = "$e]7;file://$env:COMPUTERNAME/" + ($loc.ProviderPath -replace '\\', '/') + $b }
     # End the block now: the user's own prompt (starship, oh-my-posh) can take
     # 50-150 ms and must not count as the command's duration.
-    [Console]::Write("$e]133;$t;D;$code$b$osc7")
-    "$e]133;$t;A$b" + (& $global:__weft_prompt) + "$e]133;$t;B$b"
+    [Console]::Write("$e]133;D;$code$b$osc7")
+    "$e]133;A$b" + (& $global:__weft_prompt) + "$e]133;B$b"
 }
 if (Get-Module PSReadLine) {
     Set-PSReadLineKeyHandler -Key Enter -ScriptBlock {
         [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()
-        [Console]::Write("$([char]27)]133;weft=$global:__weft_tok;C$([char]7)")
+        [Console]::Write("$([char]27)]133;C$([char]7)")
     }
-}
-# wosc CODE [ARG...] : send an OSC sequence weft accepts (args joined by ';')
-function global:wosc {
-    if ($args.Count -eq 0) { Write-Error 'usage: wosc CODE [ARG...]'; return }
-    $rest = if ($args.Count -gt 1) { ';' + ($args[1..($args.Count - 1)] -join ';') } else { '' }
-    [Console]::Write("$([char]27)]$($args[0]);weft=$global:__weft_tok$rest$([char]7)")
 }
 "#;
     let utf16: Vec<u8> = init.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
@@ -768,7 +739,7 @@ mod tests {
 
     #[test]
     fn bootstrap_commands_survive_any_argv_parser() {
-        for cmd in [remote_shell_command(Some("/tmp/a b"), "0123abcd"), agent_command()] {
+        for cmd in [remote_shell_command(Some("/tmp/a b")), agent_command()] {
             assert!(!cmd.contains('"') && !cmd.contains('\\'), "{cmd}");
             let inner = cmd.strip_prefix("exec sh -c '").unwrap().strip_suffix('\'').unwrap();
             assert!(!inner.contains('\''));
@@ -963,58 +934,6 @@ mod loopback {
         pty.write(b"\x03");
     }
 
-    /// The OSC guard end to end: the shell integration (prompt marks, cwd)
-    /// and `wosc` work with the pane's token; the same OSC printed by a
-    /// program is ignored; the token isn't in the shell's environment.
-    fn guard_check(argv: Vec<String>, env: &[(String, String)], tok: &str, untagged: &str, wosc: &str, show_env: &str) {
-        let mut pty = Pty::spawn(&argv, None, env, 120, 30, || {}).expect("spawn");
-        let mut t = Term::new(120, 30);
-        t.osc_token = Some(tok.to_string());
-        let mut p = vte::Parser::new();
-        assert!(pump(&mut pty, &mut t, &mut p, |t| !t.blocks.is_empty() && t.cwd.is_some(), 30), "prompt marks and cwd with the token: {:?}", screen(&t));
-        let clip = |t: &mut Term| std::mem::take(&mut t.events).into_iter().filter(|e| matches!(e, TermEvent::Clipboard(_))).count();
-        clip(&mut t);
-        pty.write(untagged.as_bytes());
-        pump(&mut pty, &mut t, &mut p, |_| false, 3);
-        assert_eq!(clip(&mut t), 0, "OSC 52 printed by a program must be ignored");
-        pty.write(wosc.as_bytes());
-        assert!(pump(&mut pty, &mut t, &mut p, |t| t.events.iter().any(|e| matches!(e, TermEvent::Clipboard(s) if s == "hi")), 10), "wosc accepted");
-        pty.write(show_env.as_bytes());
-        pump(&mut pty, &mut t, &mut p, |_| false, 3);
-        let all: String = screen(&t).join("\n");
-        assert!(!all.contains(tok), "token visible in the environment: {all}");
-    }
-
-    #[test]
-    #[ignore]
-    fn osc_guard_bash() {
-        let Some(prof) = profile() else { return };
-        let tok = new_osc_token();
-        guard_check(
-            prof.pty_argv(Some("/"), false, &tok),
-            &[],
-            &tok,
-            "printf '\\033]52;c;aGk=\\007'\r",
-            "wosc 52 c aGk=\r",
-            "env | grep -c WEFT_TOKEN; env | grep -i weft\r",
-        );
-    }
-
-    #[test]
-    #[ignore]
-    #[cfg(windows)]
-    fn osc_guard_powershell() {
-        let tok = new_osc_token();
-        guard_check(
-            local_shell_argv(),
-            &[("WEFT_TOKEN".to_string(), tok.clone())],
-            &tok,
-            "Write-Host -NoNewline \"`e]52;c;aGk=`a\"\r",
-            "wosc 52 c aGk=\r",
-            "Get-ChildItem Env: | Out-String -Width 300\r",
-        );
-    }
-
     fn screen(t: &Term) -> Vec<String> {
         (0..t.rows).map(|y| t.screen[y].text()).filter(|s| !s.is_empty()).collect()
     }
@@ -1023,7 +942,7 @@ mod loopback {
     #[ignore]
     fn shell_integration_over_in_memory_rc() {
         let Some(prof) = profile() else { return };
-        let argv = prof.pty_argv(Some("/"), false, "");
+        let argv = prof.pty_argv(Some("/"), false);
         let mut pty = Pty::spawn(&argv, None, &[], 100, 30, || {}).unwrap();
         let mut t = Term::new(100, 30);
         let mut p = vte::Parser::new();
@@ -1066,7 +985,7 @@ mod loopback {
     #[ignore]
     fn closing_a_pane_is_quick() {
         let Some(prof) = profile() else { return };
-        let mut pty = Pty::spawn(&prof.pty_argv(Some("/"), false, ""), None, &[], 80, 24, || {}).unwrap();
+        let mut pty = Pty::spawn(&prof.pty_argv(Some("/"), false), None, &[], 80, 24, || {}).unwrap();
         let mut t = Term::new(80, 24);
         let mut p = vte::Parser::new();
         assert!(pump(&mut pty, &mut t, &mut p, |t| t.at_prompt(), 20));

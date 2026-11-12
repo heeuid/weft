@@ -203,11 +203,6 @@ pub struct Term {
     next_block: u64,
     /// Bumped on every mutation; lets the UI know something changed.
     pub generation: u64,
-    /// OSC guard: when set, OSC 7/9/52/133/777/7777 count only when they carry
-    /// `weft=<token>` as their first parameter (weft's own shell integration
-    /// and w* commands); the same codes in other output (a `cat`ed file, a
-    /// remote program) are ignored. None: every OSC is accepted.
-    pub osc_token: Option<String>,
     /// Set by a reflow: (first old absolute line, new absolute line per old line).
     line_remap: Option<(u64, Vec<u64>)>,
 }
@@ -249,7 +244,6 @@ impl Term {
             blocks: Vec::new(),
             next_block: 1,
             generation: 0,
-            osc_token: None,
             line_remap: None,
         }
     }
@@ -1364,23 +1358,7 @@ impl Perform for Term {
     }
 
     fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
-        let Some(&code) = params.first() else { return };
-        // `weft=<token>` right after the code marks weft's own sequences.
-        let tagged = params.get(1).and_then(|p| p.strip_prefix(b"weft="));
-        let guarded = matches!(code, b"7" | b"9" | b"52" | b"133" | b"777" | b"7777");
-        if guarded {
-            if let Some(tok) = &self.osc_token {
-                if tagged != Some(tok.as_bytes()) {
-                    return;
-                }
-            }
-        }
-        let mut owned: Vec<&[u8]> = params.to_vec();
-        if tagged.is_some() {
-            owned.remove(1);
-        }
-        let params = &owned[..];
-        let code = &code;
+        let Some(code) = params.first() else { return };
         let arg = |i: usize| params.get(i).map(|p| String::from_utf8_lossy(p).into_owned()).unwrap_or_default();
         let rest = || {
             params[1..].iter().map(|p| String::from_utf8_lossy(p).into_owned()).collect::<Vec<_>>().join(";")
@@ -1436,43 +1414,6 @@ impl Perform for Term {
     fn hook(&mut self, _params: &Params, _intermediates: &[u8], _ignore: bool, _action: char) {}
     fn put(&mut self, _byte: u8) {}
     fn unhook(&mut self) {}
-}
-
-#[cfg(test)]
-mod osc_guard_tests {
-    use super::*;
-
-    fn feed(t: &mut Term, s: &str) {
-        let mut p = vte::Parser::new();
-        t.feed(&mut p, s.as_bytes());
-    }
-
-    #[test]
-    fn only_tagged_osc_count_when_guarded() {
-        let mut t = Term::new(80, 24);
-        t.osc_token = Some("abc123".into());
-        // A file with escape codes, e.g. `cat evil.txt`: ignored.
-        feed(&mut t, "\x1b]52;c;aGk=\x07\x1b]9;fake alert\x07\x1b]7;file://h/etc\x07\x1b]7777;eyJ0Ijoibm90aWZ5In0=\x07");
-        assert!(t.events.is_empty() && t.cwd.is_none(), "{:?}", t.events.len());
-        // Wrong token: ignored.
-        feed(&mut t, "\x1b]52;weft=nope;c;aGk=\x07");
-        assert!(t.events.is_empty());
-        // weft's own (tagged): accepted, the tag stripped.
-        feed(&mut t, "\x1b]52;weft=abc123;c;aGk=\x07\x1b]7;weft=abc123;file://h/srv\x07\x1b]133;weft=abc123;A\x07");
-        assert!(matches!(t.events.first(), Some(TermEvent::Clipboard(s)) if s == "hi"));
-        assert_eq!(t.cwd.as_deref(), Some("/srv"));
-        assert_eq!(t.blocks.len(), 1);
-        // Titles are not guarded.
-        feed(&mut t, "\x1b]0;my title\x07");
-        assert_eq!(t.title, "my title");
-    }
-
-    #[test]
-    fn guard_off_accepts_everything() {
-        let mut t = Term::new(80, 24);
-        feed(&mut t, "\x1b]52;c;aGk=\x07\x1b]52;weft=x;c;aGk=\x07");
-        assert_eq!(t.events.len(), 2, "untagged and tagged both work when the guard is off");
-    }
 }
 
 #[cfg(test)]

@@ -7,10 +7,7 @@
 
 __weft_dec=$D
 __weft_cwd=$WEFT_CWD
-# weft's OSC token: kept in a shell variable only (not exported), so programs
-# and files can't produce sequences weft would trust.
-__weft_tok=$WEFT_TOKEN
-unset W D WEFT_CWD WEFT_TOKEN
+unset W D WEFT_CWD
 
 # --rcfile replaces the normal startup files: emulate a login shell.
 if [ -f ~/.bash_profile ]; then . ~/.bash_profile
@@ -37,21 +34,7 @@ unset __p
 
 # --- low level -------------------------------------------------------------
 
-# OSC "CODE;ARGS" tagged with the token: ESC ] CODE ; weft=TOKEN ; ARGS BEL
-__weft_osc() {
-    local c=${1%%;*} r=
-    case "$1" in *';'*) r=";${1#*;}" ;; esac
-    printf '\033]%s;weft=%s%s\007' "$c" "$__weft_tok" "$r" >/dev/tty
-}
-
-# wosc CODE [ARG...] : send an OSC sequence weft accepts (args joined by ';')
-#   e.g.  wosc 9 "build done"     wosc 52 c "$(printf hi | base64)"
-wosc() {
-    [ $# -eq 0 ] && { echo "usage: wosc CODE [ARG...]" >&2; return 2; }
-    local c=$1 IFS=';'
-    shift
-    __weft_osc "$c${*:+;$*}"
-}
+__weft_osc() { printf '\033]%s\007' "$1" >/dev/tty; }
 
 # Structured events travel as base64(JSON) so any byte survives the OSC.
 __weft_ev() { __weft_osc "7777;$(printf %s "$1" | base64 | tr -d '\r\n')"; }
@@ -82,18 +65,15 @@ __weft_precmd() {
 
 __weft_ps1() {
     case "$PS1" in
-        *'133;weft='*) ;;
-        *) PS1='\[\033]133;weft='"$__weft_tok"';A\007\]'"$PS1"'\[\033]133;weft='"$__weft_tok"';B\007\]' ;;
+        *'133;A'*) ;;
+        *) PS1='\[\033]133;A\007\]'"$PS1"'\[\033]133;B\007\]' ;;
     esac
 }
 
 PROMPT_COMMAND="__weft_precmd${PROMPT_COMMAND:+;$PROMPT_COMMAND};__weft_ps1"
-# The prompts carry the token: never hand them to programs (some setups
-# export PS1).
-export -n PS1 PS0 2>/dev/null
 
 if [ "${BASH_VERSINFO[0]}" -gt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -ge 4 ]; }; then
-    PS0='\033]133;weft='"$__weft_tok"';C\007'
+    PS0='\033]133;C\007'
 else
     # bash < 4.4 (macOS /bin/bash) has no PS0: use the DEBUG trap once per command.
     __weft_preexec() {
@@ -166,7 +146,7 @@ def ev(o):
         t = open("/dev/tty", "w")
     except OSError:
         t = sys.stdout
-    t.write("\033]7777;weft=" + os.environ.get("WEFT_T", "") + ";" + base64.b64encode(json.dumps(o).encode()).decode() + "\007")
+    t.write("\033]7777;" + base64.b64encode(json.dumps(o).encode()).decode() + "\007")
     t.flush()
     return t
 def fit(t, line):
@@ -228,7 +208,7 @@ t.flush()
 # wls [DIR] : directory listing as an interactive table (WEFT_LS_ALL=1 for dotfiles)
 wls() {
     if [ -n "$__weft_py" ]; then
-        WEFT_T=$__weft_tok COLUMNS=$COLUMNS "$__weft_py" -c "$__weft_py_common$__weft_py_wls" "$@"
+        COLUMNS=$COLUMNS "$__weft_py" -c "$__weft_py_common$__weft_py_wls" "$@"
     else
         ls -la "$@"
     fi
@@ -237,7 +217,7 @@ wls() {
 # CMD | wtable : turn whitespace/TSV columns (ps aux, df -h, ...) into a sortable table
 wtable() {
     if [ -n "$__weft_py" ]; then
-        WEFT_T=$__weft_tok COLUMNS=$COLUMNS "$__weft_py" -c "$__weft_py_common$__weft_py_wtable"
+        COLUMNS=$COLUMNS "$__weft_py" -c "$__weft_py_common$__weft_py_wtable"
     else
         cat
     fi

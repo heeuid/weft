@@ -44,20 +44,6 @@ cargo run --release
 | `wprogress PCT [LABEL] [ID]` | 현재 줄에 진행 막대 |
 | `wopen FILE [LINE]` | 로컬 에디터로 열기 (에이전트가 읽고, 저장 시에만 씀; 원격 mtime 충돌 감지) |
 | `wnotify MSG` / `wclip` | 토스트 / 로컬 클립보드로 복사(OSC 52) |
-| `wosc CODE [ARG…]` | weft가 받아 주는 OSC를 직접 보내기 (bash와 로컬 PowerShell 둘 다). 예: `wosc 9 "빌드 끝"`, `wosc 52 c $(printf hi \| base64)` |
-
-### OSC 가드 (기본 켜짐)
-
-터미널은 프로그램 **출력** 속 OSC 시퀀스로 클립보드·cwd·알림 등을 바꿉니다. 그래서 이스케이프 문자가 든 파일을 `cat`하거나
-원격 프로그램이 출력하기만 해도 클립보드를 몰래 바꾸는 식의 일이 가능합니다. weft는 패널마다 무작위 토큰을 만들어
-자기 셸 통합(rc, PowerShell 스크립트)에만 알려 주고, **OSC 7·9·52·133·777·7777은 그 토큰이 붙은 것만** 받습니다
-(`ESC ] 코드 ; weft=토큰 ; …`). 셸 통합과 `w*` 명령, `wosc`는 토큰을 붙여 보내므로 그대로 동작합니다.
-
-- 토큰은 셸 안의 내보내지 않는 변수에만 있어서 자식 프로그램의 환경 변수(`env`)로는 보이지 않습니다.
-  셸 자체에서 실행되는 것(함수, `source`/`.`한 스크립트)은 읽을 수 있습니다.
-- 창 제목(OSC 0/2)은 vim 등이 흔히 쓰고 위험이 작아 가드 대상이 아닙니다.
-- tmux·vim의 OSC 52 클립보드처럼 다른 프로그램의 OSC가 필요하면 팔레트 `Security: OSC from program output on/off`
-  또는 `settings.json`의 `"osc_guard": false`로 끕니다.
 
 ## 마크다운 편집 (에디터)
 
