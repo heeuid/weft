@@ -60,15 +60,18 @@ impl eframe::App for WeftApp {
     /// Past half full, rebuild as the next pass starts: egui does so when
     /// max_texture_side changes, so it is flipped by one.
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
-        // At most 4096 px for the glyph atlas: egui makes it as wide as
-        // this, and with the GPU's own limit (16384 and more) it grew into
+        // The glyph atlas: 4096 px at 100 % scale, following the scale up
+        // and down (5120 at 125 %, 6144 at 150 %, 8192 from 200 %), since
+        // glyphs grow with it: about 40 000 different Hangul glyphs before a
+        // rebuild at any scale. Never over 8192: egui makes the atlas as wide
+        // as this, and with the GPU's own limit (16384 and more) it grew into
         // textures of hundreds of MB, reallocated and uploaded whole each time
-        // it doubled; the text drawn from it went blank for a frame (the
-        // flicker after hours). 4096 holds every Hangul syllable at a size
-        // with room to spare. Images, PDF pages and diagrams don't go by this
-        // value (media::load_texture): they keep their full size.
+        // it doubled. A scale change rebuilds the fonts anyway, so changing
+        // the size with it costs nothing more. Images, PDF pages and diagrams
+        // don't go by this value (media::load_texture): they keep their size.
         // WEFT_MAX_TEXTURE sets another (to try things).
-        let cap = std::env::var("WEFT_MAX_TEXTURE").ok().and_then(|s| s.parse::<usize>().ok()).unwrap_or(4096);
+        let scaled = ((4096.0 * ctx.pixels_per_point() / 1024.0).ceil() as usize * 1024).clamp(4096, 8192);
+        let cap = std::env::var("WEFT_MAX_TEXTURE").ok().and_then(|s| s.parse::<usize>().ok()).unwrap_or(scaled);
         let side = raw.max_texture_side.unwrap_or(cap).min(cap).max(1024);
         let off = std::env::var("WEFT_ATLAS_REBUILD").is_ok_and(|v| v == "off");
         if !off && !self.first_frame && ctx.fonts(|f| f.font_atlas_fill_ratio()) > 0.5 {
