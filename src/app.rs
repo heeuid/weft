@@ -544,6 +544,9 @@ pub struct InlineWidget {
 }
 
 pub struct Pane {
+    /// The remote shell's process (from the bootstrap), for its directory
+    /// when the shell has no integration.
+    pub shell_pid: Option<u64>,
     /// The zsh integration was typed in for this shell start.
     pub injected: bool,
     /// Startup timing logged: first output, first prompt.
@@ -578,6 +581,7 @@ pub struct Pane {
 impl Pane {
     fn new(id: usize, host: &str, cwd: Option<String>) -> Pane {
         Pane {
+            shell_pid: None,
             injected: false,
             id,
             host: host.to_string(),
@@ -736,6 +740,7 @@ pub enum Pending {
     Grep,
     Kill,
     Tree { root: String },
+    Cwd { pane: usize },
 }
 
 /// Which tabs a tab's context menu closes, relative to that tab.
@@ -1094,6 +1099,7 @@ impl App {
         self.data.log(&format!("pane {} [{}] spawn {:?}", pane.id, pane.host, shown));
         pane.term = Term::new(pane.term.cols, pane.term.rows);
         pane.injected = false;
+        pane.shell_pid = None;
         pane.parser = vte::Parser::new();
         pane.widgets.clear();
         pane.hist_seen = 0;
@@ -1583,6 +1589,12 @@ impl App {
                 }
             }
             TermEvent::Weft { anchor, value } => self.handle_weft(pane_id, &host, anchor, value),
+            // No integration: read the shell's directory from its process.
+            TermEvent::GuessedDone => {
+                if let Some(pid) = self.panes.get(&pane_id).and_then(|p| p.shell_pid) {
+                    self.request(&host, json!({"op": "cwd", "pid": pid}), Pending::Cwd { pane: pane_id });
+                }
+            }
         }
     }
 
@@ -1594,6 +1606,12 @@ impl App {
                 self.open_file(host, &s("path"), line);
             }
             "notify" => self.toast(format!("{host}: {}", s("msg")), ToastKind::Info),
+            "shell" => {
+                if let Some(p) = self.panes.get_mut(&pane_id) {
+                    p.shell_pid = v.get("pid").and_then(|x| x.as_u64());
+                }
+                self.data.log(&format!("pane {pane_id} [{host}] shell {} pid {}", s("name"), v["pid"]));
+            }
             // A remote zsh takes its integration only by typing it (see
             // shell/zsh.zsh): once per shell start, before it has integrated.
             "inject" if s("shell") == "zsh" => {
@@ -1737,6 +1755,15 @@ impl App {
                     self.find_index.insert((host.to_string(), root), FindIndex { entries, truncated, at: Instant::now(), generation });
                 } else {
                     self.toast(format!("file filter: {err}"), ToastKind::Error);
+                }
+            }
+            Pending::Cwd { pane } => {
+                if let (true, Some(cwd), Some(p)) = (ok, r["cwd"].as_str(), self.panes.get_mut(&pane)) {
+                    p.term.set_cwd_from_process(cwd.to_string());
+                    let events = std::mem::take(&mut p.term.events);
+                    for e in events {
+                        self.handle_term_event(pane, e);
+                    }
                 }
             }
             Pending::Kill => {

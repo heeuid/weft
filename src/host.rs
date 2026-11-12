@@ -56,7 +56,7 @@ pub const AGENT_PY: &str = include_str!("../remote/agent.py");
 /// bash `--rcfile <(...)`, fish `-C`, pwsh `-Command`, nushell's own OSC 133
 /// switched on, zsh through WEFT_ZSH typed in by weft (see shell/zsh.zsh).
 /// Any other shell starts as is; weft guesses its command blocks.
-const SHELL_BOOT: &str = r##"WP=${WEFT_SHELL:-$SHELL}; WS=${WP##*/}; WS=${WS%.exe}; export WEFT=1; case "$WS" in bash|'') if command -v bash >/dev/null 2>&1; then R=$(sect bash); export R D WEFT_CWD; exec bash -c 'exec bash --rcfile <(printf %s "$R") -i'; fi ;; esac; if [ -n "$WEFT_CWD" ]; then C=$(printf %s "$WEFT_CWD" | $D 2>/dev/null) && [ -d "$C" ] && cd "$C"; fi; unset WEFT_CWD; case "$WS" in zsh) WEFT_ZSH=$(sect zsh); export WEFT_ZSH; printf ']7777;{"t":"inject","shell":"zsh"}'; exec "$WP" -l -i ;; fish) WEFT_FISH=$(sect fish); export WEFT_FISH; exec "$WP" -l -C 'eval $WEFT_FISH' ;; nu) exec "$WP" -l -e 'try { $env.config.shell_integration.osc133 = true; $env.config.shell_integration.osc7 = true } catch { $env.config.shell_integration = true }' ;; pwsh|powershell) WEFT_PS=$(sect pwsh); export WEFT_PS; exec "$WP" -NoLogo -NoExit -Command '. ([ScriptBlock]::Create($env:WEFT_PS))' ;; esac; if [ -n "$WP" ]; then exec "$WP" -i; fi; exec sh -i"##;
+const SHELL_BOOT: &str = r##"WP=${WEFT_SHELL:-$SHELL}; WS=${WP##*/}; WS=${WS%.exe}; export WEFT=1; case "$WS" in bash|'') if command -v bash >/dev/null 2>&1; then R=$(sect bash); export R D WEFT_CWD; exec bash -c 'exec bash --rcfile <(printf %s "$R") -i'; fi ;; esac; if [ -n "$WEFT_CWD" ]; then C=$(printf %s "$WEFT_CWD" | $D 2>/dev/null) && [ -d "$C" ] && cd "$C"; fi; unset WEFT_CWD; printf '\033]7777;{"t":"shell","name":"%s","pid":%s}\007' "$WS" "$$"; case "$WS" in zsh) WEFT_ZSH=$(sect zsh); export WEFT_ZSH; printf ']7777;{"t":"inject","shell":"zsh"}'; exec "$WP" -l -i ;; fish) WEFT_FISH=$(sect fish); export WEFT_FISH; exec "$WP" -l -C 'eval $WEFT_FISH' ;; nu) exec "$WP" -l -e 'try { $env.config.shell_integration.osc133 = true; $env.config.shell_integration.osc7 = true } catch { $env.config.shell_integration = true }' ;; pwsh|powershell) WEFT_PS=$(sect pwsh); export WEFT_PS; exec "$WP" -NoLogo -NoExit -Command '. ([ScriptBlock]::Create($env:WEFT_PS))' ;; esac; if [ -n "$WP" ]; then exec "$WP" -i; fi; exec sh -i"##;
 
 /// On the command line: find a base64 decoder and gunzip among POSIX tools (or
 /// python), unpack the bundle in $W and run its `boot` section.
@@ -1120,6 +1120,10 @@ mod loopback {
         };
         assert!(wait(&mut pty, &mut t, &|t| !t.blocks.is_empty(), 40), "{shell}: no prompt: {:?}", screen(&t));
         assert_eq!(t.integrated, integrated, "{shell}: integration");
+        // The bootstrap names the shell and its process (for its directory
+        // from outside when it has no integration).
+        let named = t.events.iter().any(|e| matches!(e, TermEvent::Weft { value, .. } if value["t"] == "shell" && value["pid"].as_u64().is_some()));
+        assert!(named, "{shell}: shell/pid event");
         wait(&mut pty, &mut t, &|_| false, 1);
         pty.write(cmd.as_bytes());
         wait(&mut pty, &mut t, &|t| t.screen[t.cy].text().contains(cmd), 5);

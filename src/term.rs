@@ -117,6 +117,9 @@ pub enum TermEvent {
     Clipboard(String),
     Notify(String),
     CwdChanged,
+    /// A guessed command block ended (no integration): the app may look up
+    /// the shell's directory from outside (agent `cwd`).
+    GuessedDone,
     /// OSC 7777 weft protocol message, anchored at the cursor's absolute line.
     Weft { anchor: u64, value: serde_json::Value },
 }
@@ -906,6 +909,7 @@ impl Term {
                         // The prompt line itself is not output.
                         let end = self.cursor_abs();
                         self.finish_block(end, None);
+                        self.events.push(TermEvent::GuessedDone);
                         self.mark_prompt();
                         self.mark_input();
                         if let Some(b) = self.blocks.last_mut() {
@@ -1025,6 +1029,11 @@ impl Term {
             path.remove(0);
         }
         self.set_cwd(Some(host.to_string()), path);
+    }
+
+    /// The directory found from outside the shell (its process, by the agent).
+    pub fn set_cwd_from_process(&mut self, path: String) {
+        self.set_cwd(None, path);
     }
 
     fn set_cwd(&mut self, host: Option<String>, path: String) {

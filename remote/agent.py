@@ -246,10 +246,28 @@ def op_tree(req):
     return {"root": root, "entries": out, "truncated": False}
 
 
+def op_cwd(req):
+    # A shell's directory from outside (shells without integration): Linux
+    # /proc, else lsof (macOS, BSD).
+    pid = int(req["pid"])
+    try:
+        return {"cwd": os.readlink("/proc/%d/cwd" % pid)}
+    except OSError:
+        pass
+    try:
+        out = subprocess.run(["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        out = ""
+    for line in out.splitlines():
+        if line.startswith("n"):
+            return {"cwd": line[1:]}
+    raise OSError("cannot read the directory of process %d" % pid)
+
+
 OPS = {
     "hello": op_hello, "list": op_list, "stat": op_stat, "read": op_read, "write": op_write,
     "complete": op_complete, "procs": op_procs, "kill": op_kill, "sys": op_sys, "grep": op_grep,
-    "tree": op_tree,
+    "tree": op_tree, "cwd": op_cwd,
 }
 
 
