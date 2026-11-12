@@ -1,5 +1,5 @@
 @echo off
-rem Start weft on Windows: double-click this file, or run `weft.cmd` in a
+rem Start weft on Windows: double-click this file, or run `weft.bat` in a
 rem terminal. weft runs on its own; closing the terminal doesn't close it.
 rem When cargo is installed, the release build is brought up to date first.
 setlocal

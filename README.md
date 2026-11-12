@@ -14,7 +14,7 @@ TUI 그리드(날실) 사이에 GUI(씨실)를 엮어 넣은 터미널. Rust (`e
 
 | OS | 더블클릭 | 터미널에서 |
 |---|---|---|
-| Windows | 탐색기에서 `weft.cmd` | `weft.cmd` |
+| Windows | 탐색기에서 `weft.bat` | cmd: `weft.bat`, PowerShell: `.\weft.bat` |
 | Linux | 파일 관리자에서 `weft.desktop` (처음엔 "실행 허용"/"Allow Launching" 필요할 수 있음) | `./weft.sh` |
 
 - Windows는 PowerShell `Start-Process`(탐색기 더블클릭과 같은 방식)로 띄워 터미널의 핸들을 하나도 물려주지 않습니다.
