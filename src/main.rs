@@ -46,9 +46,35 @@ struct WeftApp {
     title: String,
     /// For the health line in the log: since when, frames, font atlas fill.
     health: (Instant, u64, f32),
+    /// Flipped to make egui rebuild its fonts (see raw_input_hook).
+    atlas_flip: bool,
 }
 
 impl eframe::App for WeftApp {
+    /// Keep egui's glyph atlas from overflowing in the middle of a frame.
+    /// egui only rebuilds its fonts as a pass starts, once the atlas is over
+    /// 80 % full; a pass that needs more new glyphs than are left overwrites
+    /// glyphs part way through, and the text drawn after that (weft's
+    /// panels; the status bar comes first) shows blank for a frame. Over
+    /// hours of varied text (Hangul, icons, sizes) that became a flicker.
+    /// Past half full, rebuild as the next pass starts: egui does so when
+    /// max_texture_side changes, so it is flipped by one.
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        // At most 4096 px: egui makes its glyph atlas as wide as this, and
+        // with the GPU's own limit (16384 and more) the atlas grew into
+        // textures of hundreds of MB, reallocated and uploaded whole each time
+        // it doubled; the text drawn from it went blank for a frame (the
+        // flicker after hours). 4096 holds every Hangul syllable at a size
+        // with room to spare. WEFT_MAX_TEXTURE sets another (to try things).
+        let cap = std::env::var("WEFT_MAX_TEXTURE").ok().and_then(|s| s.parse::<usize>().ok()).unwrap_or(media::MAX_SIDE as usize);
+        let side = raw.max_texture_side.unwrap_or(cap).min(cap).max(1024);
+        let off = std::env::var("WEFT_ATLAS_REBUILD").is_ok_and(|v| v == "off");
+        if !off && !self.first_frame && ctx.fonts(|f| f.font_atlas_fill_ratio()) > 0.5 {
+            self.atlas_flip = !self.atlas_flip;
+        }
+        raw.max_texture_side = Some(side - self.atlas_flip as usize);
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if let Some((since, frames, causes)) = self.repaint_debug.as_mut() {
             *frames += 1;
@@ -71,15 +97,17 @@ impl eframe::App for WeftApp {
             *frames += 1;
             let fill = ctx.fonts(|f| f.font_atlas_fill_ratio());
             if *last_fill > 0.5 && fill < *last_fill * 0.5 {
-                self.app.data.log(&format!("health: font atlas was full ({:.0}%) and was rebuilt", *last_fill * 100.0));
+                // Past 50 % is weft's own rebuild; 80 % and up means egui had to.
+                self.app.data.log(&format!("health: font atlas rebuilt at {:.0}%", *last_fill * 100.0));
             }
             *last_fill = fill;
-            if since.elapsed() >= Duration::from_secs(300) {
+            let every = std::env::var("WEFT_HEALTH_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(300);
+            if since.elapsed() >= Duration::from_secs(every) {
                 let textures = ctx.tex_manager().read().num_allocated();
                 let side = ctx.fonts(|f| f.max_texture_side());
                 let lines: usize = self.app.panes.values().map(|p| p.term.history.len()).sum();
                 self.app.data.log(&format!(
-                    "health: {frames} frames in 5 min, font atlas {:.0}% of {side}px, {textures} textures, {} panes, {lines} scrollback lines",
+                    "health: {frames} frames in {every} s, font atlas {:.0}% of {side}px, {textures} textures, {} panes, {lines} scrollback lines",
                     fill * 100.0,
                     self.app.panes.len()
                 ));
@@ -243,7 +271,7 @@ fn main() -> eframe::Result<()> {
             let fonts = format!("{} (from {before_fonts})", since_start());
             app.data.log(&format!("startup: window+GL {window}, fonts read {fonts}, app+panes {}", since_start()));
             let repaint_debug = std::env::var_os("WEFT_DEBUG_REPAINT").map(|_| (Instant::now(), 0, Default::default()));
-            Ok(Box::new(WeftApp { app, first_frame: true, repaint_debug, title: String::new(), health: (Instant::now(), 0, 0.0) }))
+            Ok(Box::new(WeftApp { app, first_frame: true, repaint_debug, title: String::new(), health: (Instant::now(), 0, 0.0), atlas_flip: false }))
         }),
     )
 }
