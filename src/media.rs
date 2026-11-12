@@ -201,6 +201,8 @@ pub fn pdf_view(ui: &mut Ui, st: &mut PdfState, path: &str, bytes: &[u8]) {
     let ppp = ui.ctx().pixels_per_point();
     let fit = (ui.available_width() - 24.0).max(100.0);
     let mut wanted: Vec<(usize, u32)> = Vec::new();
+    // Pages on screen, to drop the textures of the ones far from it.
+    let mut shown: Option<(usize, usize)> = None;
     ScrollArea::both().id_salt(("pdf", path)).auto_shrink([false, false]).show(ui, |ui| {
         for (i, &(pw, ph)) in st.sizes.iter().enumerate() {
             let w = fit * st.zoom;
@@ -211,6 +213,7 @@ pub fn pdf_view(ui: &mut Ui, st: &mut PdfState, path: &str, bytes: &[u8]) {
             if !ui.is_rect_visible(row) {
                 continue;
             }
+            shown = Some(shown.map_or((i, i), |(a, _)| (a, i)));
             let p = ui.painter();
             p.rect_filled(page.translate(vec2(2.0, 2.0)), CornerRadius::same(2), Color32::from_black_alpha(60));
             p.rect_filled(page, CornerRadius::same(2), Color32::WHITE);
@@ -231,6 +234,12 @@ pub fn pdf_view(ui: &mut Ui, st: &mut PdfState, path: &str, bytes: &[u8]) {
             p.text(pos2(row.center().x, page.bottom() + 10.0), egui::Align2::CENTER_CENTER, format!("{} / {}", i + 1, st.sizes.len()), egui::FontId::proportional(11.0), theme::text_faint());
         }
     });
+    // Only pages on screen and three either side keep their picture: every
+    // page scrolled past used to stay on the GPU (some MB each) for as long
+    // as the PDF was open. Coming back draws them again.
+    if let Some((first, last)) = shown {
+        st.pages.retain(|&i, _| i + 3 >= first && i <= last + 3);
+    }
     // At most two pages render at a time.
     for (i, width) in wanted {
         if st.pending.len() >= 2 || st.pending.contains(&i) {
