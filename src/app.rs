@@ -27,6 +27,10 @@ fn d_font_file() -> String {
     crate::theme::DEFAULT_FONT.into()
 }
 
+fn d_icon_font() -> String {
+    crate::theme::DEFAULT_ICON_FONT.into()
+}
+
 fn d_theme() -> String {
     crate::theme::DEFAULT_DARK.into()
 }
@@ -345,7 +349,7 @@ pub struct Settings {
     #[serde(default = "d_font_file")]
     pub term_font: String,
     /// Where icons the terminal font lacks come from (a Nerd Font), same form.
-    #[serde(default = "d_font_file")]
+    #[serde(default = "d_icon_font")]
     pub icon_font: String,
     /// What is written to disk (commands, history, logs) and for how long.
     #[serde(default)]
@@ -376,7 +380,7 @@ impl Default for Settings {
                 },
             });
         }
-        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, layout: Layout::default(), show_hidden: false, find_mode: Default::default(), cursor_style: Default::default(), local_shell: Default::default(), mermaid: Default::default(), follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, term_font: d_font_file(), icon_font: d_font_file(), records: Default::default(), passwords: Default::default(), keys: Default::default(), session: Vec::new() }
+        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, layout: Layout::default(), show_hidden: false, find_mode: Default::default(), cursor_style: Default::default(), local_shell: Default::default(), mermaid: Default::default(), follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, term_font: d_font_file(), icon_font: d_icon_font(), records: Default::default(), passwords: Default::default(), keys: Default::default(), session: Vec::new() }
     }
 }
 
@@ -998,10 +1002,15 @@ pub fn parent(path: &str) -> String {
 impl App {
     pub fn new(ctx: egui::Context) -> App {
         let data = DataDir::locate();
-        let settings: Settings = std::fs::read_to_string(data.path("settings.json"))
+        let mut settings: Settings = std::fs::read_to_string(data.path("settings.json"))
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
+        // D2Coding became the default after JetBrains Mono. Settings still on
+        // the old default for both fonts were never changed by hand: move them on.
+        if settings.term_font == "builtin:jetbrains-mono" && settings.icon_font == "builtin:jetbrains-mono" {
+            settings.term_font = crate::theme::DEFAULT_FONT.into();
+        }
         crate::records::set_switches(&settings.records);
         let settings_passwords = settings.passwords;
         data.log(&format!("start, data dir {}", data.root.display()));

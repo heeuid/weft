@@ -282,13 +282,18 @@ pub const TERM_FONT: &str = "term";
 /// icons (nvim plugins, prompts, file trees) show on any machine. Their
 /// licenses are next to them in fonts/.
 pub const BUILTIN_FONTS: &[(&str, &str, &[u8])] = &[
+    // Hangul of its own, two cells wide exactly, and the widest symbol range.
+    ("builtin:d2coding", "D2Coding Nerd Font (한글)", include_bytes!("../fonts/D2CodingLigatureNerdFontMono-Regular.ttf")),
     ("builtin:jetbrains-mono", "JetBrains Mono Nerd Font", include_bytes!("../fonts/JetBrainsMonoNerdFontMono-Regular.ttf")),
     ("builtin:caskaydia-cove", "CaskaydiaCove Nerd Font (Cascadia)", include_bytes!("../fonts/CaskaydiaCoveNerdFontMono-Regular.ttf")),
     ("builtin:hack", "Hack Nerd Font", include_bytes!("../fonts/HackNerdFontMono-Regular.ttf")),
 ];
 
-/// Default terminal font and icon fallback (settings "term_font", "icon_font").
-pub const DEFAULT_FONT: &str = "builtin:jetbrains-mono";
+/// Default terminal font (settings "term_font").
+pub const DEFAULT_FONT: &str = "builtin:d2coding";
+/// Default for icons the terminal font lacks (settings "icon_font"): it has
+/// every Nerd Font icon, where D2Coding misses a few.
+pub const DEFAULT_ICON_FONT: &str = "builtin:jetbrains-mono";
 
 /// A font setting's display name: a built-in font's name, else the file name.
 pub fn font_label(spec: &str) -> String {
@@ -377,14 +382,14 @@ fn is_regular_face(file: &str) -> bool {
 pub fn install_fonts(ctx: &egui::Context, term: &str, icons: &str) -> Vec<String> {
     let mut problems = Vec::new();
     let mut fonts = FontDefinitions::default();
-    let mut pick = |spec: &str| match font_data(spec) {
+    let mut pick = |spec: &str, fallback: &str| match font_data(spec) {
         Ok(d) => d,
         Err(e) => {
             problems.push(e);
-            font_data(DEFAULT_FONT).unwrap()
+            font_data(fallback).unwrap()
         }
     };
-    let (term_data, icon_data) = (pick(term), pick(icons));
+    let (term_data, icon_data) = (pick(term, DEFAULT_FONT), pick(icons, DEFAULT_ICON_FONT));
     fonts.font_data.insert("mono".into(), Arc::new(term_data));
     fonts.font_data.insert("icons".into(), Arc::new(icon_data));
     let dir = std::env::var("WINDIR").map(|w| format!("{w}\\Fonts")).unwrap_or_else(|_| "C:\\Windows\\Fonts".into());
@@ -525,7 +530,7 @@ mod tests {
         let symbols = "␣⏎↵⇧⌘⌥⎋⌦⌫⇥⇤↑↓←→⇐⇒▲▼◀▶●○◆◇■□▪✓✔✗✘⚠…│─┼╭╮╯╰█▏▕░▒▓⣿\u{f1050}\u{e0b0}\u{f418}";
         for (spec, name, _) in BUILTIN_FONTS {
             let ctx = egui::Context::default();
-            install_fonts(&ctx, spec, DEFAULT_FONT);
+            install_fonts(&ctx, spec, DEFAULT_ICON_FONT);
             let _ = ctx.run(Default::default(), |_| {});
             let missing: String = symbols.chars().filter(|c| !ctx.fonts(|f| f.has_glyph(&term_font(14.0), *c))).collect();
             assert!(missing.is_empty(), "{name}: no glyph for {missing}");
@@ -557,7 +562,7 @@ mod tests {
     fn builtin_fonts_have_nerd_icons() {
         let ctx = egui::Context::default();
         for (spec, name, _) in BUILTIN_FONTS {
-            assert!(install_fonts(&ctx, spec, spec).is_empty());
+            assert!(install_fonts(&ctx, spec, DEFAULT_ICON_FONT).is_empty());
             let _ = ctx.run(Default::default(), |_| {});
             // nvim which-key's space key, powerline arrow, folder, git branch.
             for c in ['\u{f1050}', '\u{e0b0}', '\u{f07c}', '\u{e725}', 'a', '0'] {
