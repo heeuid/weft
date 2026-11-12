@@ -633,8 +633,10 @@ impl App {
         {
             let p = self.panes.get_mut(&id).unwrap();
             let t_alt = p.term.alt_active;
+            let report = p.term.mouse_mode != 0 && !mods.shift && (t_alt || p.scroll == 0);
             let events = ui.input(|i| i.events.clone());
             let mut out: Vec<u8> = Vec::new();
+            let mut mouse_out: Vec<u8> = Vec::new();
 
             // Keyboard (only when this pane owns focus).
             if focused {
@@ -660,51 +662,41 @@ impl App {
                 }
             }
 
-            // Mouse. Drag (select) and right-click (menu) are weft's even where
-            // an app takes the mouse (nvim mouse=a, htop…); there a plain
-            // click, the wheel and the middle button go to the app, and with
-            // Shift held everything goes to the app. Where no app takes the
-            // mouse, all of it is weft's, with or without Shift.
-            let app_mouse = p.term.mouse_mode != 0 && (t_alt || p.scroll == 0);
-            let press_id = term_id.with("app-press");
-            // A left press made with Shift: its drag and release are the app's.
-            let mut app_press = app_mouse && ui.data(|d| d.get_temp::<bool>(press_id).unwrap_or(false));
-            let mut to_app = app_press;
-            let mut mouse_out: Vec<u8> = Vec::new();
-            let to_cell = |pos: egui::Pos2| {
-                let col = ((pos.x - inner.left()) / cw).floor().clamp(0.0, (cols - 1) as f32) as usize;
-                let row = ((pos.y - inner.top()) / ch).floor().clamp(0.0, (rows - 1) as f32) as usize;
-                (col, row)
-            };
-            if app_mouse && (resp.hovered() || app_press) {
-                let sgr = p.term.mouse_sgr;
-                let any_down = ui.input(|i| i.pointer.any_down());
+            // Mouse.
+            if report && resp.hovered() {
+                let to_cell = |pos: egui::Pos2| {
+                    let col = ((pos.x - inner.left()) / cw).floor().clamp(0.0, (cols - 1) as f32) as usize;
+                    let row = ((pos.y - inner.top()) / ch).floor().clamp(0.0, (rows - 1) as f32) as usize;
+                    (col, row)
+                };
+                let held = ui.input(|i| {
+                    if i.pointer.primary_down() {
+                        Some(0u8)
+                    } else if i.pointer.middle_down() {
+                        Some(1)
+                    } else if i.pointer.secondary_down() {
+                        Some(2)
+                    } else {
+                        None
+                    }
+                });
                 for ev in &events {
                     match ev {
-                        Event::PointerButton { pos, button, pressed, modifiers } => {
-                            let inside = inner.contains(*pos);
-                            let (code, send) = match button {
-                                PointerButton::Primary if *pressed => {
-                                    app_press = inside && modifiers.shift;
-                                    to_app |= app_press;
-                                    (0, app_press)
-                                }
-                                PointerButton::Primary => (0, std::mem::take(&mut app_press)),
-                                PointerButton::Middle => (1, inside),
-                                PointerButton::Secondary => (2, inside && modifiers.shift),
+                        Event::PointerButton { pos, button, pressed, .. } if inner.contains(*pos) => {
+                            let code = match button {
+                                PointerButton::Primary => 0,
+                                PointerButton::Middle => 1,
+                                PointerButton::Secondary => 2,
                                 _ => continue,
                             };
-                            if send {
-                                let (c, r) = to_cell(*pos);
-                                mouse_out.extend(mouse_seq(sgr, code, c, r, *pressed));
-                            }
+                            let (c, r) = to_cell(*pos);
+                            mouse_out.extend(mouse_seq(p.term.mouse_sgr, code, c, r, *pressed));
                         }
-                        Event::PointerMoved(pos) if inner.contains(*pos) || app_press => {
-                            let mode = p.term.mouse_mode;
-                            // Dragging for the app, or plain hovering when it asks for every move.
-                            if (app_press && (mode == 1002 || mode == 1003)) || (mode == 1003 && !any_down) {
+                        Event::PointerMoved(pos) if inner.contains(*pos) => {
+                            let motion = (p.term.mouse_mode == 1002 && held.is_some()) || p.term.mouse_mode == 1003;
+                            if motion {
                                 let (c, r) = to_cell(*pos);
-                                mouse_out.extend(mouse_seq(sgr, 32 + if app_press { 0 } else { 3 }, c, r, true));
+                                mouse_out.extend(mouse_seq(p.term.mouse_sgr, 32 + held.unwrap_or(3), c, r, true));
                             }
                         }
                         Event::MouseWheel { delta, .. } => {
@@ -712,27 +704,14 @@ impl App {
                                 let (c, r) = to_cell(pos);
                                 let code = if delta.y > 0.0 { 64 } else { 65 };
                                 if delta.y != 0.0 {
-                                    mouse_out.extend(mouse_seq(sgr, code, c, r, true));
+                                    mouse_out.extend(mouse_seq(p.term.mouse_sgr, code, c, r, true));
                                 }
                             }
                         }
                         _ => {}
                     }
                 }
-                // A plain click without a drag is the app's (nvim moves the
-                // cursor): press and release go together once it is a click.
-                if !to_app && resp.clicked_by(PointerButton::Primary) {
-                    if let Some(pos) = resp.interact_pointer_pos().filter(|p| inner.contains(*p)) {
-                        let (c, r) = to_cell(pos);
-                        mouse_out.extend(mouse_seq(sgr, 0, c, r, true));
-                        mouse_out.extend(mouse_seq(sgr, 0, c, r, false));
-                    }
-                }
-            }
-            if app_mouse {
-                ui.data_mut(|d| d.insert_temp(press_id, app_press));
-            }
-            if resp.hovered() && !app_mouse {
+            } else if resp.hovered() {
                 let dy = ui.input(|i| i.raw_scroll_delta.y);
                 if dy != 0.0 {
                     let n = ((dy.abs() / ch).ceil() as usize).max(1);
@@ -747,8 +726,6 @@ impl App {
                         p.scroll = p.scroll.saturating_sub(n);
                     }
                 }
-            }
-            if resp.hovered() && !to_app {
                 // Selection.
                 if resp.drag_started_by(PointerButton::Primary) {
                     if let Some(origin) = ui.input(|i| i.pointer.press_origin()) {
@@ -802,7 +779,8 @@ impl App {
                     }
                 }
             }
-            // Typing clears the selection; mouse reports to the app don't.
+            // Typing clears the selection; mouse reports to the app don't (an
+            // app tracking every move would wipe a Shift+drag selection).
             if !out.is_empty() {
                 if focused {
                     p.sel = None;
@@ -1133,15 +1111,16 @@ impl App {
             }
         }
 
-        // Context menu, also where an app takes the mouse (nvim, htop…);
-        // there Shift+right-click is the app's instead.
+        // Context menu. While an app takes the mouse (nvim, htop…) a right-click
+        // is the app's; Shift+right-click opens this menu instead, the same
+        // way Shift+drag selects here instead of in the app.
         let has_sel = p.sel.is_some();
         let sel_text = p.sel.map(|s| selection_text(t, s));
         let cwd = t.cwd.clone();
         let app_mouse = t.mouse_mode != 0 && (t.alt_active || p.scroll == 0);
         let menu_id = term_id.with("weft-menu");
         let menu_open = ui.data(|d| d.get_temp::<bool>(menu_id).unwrap_or(false));
-        let ours = !(app_mouse && mods.shift) || menu_open;
+        let ours = !app_mouse || mods.shift || menu_open;
         let shown = ours.then(|| resp.context_menu(|ui| {
             ui.set_min_width(200.0);
             if ui.add_enabled(has_sel, egui::Button::new("Copy selection")).clicked() {
@@ -1182,7 +1161,7 @@ impl App {
             }
             if app_mouse {
                 ui.separator();
-                ui.label(egui::RichText::new("The app here uses the mouse too:\na click goes to it, a drag selects here;\nwith Shift, drag and right-click go to it.").size(11.0).color(theme::text_faint()));
+                ui.label(egui::RichText::new("The app here uses the mouse:\nShift+drag selects text for weft,\nShift+right-click opens this menu.").size(11.0).color(theme::text_faint()));
             }
         }));
         let open_now = shown.flatten().is_some();
