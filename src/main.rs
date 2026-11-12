@@ -37,10 +37,27 @@ pub fn since_start() -> String {
 struct WeftApp {
     app: App,
     first_frame: bool,
+    /// WEFT_DEBUG_REPAINT=1: frames per 5 s and what asked for them, to the log.
+    repaint_debug: Option<(Instant, u32, std::collections::BTreeMap<String, u32>)>,
+    /// The window title last sent.
+    title: String,
 }
 
 impl eframe::App for WeftApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if let Some((since, frames, causes)) = self.repaint_debug.as_mut() {
+            *frames += 1;
+            for c in ctx.repaint_causes() {
+                *causes.entry(format!("{}:{} {}", c.file, c.line, c.reason)).or_default() += 1;
+            }
+            if since.elapsed() >= Duration::from_secs(5) {
+                let list: Vec<String> = causes.iter().map(|(k, n)| format!("{n}× {k}")).collect();
+                self.app.data.log(&format!("repaint: {frames} frames in 5 s; {}", list.join("; ")));
+                *since = Instant::now();
+                *frames = 0;
+                causes.clear();
+            }
+        }
         let app = &mut self.app;
         let wanted = theme::resolve(&app.settings.theme, &app.settings.theme_dark, &app.settings.theme_light, ctx);
         if wanted != theme::active() {
@@ -70,9 +87,16 @@ impl eframe::App for WeftApp {
         app.apply_actions();
 
         let title = app.active_pane().map(|p| format!("weft — {}", p.title())).unwrap_or_else(|| "weft".into());
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
-        if app.panes.values().any(|p| p.term.blocks.last().map(|b| b.started.is_some() && b.end_line.is_none()).unwrap_or(false)) {
-            ctx.request_repaint_after(Duration::from_millis(250));
+        // Only on change: every viewport command asks for another frame, so
+        // sending it each frame kept weft redrawing ~100 times a second.
+        if title != self.title {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.title = title;
+        }
+        // A running command's time badge counts seconds: once a second is
+        // enough, and not at all under a full-screen app (no badge there).
+        if app.panes.values().any(|p| !p.term.alt_active && p.term.blocks.last().map(|b| b.started.is_some() && b.end_line.is_none()).unwrap_or(false)) {
+            ctx.request_repaint_after(Duration::from_secs(1));
         }
         if ctx.input(|i| i.viewport().close_requested()) {
             app.flush_memos();
@@ -184,7 +208,8 @@ fn main() -> eframe::Result<()> {
             app.apply_fonts();
             let fonts = format!("{} (from {before_fonts})", since_start());
             app.data.log(&format!("startup: window+GL {window}, fonts read {fonts}, app+panes {}", since_start()));
-            Ok(Box::new(WeftApp { app, first_frame: true }))
+            let repaint_debug = std::env::var_os("WEFT_DEBUG_REPAINT").map(|_| (Instant::now(), 0, Default::default()));
+            Ok(Box::new(WeftApp { app, first_frame: true, repaint_debug, title: String::new() }))
         }),
     )
 }

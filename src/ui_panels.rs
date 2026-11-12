@@ -393,9 +393,11 @@ impl App {
                 }
                 let dot = Rect2::dot(rect);
                 if running {
-                    let phase = (ui.input(|i| i.time) * 3.0).sin() as f32 * 0.5 + 0.5;
-                    ui.painter().circle_filled(dot, 3.5, theme::tint(theme::accent(), (110.0 + 145.0 * phase) as u8));
-                    ui.ctx().request_repaint_after(Duration::from_millis(60));
+                    // A still ring, not a pulse: an animation here redrew the
+                    // whole window ~16 times a second for as long as anything
+                    // ran (an open nvim, a server).
+                    ui.painter().circle_filled(dot, 3.5, theme::accent());
+                    ui.painter().circle_stroke(dot, 5.5, Stroke::new(1.2_f32, theme::tint(theme::accent(), 140)));
                 } else {
                     ui.painter().circle_filled(dot, 3.5, host_color(&p.host));
                 }
