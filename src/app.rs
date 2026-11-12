@@ -310,7 +310,11 @@ pub struct Settings {
     /// Who draws mermaid diagrams: built-in, mermaid-cli on PATH, or at a path.
     #[serde(default)]
     pub mermaid: crate::mermaid::Renderer,
-    /// Terminal cursor: bar (default), block or underline.
+    /// Only weft's own shell integration and w* commands (wosc) may use OSC
+    /// 7/9/52/133/777/7777; the same codes in program output are ignored.
+    #[serde(default = "d_true")]
+    pub osc_guard: bool,
+    /// Terminal cursor: block (default), bar or underline.
     #[serde(default)]
     pub cursor_style: CursorStyle,
     /// File panel filter: fuzzy, glob or regex.
@@ -351,7 +355,7 @@ impl Default for Settings {
                 },
             });
         }
-        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, layout: Layout::default(), show_hidden: false, find_mode: Default::default(), cursor_style: Default::default(), mermaid: Default::default(), follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, session: Vec::new() }
+        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, layout: Layout::default(), show_hidden: false, find_mode: Default::default(), cursor_style: Default::default(), osc_guard: true, mermaid: Default::default(), follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, session: Vec::new() }
     }
 }
 
@@ -540,6 +544,8 @@ pub struct InlineWidget {
 }
 
 pub struct Pane {
+    /// Secret this pane's shell integration tags its OSC sequences with.
+    pub osc_token: String,
     /// Startup timing logged: first output, first prompt.
     pub seen: (bool, bool),
     pub id: usize,
@@ -572,6 +578,7 @@ pub struct Pane {
 impl Pane {
     fn new(id: usize, host: &str, cwd: Option<String>) -> Pane {
         Pane {
+            osc_token: host::new_osc_token(),
             id,
             host: host.to_string(),
             term: Term::new(100, 30),
@@ -1070,13 +1077,17 @@ impl App {
     fn start_pty(&self, pane: &mut Pane) {
         let prof = self.profile(&pane.host);
         let secret = if prof.is_local() { None } else { self.secrets.get(&pane.host) };
-        let argv = prof.pty_argv(pane.initial_cwd.as_deref(), secret.is_some());
-        let env = secret.map(|s| host::askpass_env(s)).unwrap_or_default();
+        let argv = prof.pty_argv(pane.initial_cwd.as_deref(), secret.is_some(), &pane.osc_token);
+        let mut env = secret.map(|s| host::askpass_env(s)).unwrap_or_default();
+        if prof.is_local() {
+            env.push(("WEFT_TOKEN".into(), pane.osc_token.clone()));
+        }
         let local_cwd = if prof.is_local() { pane.initial_cwd.clone() } else { None };
         let shown: Vec<String> =
             argv.iter().map(|a| if a.len() > 120 { format!("{}…({} bytes)", &a[..60], a.len()) } else { a.clone() }).collect();
         self.data.log(&format!("pane {} [{}] spawn {:?}", pane.id, pane.host, shown));
         pane.term = Term::new(pane.term.cols, pane.term.rows);
+        pane.term.osc_token = self.settings.osc_guard.then(|| pane.osc_token.clone());
         pane.parser = vte::Parser::new();
         pane.widgets.clear();
         pane.hist_seen = 0;
