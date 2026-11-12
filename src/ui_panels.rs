@@ -58,6 +58,8 @@ enum Cmd {
     Hidden,
     Settings,
     AgentLog,
+    NewMemo,
+    Memos,
 }
 
 const COMMANDS: &[(Cmd, &str, &str)] = &[
@@ -76,6 +78,8 @@ const COMMANDS: &[(Cmd, &str, &str)] = &[
     (Cmd::ClearScrollback, "Clear scrollback", ""),
     (Cmd::Sidebar, "Toggle side panel", "Ctrl+Shift+B"),
     (Cmd::Editor, "Toggle editor", "Ctrl+Shift+J"),
+    (Cmd::NewMemo, "New memo (markdown, saved automatically)", "Ctrl+Shift+M"),
+    (Cmd::Memos, "Show memos in Files", ""),
     (Cmd::Hidden, "Toggle hidden files", ""),
     (Cmd::Reconnect, "Reconnect agent for this host", ""),
     (Cmd::FontUp, "Bigger font", "Ctrl+="),
@@ -211,6 +215,14 @@ impl App {
                 let p = self.data.path("settings.json").display().to_string().replace('\\', "/");
                 self.open_file("local", &p, 1);
             }
+            Cmd::NewMemo => self.new_memo(),
+            Cmd::Memos => {
+                let dir = self.memo_dir();
+                let _ = std::fs::create_dir_all(&dir);
+                self.settings.sidebar = true;
+                self.side.tab = SideTab::Files;
+                self.set_root("local", &dir);
+            }
             Cmd::AgentLog => {
                 let h = self.active_host();
                 let p = self.data.path(&format!("logs/agent-{}.log", crate::host::safe_name(&h))).display().to_string().replace('\\', "/");
@@ -233,6 +245,7 @@ impl App {
             (Key::F, Cmd::Find),
             (Key::B, Cmd::Sidebar),
             (Key::J, Cmd::Editor),
+            (Key::M, Cmd::NewMemo),
             (Key::ArrowUp, Cmd::PrevBlock),
             (Key::ArrowDown, Cmd::NextBlock),
         ];
@@ -1317,6 +1330,10 @@ impl App {
             ui.vertical_centered(|ui| {
                 ui.label(RichText::new("No files open").color(theme::text_dim()));
                 ui.label(RichText::new("Click a file in the side panel, Ctrl+click a path in the terminal,\nor run `wopen FILE` on a remote shell.").size(12.0).color(theme::text_faint()));
+                ui.add_space(10.0);
+                if ui.button(RichText::new("New memo").size(12.5)).on_hover_text("a markdown note, saved automatically (Ctrl+Shift+M)").clicked() {
+                    self.new_memo();
+                }
             });
             return;
         }
@@ -1325,6 +1342,10 @@ impl App {
         let mut close = None;
         ui.horizontal(|ui| {
         self.dock_grip(ui, Region::Editor);
+        if icons::button(ui, Icon::Plus, "new memo — a markdown note, saved automatically (Ctrl+Shift+M)").clicked() {
+            self.actions.push(Action::NewMemo);
+        }
+        let memo_dir = format!("{}/", self.memo_dir());
         // A thin scrollbar of its own below the tabs: egui's default floats
         // over the content and hid the tab names. The plain (vertical) wheel
         // scrolls the strip sideways; egui only does that when asked to.
@@ -1339,9 +1360,12 @@ impl App {
                 ui.spacing_mut().item_spacing.x = 2.0;
                 let n = self.editor.files.len();
                 for (i, f) in self.editor.files.iter().enumerate() {
-                    let name = f.path.rsplit('/').next().unwrap_or(&f.path).to_string();
+                    let memo = f.host == "local" && f.path.starts_with(&memo_dir);
+                    let name = if memo { memo_title(&f.text) } else { f.path.rsplit('/').next().unwrap_or(&f.path).to_string() };
                     let sel = i == self.editor.active;
-                    let label = RichText::new(if f.dirty { format!("● {name}") } else { name }).size(12.5).color(if sel { theme::text() } else { theme::text_dim() });
+                    // Memos save themselves, so no unsaved dot for them.
+                    let label = RichText::new(if f.dirty && !memo { format!("● {name}") } else { name }).size(12.5).color(if sel { theme::text() } else { theme::text_dim() });
+                    let label = if memo { label.italics() } else { label };
                     let r = ui.selectable_label(sel, label).on_hover_text(format!("{}:{}", f.host, f.path));
                     if r.clicked() {
                         self.editor.active = i;
@@ -1373,6 +1397,8 @@ impl App {
         let mut reload = false;
         let mut force = false;
         let mut settings_changed = false;
+        let mut delete = false;
+        let memo = self.is_memo(&self.editor.files[idx]);
         {
             let f = &mut self.editor.files[idx];
             ui.horizontal(|ui| {
@@ -1382,10 +1408,18 @@ impl App {
             });
             ui.horizontal(|ui| {
                 let can_save = f.dirty && !f.scratch && !f.binary && !f.loading;
-                if ui.add_enabled(can_save, egui::Button::new(RichText::new("Save").size(12.5))).on_hover_text("Ctrl+S — writes through the agent").clicked() {
+                if memo {
+                    ui.label(RichText::new("memo · saved automatically").size(11.5).color(theme::text_faint()));
+                    ui.menu_button(RichText::new("Delete…").size(12.5), |ui| {
+                        if ui.button(RichText::new("Delete this memo").color(theme::error())).clicked() {
+                            delete = true;
+                            ui.close_menu();
+                        }
+                    });
+                } else if ui.add_enabled(can_save, egui::Button::new(RichText::new("Save").size(12.5))).on_hover_text("Ctrl+S — writes through the agent").clicked() {
                     save = true;
                 }
-                if !f.scratch && ui.add_enabled(!f.loading, egui::Button::new(RichText::new("Reload").size(12.5))).clicked() {
+                if !f.scratch && !memo && ui.add_enabled(!f.loading, egui::Button::new(RichText::new("Reload").size(12.5))).clicked() {
                     reload = true;
                 }
                 if md::is_markdown(&f.path) {
@@ -1450,6 +1484,10 @@ impl App {
             if let Some(e) = &f.error {
                 ui.colored_label(theme::error(), e);
             }
+        }
+        if delete {
+            self.delete_memo(idx);
+            return;
         }
         ui.separator();
         let edit_id = Id::new(("editor", idx, self.editor.files[idx].path.clone()));
@@ -1925,6 +1963,17 @@ struct MdCache {
 /// backgrounds and rules are painted at the galley positions afterwards.
 /// Returns whether the text changed.
 #[allow(clippy::too_many_arguments)]
+/// A memo's tab name: its first line without markdown marks.
+fn memo_title(text: &str) -> String {
+    const MAX: usize = 24;
+    let line = text.lines().map(|l| l.trim_start_matches(|c: char| "#>-*+".contains(c) || c.is_whitespace()).trim_end()).find(|l| !l.is_empty()).unwrap_or("");
+    if line.is_empty() {
+        return "new memo".into();
+    }
+    let short: String = line.chars().take(MAX).collect();
+    if line.chars().count() > MAX { format!("{short}…") } else { short }
+}
+
 fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size: f32, breaks: bool, renderer: &crate::mermaid::Renderer, readonly: bool, goto: Option<usize>, cache_dir: &std::path::Path) -> bool {
     let ctx = ui.ctx().clone();
     let focused = ui.memory(|m| m.has_focus(edit_id));
@@ -2107,4 +2156,18 @@ fn close_menu(ui: &mut Ui, at: usize, n: usize) -> Option<CloseWhich> {
         }
     }
     chosen
+}
+
+#[cfg(test)]
+mod tests {
+    use super::memo_title;
+
+    #[test]
+    fn memo_tab_is_named_after_the_first_line() {
+        assert_eq!(memo_title(""), "new memo");
+        assert_eq!(memo_title("\n  \n## 회의 메모  \n본문"), "회의 메모");
+        assert_eq!(memo_title("- [ ] buy milk"), "[ ] buy milk");
+        assert_eq!(memo_title("> quoted"), "quoted");
+        assert_eq!(memo_title(&"가".repeat(30)), format!("{}…", "가".repeat(24)));
+    }
 }

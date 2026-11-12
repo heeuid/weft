@@ -69,6 +69,7 @@ impl eframe::App for WeftApp {
             ctx.request_repaint_after(Duration::from_millis(250));
         }
         if ctx.input(|i| i.viewport().close_requested()) {
+            app.flush_memos();
             app.save_settings();
         }
         if self.first_frame {

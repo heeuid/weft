@@ -830,6 +830,7 @@ pub enum Action {
     Procs,
     Kill(i64, &'static str),
     Save(usize),
+    NewMemo,
     Reconnect(String),
     ToggleZoom,
 }
@@ -866,6 +867,8 @@ pub struct App {
     pub find_index: HashMap<(String, String), FindIndex>,
     pub find_inflight: HashSet<(String, String)>,
     pub find_result: Option<FindResult>,
+    /// When the oldest unsaved memo change was made (see autosave_memos).
+    pub memo_edited: Option<Instant>,
     /// A panel being dragged by its grip to another window edge.
     pub dock_drag: Option<Region>,
     /// Where each panel was drawn this frame (drop targets).
@@ -970,6 +973,7 @@ impl App {
             secrets: HashMap::new(),
             auth_prompted: HashSet::new(),
             last_save: Instant::now(),
+            memo_edited: None,
         };
         app.side.follow = app.settings.follow_cwd;
         let session = std::mem::take(&mut app.settings.session);
@@ -1226,12 +1230,21 @@ impl App {
     pub fn close_files(&mut self, at: usize, which: CloseWhich) {
         let kept = self.editor.files.get(self.editor.active).map(|f| (f.host.clone(), f.path.clone()));
         let target = self.editor.files.get(at).map(|f| (f.host.clone(), f.path.clone()));
+        self.flush_memos();
         let mut discarded = 0;
+        let mut emptied = false;
         for i in tabs_to_close(self.editor.files.len(), at, which) {
             let f = self.editor.files.remove(i);
             if f.dirty && !f.scratch {
                 discarded += 1;
             }
+            // A memo closed without anything in it is not kept.
+            if self.is_memo(&f) && f.text.trim().is_empty() && std::fs::remove_file(&f.path).is_ok() {
+                emptied = true;
+            }
+        }
+        if emptied {
+            self.forget_memo_listing();
         }
         if discarded > 0 {
             self.toast(format!("closed {discarded} file(s) with unsaved changes discarded"), ToastKind::Info);
@@ -1377,6 +1390,109 @@ impl App {
         self.editor.visible = true;
     }
 
+    // ---- memos: markdown notes in data/memos, opened in the editor like files ----
+
+    /// The memo folder, '/'-separated like every editor path.
+    pub fn memo_dir(&self) -> String {
+        self.data.path("memos").display().to_string().replace('\\', "/")
+    }
+
+    pub fn is_memo(&self, f: &EditorFile) -> bool {
+        f.host == "local" && f.path.starts_with(&format!("{}/", self.memo_dir()))
+    }
+
+    /// A new empty memo (memo-N.md), opened with the keyboard in it.
+    pub fn new_memo(&mut self) {
+        let dir = self.memo_dir();
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            self.toast(format!("memo folder: {e}"), ToastKind::Error);
+            return;
+        }
+        let path = (1..).map(|n| format!("{dir}/memo-{n}.md")).find(|p| !std::path::Path::new(p).exists()).unwrap();
+        if let Err(e) = std::fs::write(&path, "") {
+            self.toast(format!("new memo: {e}"), ToastKind::Error);
+            return;
+        }
+        self.forget_memo_listing();
+        self.editor.files.push(EditorFile {
+            bytes: None,
+            image: Default::default(),
+            pdf: Default::default(),
+            host: "local".into(),
+            path: path.clone(),
+            text: String::new(),
+            dirty: false,
+            mtime: None,
+            binary: false,
+            scratch: false,
+            loading: false,
+            saving: false,
+            conflict: false,
+            goto: None,
+            find: String::new(),
+            rich: true,
+            error: None,
+        });
+        self.editor.active = self.editor.files.len() - 1;
+        self.editor.visible = true;
+        self.focus_term = false;
+        self.ctx.memory_mut(|m| m.request_focus(egui::Id::new(("editor", self.editor.active, path))));
+    }
+
+    /// Write changed memos now. Memos have no Save step: they are written
+    /// shortly after a change, when closed, and when weft exits.
+    pub fn flush_memos(&mut self) {
+        self.memo_edited = None;
+        let dir = format!("{}/", self.memo_dir());
+        let mut failed = Vec::new();
+        for f in self.editor.files.iter_mut().filter(|f| f.dirty && f.host == "local" && f.path.starts_with(&dir)) {
+            match std::fs::write(&f.path, &f.text) {
+                Ok(()) => f.dirty = false,
+                Err(e) => failed.push(format!("{}: {e}", f.path)),
+            }
+        }
+        for e in failed {
+            self.toast(format!("memo not saved — {e}"), ToastKind::Error);
+        }
+    }
+
+    /// Called every frame: a changed memo is written within DELAY.
+    fn autosave_memos(&mut self) {
+        const DELAY: Duration = Duration::from_millis(700);
+        if !self.editor.files.iter().any(|f| f.dirty && self.is_memo(f)) {
+            self.memo_edited = None;
+            return;
+        }
+        let since = *self.memo_edited.get_or_insert_with(Instant::now);
+        if since.elapsed() >= DELAY {
+            self.flush_memos();
+        } else {
+            self.ctx.request_repaint_after(DELAY - since.elapsed());
+        }
+    }
+
+    /// The Files panel lists the memo folder afresh after a memo comes or goes.
+    fn forget_memo_listing(&mut self) {
+        let key = ("local".to_string(), self.memo_dir());
+        if self.dir_cache.remove(&key).is_some() {
+            self.list_dir(&key.0, &key.1);
+        }
+    }
+
+    /// Delete a memo's file and close its tab.
+    pub fn delete_memo(&mut self, idx: usize) {
+        let Some(f) = self.editor.files.get(idx) else { return };
+        if !self.is_memo(f) {
+            return;
+        }
+        let path = f.path.clone();
+        let _ = std::fs::remove_file(&path);
+        self.editor.files.remove(idx);
+        self.editor.active = self.editor.active.min(self.editor.files.len().saturating_sub(1));
+        self.forget_memo_listing();
+        self.toast(format!("deleted {}", path.rsplit('/').next().unwrap_or(&path)), ToastKind::Info);
+    }
+
     pub fn save_file(&mut self, idx: usize, force: bool) {
         let Some(f) = self.editor.files.get_mut(idx) else { return };
         if f.scratch || f.binary || f.loading {
@@ -1445,6 +1561,7 @@ impl App {
     // ---- per-frame polling ------------------------------------------------------
 
     pub fn poll(&mut self) {
+        self.autosave_memos();
         let mut events: Vec<(usize, TermEvent)> = Vec::new();
         let mut new_history: Vec<(String, String)> = Vec::new();
         let mut timings: Vec<String> = Vec::new();
@@ -1905,6 +2022,7 @@ impl App {
                     self.request(&host, json!({"op": "kill", "pid": pid, "sig": sig}), Pending::Kill);
                 }
                 Action::Save(i) => self.save_file(i, false),
+                Action::NewMemo => self.new_memo(),
                 Action::Reconnect(h) => self.reconnect(&h),
             }
         }
