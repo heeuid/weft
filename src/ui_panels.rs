@@ -2147,6 +2147,9 @@ impl App {
                 }
             });
         }
+        // Where a vertical border meets a horizontal one (three panels
+        // around a point): one grip moves both, laid over the borders.
+        let junctions = crate::app::panel_junctions(&dividers);
         for (id, handle, vertical, parent) in dividers {
             let resp = ui.interact(handle.expand(2.0), Id::new(("panel-divider", id)), Sense::drag());
             let hot = resp.hovered() || resp.dragged();
@@ -2159,6 +2162,27 @@ impl App {
                     let r = if vertical { (p.x - parent.left()) / parent.width() } else { (p.y - parent.top()) / parent.height() };
                     if let Some(ratio) = self.settings.layout.ratio_mut(id) {
                         *ratio = r.clamp(0.08, 0.92);
+                    }
+                }
+            }
+            if resp.drag_stopped() {
+                self.save_settings();
+            }
+        }
+        for (vid, vparent, hid, hparent, at) in junctions {
+            let zone = egui::Rect::from_center_size(at, vec2(16.0, 16.0));
+            let resp = ui.interact(zone, Id::new(("panel-junction", vid, hid)), Sense::drag());
+            if resp.hovered() || resp.dragged() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Move);
+                ui.painter().circle_filled(at, 5.0, theme::accent());
+            }
+            if resp.dragged() {
+                if let Some(p) = resp.interact_pointer_pos() {
+                    if let Some(r) = self.settings.layout.ratio_mut(vid) {
+                        *r = ((p.x - vparent.left()) / vparent.width()).clamp(0.08, 0.92);
+                    }
+                    if let Some(r) = self.settings.layout.ratio_mut(hid) {
+                        *r = ((p.y - hparent.top()) / hparent.height()).clamp(0.08, 0.92);
                     }
                 }
             }

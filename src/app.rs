@@ -266,6 +266,26 @@ mod layout_tests {
     }
 
     #[test]
+    fn junction_where_three_panels_meet() {
+        // Editor under the side panel: the column's horizontal border meets
+        // the vertical one beside the terminal.
+        let l = Layout::default().moved(Editor, Some(Side), Bottom);
+        let mut dividers = Vec::new();
+        l.rects(Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1000.0, 1000.0)), &mut Vec::new(), &mut dividers);
+        let j = super::panel_junctions(&dividers);
+        assert_eq!(j.len(), 1, "{dividers:?}");
+        let (v, _, h, _, at) = j[0];
+        assert_ne!(v, h);
+        let vx = dividers.iter().find(|d| d.0 == v).unwrap().1.center().x;
+        let hy = dividers.iter().find(|d| d.0 == h).unwrap().1.center().y;
+        assert_eq!((at.x, at.y), (vx, hy));
+        // Side by side only (the default): borders never meet.
+        let mut dividers = Vec::new();
+        Layout::default().rects(Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1000.0, 1000.0)), &mut Vec::new(), &mut dividers);
+        assert!(super::panel_junctions(&dividers).is_empty());
+    }
+
+    #[test]
     fn stacking_inside_a_column() {
         // Editor dropped on the bottom half of the side panel: they share the left column.
         let l = Layout::default().moved(Editor, Some(Side), Bottom);
@@ -792,6 +812,18 @@ pub struct FontMenu {
 pub struct KeysWindow {
     pub query: String,
     pub capture: Option<&'static str>,
+}
+
+/// Points where a vertical panel border meets a horizontal one:
+/// (vertical id, its parent, horizontal id, its parent, the point).
+pub fn panel_junctions(dividers: &[(u32, Rect, bool, Rect)]) -> Vec<(u32, Rect, u32, Rect, egui::Pos2)> {
+    dividers
+        .iter()
+        .filter(|v| v.2)
+        .flat_map(|v| dividers.iter().filter(|h| !h.2).map(move |h| (v, h)))
+        .filter(|(v, h)| v.1.expand(3.0).intersects(h.1.expand(3.0)))
+        .map(|(v, h)| (v.0, v.3, h.0, h.3, egui::pos2(v.1.center().x, h.1.center().y)))
+        .collect()
 }
 
 /// A memo on disk, for the memo list.
