@@ -1537,7 +1537,7 @@ impl App {
         }
         ui.horizontal(|ui| {
             ui.checkbox(&mut self.side.grep_icase, RichText::new("ignore case").size(12.0));
-            ui.checkbox(&mut self.side.grep_regex, RichText::new("regex").size(12.0)).on_hover_text("remote only (grep -E style basic regex)");
+            ui.checkbox(&mut self.side.grep_regex, RichText::new("regex").size(12.0)).on_hover_text("regular expression, extended syntax (grep -E): ( ) | + ? are operators, \\( a bracket");
             if ui.button("Search").clicked() {
                 self.actions.push(Action::Grep);
             }

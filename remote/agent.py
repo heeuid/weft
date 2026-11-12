@@ -194,10 +194,11 @@ def op_grep(req):
     cmd = ["grep", "-rnI", "--exclude-dir=.git", "--exclude-dir=node_modules", "--exclude-dir=target"]
     if req.get("icase"):
         cmd.append("-i")
-    if not req.get("regex"):
-        cmd.append("-F")
+    # Regex: extended syntax (-E), where ( | + ? are operators and \( a
+    # bracket; basic syntax had it the other way round.
+    cmd.append("-E" if req.get("regex") else "-F")
     cmd += ["-e", pattern, root]
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     hits = []
     for raw in proc.stdout:
         line = raw.decode("utf-8", "replace").rstrip("\n")
@@ -208,7 +209,11 @@ def op_grep(req):
         if len(hits) >= limit:
             proc.kill()
             break
+    err = proc.stderr.read().decode("utf-8", "replace").strip()
     proc.wait()
+    # 2: trouble, such as a bad pattern (unreadable files also say so, with hits).
+    if proc.returncode == 2 and not hits:
+        raise ValueError(err.splitlines()[0] if err else "grep failed")
     return {"root": root, "pattern": pattern, "hits": hits, "truncated": len(hits) >= limit}
 
 

@@ -762,7 +762,10 @@ fn local_op(req: &Value) -> Value {
             names.sort();
             Ok(json!({"dir": dir, "prefix": prefix, "names": names}))
         }
-        "grep" => local_grep(&s("path"), &s("pattern"), req.get("icase").and_then(|v| v.as_bool()).unwrap_or(false)),
+        "grep" => {
+            let flag = |k: &str| req.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
+            local_grep(&s("path"), &s("pattern"), flag("icase"), flag("regex"))
+        }
         "tree" => Ok(local_tree(&s("path"), req.get("hidden").and_then(|v| v.as_bool()).unwrap_or(false), req.get("max").and_then(|v| v.as_u64()).unwrap_or(20000) as usize)),
         op => Err(format!("'{op}' is only available on remote hosts")),
     })();
@@ -804,8 +807,11 @@ fn local_tree(root: &str, hidden: bool, limit: usize) -> Value {
     json!({"root": root, "entries": out, "truncated": false})
 }
 
-fn local_grep(root: &str, pattern: &str, icase: bool) -> Result<Value, String> {
-    let needle = if icase { pattern.to_lowercase() } else { pattern.to_string() };
+/// Search file contents under `root`: the text as typed, or with `regex` a
+/// regular expression (the extended syntax the agent's `grep -E` takes).
+fn local_grep(root: &str, pattern: &str, icase: bool, regex: bool) -> Result<Value, String> {
+    let pat = if regex { pattern.to_string() } else { regex::escape(pattern) };
+    let re = regex::RegexBuilder::new(&pat).case_insensitive(icase).build().map_err(|e| format!("bad regex: {e}"))?;
     let mut hits = Vec::new();
     let mut stack = vec![PathBuf::from(root)];
     while let Some(dir) = stack.pop() {
@@ -829,8 +835,7 @@ fn local_grep(root: &str, pattern: &str, icase: bool) -> Result<Value, String> {
             }
             let text = String::from_utf8_lossy(&bytes);
             for (i, line) in text.lines().enumerate() {
-                let hay = if icase { line.to_lowercase() } else { line.to_string() };
-                if hay.contains(&needle) {
+                if re.is_match(line) {
                     let t: String = line.chars().take(400).collect();
                     hits.push(json!([p.display().to_string().replace('\\', "/"), i + 1, t]));
                     if hits.len() >= 500 {
@@ -846,6 +851,24 @@ fn local_grep(root: &str, pattern: &str, icase: bool) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_grep_text_or_regex() {
+        let d = std::env::temp_dir().join(format!("weft-grep-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("a.c"), "void Start(int x);\nStart here\nrestart(\n").unwrap();
+        let root = d.display().to_string();
+        let lines = |p: &str, icase, rx| -> Result<Vec<String>, String> {
+            let v = local_grep(&root, p, icase, rx)?;
+            Ok(v["hits"].as_array().unwrap().iter().map(|h| h[2].as_str().unwrap().to_string()).collect())
+        };
+        assert_eq!(lines("Start(", false, false).unwrap(), ["void Start(int x);"], "text: ( is a character");
+        assert_eq!(lines(r"Start\(", false, true).unwrap(), ["void Start(int x);"], r"regex: \( is a bracket");
+        assert_eq!(lines(r"(St|st)art\(", false, true).unwrap(), ["void Start(int x);", "restart("]);
+        assert_eq!(lines("start here", true, false).unwrap(), ["Start here"], "ignore case");
+        assert!(lines("Start(", false, true).unwrap_err().contains("bad regex"), "an unclosed group is an error, not zero hits");
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     #[cfg(windows)]
     #[test]
