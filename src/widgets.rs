@@ -9,6 +9,20 @@ use crate::theme;
 use egui::{pos2, vec2, Align2, CornerRadius, FontId, Id, Rect, Sense, Stroke, Ui};
 use std::cmp::Ordering;
 
+/// A dialog window that fits the screen: at most `size`, never larger than
+/// the window it opens in (help and the like ran off a small window's edge).
+pub fn dialog(ctx: &egui::Context, title: &str, size: egui::Vec2) -> egui::Window<'static> {
+    let screen = ctx.screen_rect();
+    let room = (screen.size() - vec2(24.0, 24.0)).max(vec2(160.0, 120.0));
+    egui::Window::new(title.to_owned())
+        .collapsible(false)
+        .default_size(size.min(room))
+        .max_size(room)
+        .default_pos(screen.center())
+        .pivot(Align2::CENTER_CENTER)
+        .constrain_to(screen)
+}
+
 /// Text at `pos` (left edge, vertically centred) cut with … to `max_w`,
 /// so it never runs into whatever sits to its right.
 pub fn text_fit(p: &egui::Painter, pos: egui::Pos2, text: &str, font: FontId, color: egui::Color32, max_w: f32) {

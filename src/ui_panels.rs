@@ -1283,7 +1283,7 @@ impl App {
         let key_labels: Vec<String> = COMMANDS.iter().map(|c| self.keys_label(c.0)).collect();
         let mut open = true;
         let mut run: Option<Cmd> = None;
-        egui::Window::new("Help").open(&mut open).collapsible(false).resizable(true).default_size(vec2(600.0, 620.0)).show(ctx, |ui| {
+        crate::widgets::dialog(ctx, "Help", vec2(600.0, 620.0)).open(&mut open).resizable(true).show(ctx, |ui| {
             ui.horizontal(|ui| {
                 if ui.selectable_label(!h.features, "Commands and keys").clicked() {
                     h.features = false;
@@ -1325,10 +1325,14 @@ impl App {
                 if !keys.is_empty() {
                     ui.add_space(4.0);
                     ui.label(RichText::new("Keys and mouse").strong().color(theme::text_dim()));
-                    egui::Grid::new("help-keys").num_columns(2).spacing([16.0, 4.0]).show(ui, |ui| {
+                    // The descriptions wrap: in one line they widened the window
+                    // past a small screen's edge.
+                    let key_w = (ui.available_width() * 0.4).min(220.0);
+                    let what_w = (ui.available_width() - key_w - 16.0).max(120.0);
+                    egui::Grid::new("help-keys").num_columns(2).spacing([16.0, 4.0]).max_col_width(what_w).show(ui, |ui| {
                         for (k, what) in keys {
-                            ui.label(RichText::new(*k).monospace().color(theme::accent()));
-                            ui.label(*what);
+                            ui.add(egui::Label::new(RichText::new(*k).monospace().color(theme::accent())).wrap());
+                            ui.add(egui::Label::new(*what).wrap());
                             ui.end_row();
                         }
                     });
@@ -1390,7 +1394,7 @@ impl App {
         let mut change: Option<(&'static str, Option<Vec<String>>)> = None;
         let mut reset_all = false;
         let q = w.query.to_lowercase();
-        egui::Window::new("Keyboard shortcuts").open(&mut open).collapsible(false).resizable(true).default_size(vec2(640.0, 620.0)).show(ctx, |ui| {
+        crate::widgets::dialog(ctx, "Keyboard shortcuts", vec2(640.0, 620.0)).open(&mut open).resizable(true).show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.add(TextEdit::singleline(&mut w.query).hint_text("search commands or keys…").desired_width(ui.available_width() - 90.0));
                 if ui.add_enabled(!self.settings.keys.is_empty(), egui::Button::new("Reset all")).on_hover_text("every command back to its default keys").clicked() {
@@ -1513,7 +1517,7 @@ impl App {
         let mut open = true;
         let mut pick = None;
         let mut new = false;
-        egui::Window::new("Memos").open(&mut open).collapsible(false).resizable(true).default_size(vec2(380.0, 460.0)).show(ctx, |ui| {
+        crate::widgets::dialog(ctx, "Memos", vec2(380.0, 460.0)).open(&mut open).resizable(true).show(ctx, |ui| {
             ui.horizontal(|ui| {
                 if ui.button("New memo").on_hover_text("Ctrl+Shift+M").clicked() {
                     new = true;
@@ -1547,78 +1551,81 @@ impl App {
         let mut delete: Option<Item> = None;
         let mut pw_changed = false;
         let dir = self.data.root.display().to_string();
-        egui::Window::new("Privacy").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
-            ui.label(RichText::new(format!("Kept in {dir}")).size(11.5).color(theme::text_faint()));
-            ui.add_space(4.0);
-            egui::Grid::new("records-grid").num_columns(5).spacing([14.0, 8.0]).show(ui, |ui| {
-                for h in ["", "Keep", "Up to", "Now", ""] {
-                    ui.label(RichText::new(h).size(11.5).color(theme::text_dim()));
-                }
-                ui.end_row();
-                for (item, size) in &sizes {
-                    let rule = item.rule_mut(&mut self.settings.records);
-                    changed |= ui.checkbox(&mut rule.on, item.label()).on_hover_text(item.hint()).changed();
-                    changed |= ui
-                        .add(egui::DragValue::new(&mut rule.keep_days).range(0..=3650).speed(0.5).custom_formatter(|v, _| if v == 0.0 { "forever".into() } else { format!("{v} days") }))
-                        .on_hover_text("drag or type; 0 = forever")
-                        .changed();
-                    changed |= ui
-                        .add(egui::DragValue::new(&mut rule.max_mb).range(0..=100_000).speed(1.0).custom_formatter(|v, _| if v == 0.0 { "no limit".into() } else { format!("{v} MB") }))
-                        .on_hover_text(if *item == Item::History { "per host; drag or type; 0 = no limit" } else { "drag or type; 0 = no limit" })
-                        .changed();
-                    ui.label(RichText::new(human_size(*size)).size(12.0).color(theme::text_dim()));
-                    ui.menu_button(RichText::new("Delete…").size(12.0), |ui| {
-                        if ui.button(RichText::new(format!("Delete all {}", item.label().to_lowercase())).color(theme::error())).clicked() {
-                            delete = Some(*item);
-                            ui.close_menu();
-                        }
-                    });
+        crate::widgets::dialog(ctx, "Privacy", vec2(560.0, 680.0)).open(&mut open).resizable(false).show(ctx, |ui| {
+            // Taller than a small window: it scrolls.
+            ScrollArea::vertical().show(ui, |ui| {
+                ui.label(RichText::new(format!("Kept in {dir}")).size(11.5).color(theme::text_faint()));
+                ui.add_space(4.0);
+                egui::Grid::new("records-grid").num_columns(5).spacing([14.0, 8.0]).show(ui, |ui| {
+                    for h in ["", "Keep", "Up to", "Now", ""] {
+                        ui.label(RichText::new(h).size(11.5).color(theme::text_dim()));
+                    }
                     ui.end_row();
-                }
-            });
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.label("Output kept per command:");
-                changed |= ui
-                    .add(egui::DragValue::new(&mut self.settings.records.output_kb).range(0..=1_000_000).speed(4.0).custom_formatter(|v, _| if v == 0.0 { "all".into() } else { format!("{v} KB") }))
-                    .on_hover_text("longer output keeps its start and end; 0 = all of it")
-                    .changed();
-            });
-            ui.add_space(8.0);
-            ui.separator();
-            ui.label(RichText::new("ssh passwords in memory").strong());
-            ui.label(
-                RichText::new(format!(
-                    "{} held now. Never written to disk; ssh gets one through a one-time ticket, not its environment.\n\
-                     Keys + ssh-agent are better still: then weft holds no password at all.",
-                    self.secrets.len()
-                ))
-                .size(11.0)
-                .color(theme::text_faint()),
-            );
-            let pw = &mut self.settings.passwords;
-            let how = if cfg!(windows) { "Encrypt them (ChaCha20, key sealed by Windows)" } else { "Encrypt them (ChaCha20)" };
-            pw_changed |= ui.checkbox(&mut pw.encrypt, how).changed();
-            ui.add_enabled_ui(pw.encrypt, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("New key every");
-                    pw_changed |= secs_input(ui, "pw-rotate", &mut pw.rotate_secs, "never");
+                    for (item, size) in &sizes {
+                        let rule = item.rule_mut(&mut self.settings.records);
+                        changed |= ui.checkbox(&mut rule.on, item.label()).on_hover_text(item.hint()).changed();
+                        changed |= ui
+                            .add(egui::DragValue::new(&mut rule.keep_days).range(0..=3650).speed(0.5).custom_formatter(|v, _| if v == 0.0 { "forever".into() } else { format!("{v} days") }))
+                            .on_hover_text("drag or type; 0 = forever")
+                            .changed();
+                        changed |= ui
+                            .add(egui::DragValue::new(&mut rule.max_mb).range(0..=100_000).speed(1.0).custom_formatter(|v, _| if v == 0.0 { "no limit".into() } else { format!("{v} MB") }))
+                            .on_hover_text(if *item == Item::History { "per host; drag or type; 0 = no limit" } else { "drag or type; 0 = no limit" })
+                            .changed();
+                        ui.label(RichText::new(human_size(*size)).size(12.0).color(theme::text_dim()));
+                        ui.menu_button(RichText::new("Delete…").size(12.0), |ui| {
+                            if ui.button(RichText::new(format!("Delete all {}", item.label().to_lowercase())).color(theme::error())).clicked() {
+                                delete = Some(*item);
+                                ui.close_menu();
+                            }
+                        });
+                        ui.end_row();
+                    }
                 });
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label("Output kept per command:");
+                    changed |= ui
+                        .add(egui::DragValue::new(&mut self.settings.records.output_kb).range(0..=1_000_000).speed(4.0).custom_formatter(|v, _| if v == 0.0 { "all".into() } else { format!("{v} KB") }))
+                        .on_hover_text("longer output keeps its start and end; 0 = all of it")
+                        .changed();
+                });
+                ui.add_space(8.0);
+                ui.separator();
+                ui.label(RichText::new("ssh passwords in memory").strong());
+                ui.label(
+                    RichText::new(format!(
+                        "{} held now. Never written to disk; ssh gets one through a one-time ticket, not its environment.\n\
+                         Keys + ssh-agent are better still: then weft holds no password at all.",
+                        self.secrets.len()
+                    ))
+                    .size(11.0)
+                    .color(theme::text_faint()),
+                );
+                let pw = &mut self.settings.passwords;
+                let how = if cfg!(windows) { "Encrypt them (ChaCha20, key sealed by Windows)" } else { "Encrypt them (ChaCha20)" };
+                pw_changed |= ui.checkbox(&mut pw.encrypt, how).changed();
+                ui.add_enabled_ui(pw.encrypt, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("New key every");
+                        pw_changed |= secs_input(ui, "pw-rotate", &mut pw.rotate_secs, "never");
+                    });
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Forget a password unused for");
+                    pw_changed |= secs_input(ui, "pw-forget", &mut pw.forget_secs, "never");
+                });
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(
+                        "Limits apply at start and every hour; dated files go a whole day at a time.\n\
+                         Keystrokes are never written, so passwords typed at a prompt are in none of these.\n\
+                         A command typed with a leading space is left out of commands and history.",
+                    )
+                    .size(11.0)
+                    .color(theme::text_faint()),
+                );
             });
-            ui.horizontal(|ui| {
-                ui.label("Forget a password unused for");
-                pw_changed |= secs_input(ui, "pw-forget", &mut pw.forget_secs, "never");
-            });
-            ui.add_space(6.0);
-            ui.label(
-                RichText::new(
-                    "Limits apply at start and every hour; dated files go a whole day at a time.\n\
-                     Keystrokes are never written, so passwords typed at a prompt are in none of these.\n\
-                     A command typed with a leading space is left out of commands and history.",
-                )
-                .size(11.0)
-                .color(theme::text_faint()),
-            );
         });
         let mut sizes = sizes;
         if let Some(item) = delete {
@@ -2822,7 +2829,9 @@ impl App {
                             ui.painter().rect_filled(rect, CornerRadius::same(5), if i == st.sel { theme::tint(theme::accent(), 45) } else { theme::bg_hover() });
                         }
                         let keys_w = if keys.is_empty() { 0.0 } else { text_width(ui.painter(), keys, FontId::proportional(11.5)) + 16.0 };
-                        ui.painter().text(pos2(rect.right() - 10.0, rect.center().y), Align2::RIGHT_CENTER, keys, FontId::proportional(11.5), theme::text_faint());
+                        // Faint grey vanished on the selected row's accent fill.
+                        let keys_color = if i == st.sel { theme::text_dim() } else { theme::text_faint() };
+                        ui.painter().text(pos2(rect.right() - 10.0, rect.center().y), Align2::RIGHT_CENTER, keys, FontId::proportional(11.5), keys_color);
                         text_fit(ui.painter(), pos2(rect.left() + 10.0, rect.center().y), label, FontId::proportional(13.0), theme::text(), rect.width() - 20.0 - keys_w);
                         if resp.clicked() {
                             run = Some(*cmd);
@@ -3027,7 +3036,7 @@ impl App {
         let current = if m.icons { self.settings.icon_font.clone() } else { self.settings.term_font.clone() };
         let fonts_dir = self.fonts_dir();
         let size = self.settings.font_size;
-        egui::Window::new("Fonts").open(&mut open).collapsible(false).resizable(true).default_size(vec2(440.0, 520.0)).show(ctx, |ui| {
+        crate::widgets::dialog(ctx, "Fonts", vec2(440.0, 520.0)).open(&mut open).resizable(true).show(ctx, |ui| {
             ui.horizontal(|ui| {
                 if ui.selectable_label(!m.icons, "Terminal font").on_hover_text("text in the terminal and the editor").clicked() {
                     m.icons = false;
