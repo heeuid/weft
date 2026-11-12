@@ -633,6 +633,29 @@ fn mtime_of(md: &std::fs::Metadata) -> f64 {
     md.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs_f64()).unwrap_or(0.0)
 }
 
+/// Whether a directory entry stays out of listings. Dot names and, on Windows,
+/// the hidden attribute show only with `show_hidden`; hidden+system entries
+/// never show, as in Explorer. Those are OS files and the compatibility links
+/// like "My Documents" that refuse to be listed.
+fn is_hidden(e: &std::fs::DirEntry, name: &str, show_hidden: bool) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const HIDDEN: u32 = 0x2;
+        const SYSTEM: u32 = 0x4;
+        let attrs = e.metadata().map(|m| m.file_attributes()).unwrap_or(0);
+        if attrs & (HIDDEN | SYSTEM) == HIDDEN | SYSTEM {
+            return true;
+        }
+        if !show_hidden && attrs & HIDDEN != 0 {
+            return true;
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = e;
+    !show_hidden && name.starts_with('.')
+}
+
 fn local_op(req: &Value) -> Value {
     let s = |k: &str| req.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
     let result: Result<Value, String> = (|| match req.get("op").and_then(|v| v.as_str()).unwrap_or("") {
@@ -643,7 +666,7 @@ fn local_op(req: &Value) -> Value {
             let mut entries = Vec::new();
             for e in std::fs::read_dir(&dir).map_err(|e| e.to_string())?.flatten() {
                 let name = e.file_name().to_string_lossy().into_owned();
-                if !hidden && name.starts_with('.') {
+                if is_hidden(&e, &name, hidden) {
                     continue;
                 }
                 let link = e.file_type().map(|t| t.is_symlink()).unwrap_or(false);
@@ -743,7 +766,7 @@ fn local_tree(root: &str, hidden: bool, limit: usize) -> Value {
         let Ok(rd) = std::fs::read_dir(&dir) else { continue };
         for e in rd.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
-            if !hidden && name.starts_with('.') {
+            if is_hidden(&e, &name, hidden) {
                 continue;
             }
             let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
@@ -802,6 +825,22 @@ fn local_grep(root: &str, pattern: &str, icase: bool) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn listing_leaves_out_protected_windows_links() {
+        let home = std::env::var("USERPROFILE").unwrap();
+        for hidden in [false, true] {
+            let v = local_op(&json!({"op": "list", "path": home, "hidden": hidden}));
+            let names: Vec<&str> = v["entries"].as_array().unwrap().iter().map(|e| e["n"].as_str().unwrap()).collect();
+            for link in ["My Documents", "Application Data", "Local Settings", "NetHood"] {
+                assert!(!names.contains(&link), "{link} listed (hidden={hidden})");
+            }
+            assert!(names.contains(&"Documents"), "{names:?}");
+        }
+        let v = local_op(&json!({"op": "list", "path": home, "hidden": false}));
+        assert!(!v["entries"].as_array().unwrap().iter().any(|e| e["n"] == "NTUSER.DAT"));
+    }
 
     #[test]
     fn bootstrap_commands_survive_any_argv_parser() {
