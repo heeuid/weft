@@ -1,8 +1,104 @@
-//! Find and replace in the editor (Ctrl+F, Ctrl+H): the text as typed or a
-//! regular expression, with or without case; replace one match or all, with
-//! $1-style groups in regex mode.
+//! Searching text: in the editor (Ctrl+F, Ctrl+H) and in the Search tab.
+//! Four ways to read the query (MatchMode): the text as typed, fuzzy
+//! (its characters in order), glob (* ? [..]) or a regular expression. All
+//! but text become an extended regex (the syntax both Rust's regex and
+//! `grep -E` take), so a remote grep finds what the editor would.
 
 use regex::{NoExpand, Regex, RegexBuilder};
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum MatchMode {
+    #[default]
+    Text,
+    Fuzzy,
+    Glob,
+    Regex,
+}
+
+impl MatchMode {
+    pub const ALL: [MatchMode; 4] = [MatchMode::Text, MatchMode::Fuzzy, MatchMode::Glob, MatchMode::Regex];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            MatchMode::Text => "text",
+            MatchMode::Fuzzy => "fuzzy",
+            MatchMode::Glob => "glob",
+            MatchMode::Regex => "regex",
+        }
+    }
+
+    pub fn hint(self) -> &'static str {
+        match self {
+            MatchMode::Text => "the text as typed",
+            MatchMode::Fuzzy => "its characters in this order on one line: gst finds git status (any case unless Aa)",
+            MatchMode::Glob => "* any run, ? one character, [ab] one of: Start*(int",
+            MatchMode::Regex => "extended regex: ( | + ? are operators, \\( a bracket; $1 in a replacement",
+        }
+    }
+
+    /// Fuzzy ignores case unless asked: its point is typing less.
+    pub fn ignores_case(self, case: bool) -> bool {
+        !case
+    }
+}
+
+/// Escape for extended regex: what both Rust's regex and grep -E read as
+/// the character itself (regex::escape also escapes - # & ~, which some
+/// greps warn about).
+pub fn ere_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if ".[]()*+?{}|^$\\".contains(c) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+fn glob_to_ere(g: &str) -> String {
+    let cs: Vec<char> = g.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < cs.len() {
+        match cs[i] {
+            '*' => out.push_str(".*"),
+            '?' => out.push('.'),
+            '[' => {
+                // A class runs to the next ]; [! is [^. No ]: a plain [.
+                match cs[i + 1..].iter().position(|&c| c == ']') {
+                    Some(n) if n > 0 => {
+                        let body: String = cs[i + 1..i + 1 + n].iter().collect();
+                        let body = body.strip_prefix('!').map(|b| format!("^{b}")).unwrap_or(body);
+                        out.push('[');
+                        out.push_str(&body.replace('\\', "\\\\"));
+                        out.push(']');
+                        i += n + 1;
+                    }
+                    _ => out.push_str("\\["),
+                }
+            }
+            c => out.push_str(&ere_escape(&c.to_string())),
+        }
+        i += 1;
+    }
+    out
+}
+
+/// The query as an extended regex for `mode`. `lazy` keeps fuzzy matches
+/// short (Rust regex only; grep -E has no lazy repeat, nor needs one).
+pub fn to_regex(mode: MatchMode, q: &str, lazy: bool) -> String {
+    match mode {
+        MatchMode::Text => ere_escape(q),
+        MatchMode::Regex => q.to_string(),
+        MatchMode::Glob => glob_to_ere(q),
+        MatchMode::Fuzzy => {
+            let gap = if lazy { ".*?" } else { ".*" };
+            q.chars().filter(|c| !c.is_whitespace()).map(|c| ere_escape(&c.to_string())).collect::<Vec<_>>().join(gap)
+        }
+    }
+}
 
 #[derive(Clone, Default)]
 pub struct FindBar {
@@ -10,7 +106,7 @@ pub struct FindBar {
     pub replace: String,
     /// Match case (else any case).
     pub case: bool,
-    pub regex: bool,
+    pub mode: MatchMode,
     /// The replace row is shown.
     pub replacing: bool,
     /// Index of the current match.
@@ -21,8 +117,11 @@ pub struct FindBar {
 
 impl FindBar {
     fn regex(&self) -> Result<Regex, String> {
-        let pat = if self.regex { self.query.clone() } else { regex::escape(&self.query) };
-        RegexBuilder::new(&pat).case_insensitive(!self.case).multi_line(true).build().map_err(|e| e.to_string().lines().last().unwrap_or("bad regex").trim().to_string())
+        RegexBuilder::new(&to_regex(self.mode, &self.query, true))
+            .case_insensitive(self.mode.ignores_case(self.case))
+            .multi_line(true)
+            .build()
+            .map_err(|e| e.to_string().lines().last().unwrap_or("bad regex").trim().to_string())
     }
 
     /// Byte ranges of every match (empty matches skipped).
@@ -38,7 +137,7 @@ impl FindBar {
         let re = self.regex()?;
         let caps = re.captures_at(text, m.0).filter(|c| c.get(0).map(|g| (g.start(), g.end())) == Some(m)).ok_or("the match moved")?;
         let mut new = String::new();
-        if self.regex {
+        if self.mode == MatchMode::Regex {
             caps.expand(&self.replace, &mut new);
         } else {
             new.push_str(&self.replace);
@@ -54,7 +153,7 @@ impl FindBar {
             return Ok(0);
         }
         let re = self.regex()?;
-        *text = if self.regex { re.replace_all(text, self.replace.as_str()).into_owned() } else { re.replace_all(text, NoExpand(&self.replace)).into_owned() };
+        *text = if self.mode == MatchMode::Regex { re.replace_all(text, self.replace.as_str()).into_owned() } else { re.replace_all(text, NoExpand(&self.replace)).into_owned() };
         Ok(n)
     }
 }
@@ -74,7 +173,33 @@ mod tests {
     use super::*;
 
     fn bar(q: &str, case: bool, regex: bool) -> FindBar {
-        FindBar { query: q.into(), case, regex, ..Default::default() }
+        FindBar { query: q.into(), case, mode: if regex { MatchMode::Regex } else { MatchMode::Text }, ..Default::default() }
+    }
+
+    fn found(mode: MatchMode, q: &str, t: &str) -> Vec<String> {
+        let b = FindBar { query: q.into(), mode, ..Default::default() };
+        b.matches(t).unwrap().into_iter().map(|(a, e)| t[a..e].to_string()).collect()
+    }
+
+    #[test]
+    fn fuzzy_and_glob() {
+        let t = "git status\ngit stash\nvoid Start(int x);\n[x] done";
+        // Fuzzy: the characters in order, on one line, any case.
+        assert_eq!(found(MatchMode::Fuzzy, "gst", t), ["git st", "git st"]);
+        assert_eq!(found(MatchMode::Fuzzy, "STtus", t), ["status"]);
+        assert!(found(MatchMode::Fuzzy, "gitvoid", t).is_empty(), "never across lines");
+        // Glob: * ? [..], the rest as typed (brackets and parens too).
+        assert_eq!(found(MatchMode::Glob, "Start*(int", t), ["Start(int"]);
+        assert_eq!(found(MatchMode::Glob, "st?sh", t), ["stash"]);
+        assert_eq!(found(MatchMode::Glob, "git sta[!t]", t), ["git stas"], "[!..]: none of these");
+        assert_eq!(found(MatchMode::Glob, "[cd]one", t), ["done"], "[..]: one of these");
+        assert!(found(MatchMode::Glob, "[x] d*", t).is_empty(), "[x] is a class, not the text [x]");
+        assert_eq!(found(MatchMode::Glob, "\\[x", t).len(), 0);
+        // The same text for grep -E: no Rust-only syntax.
+        assert_eq!(to_regex(MatchMode::Fuzzy, "a.b", false), "a.*\\..*b");
+        assert_eq!(to_regex(MatchMode::Glob, "*.rs", false), ".*\\.rs");
+        assert_eq!(to_regex(MatchMode::Glob, "[!ab]x", false), "[^ab]x");
+        assert_eq!(to_regex(MatchMode::Text, "f(x)+1", false), "f\\(x\\)\\+1");
     }
 
     #[test]

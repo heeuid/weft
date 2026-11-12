@@ -764,7 +764,7 @@ fn local_op(req: &Value) -> Value {
         }
         "grep" => {
             let flag = |k: &str| req.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
-            local_grep(&s("path"), &s("pattern"), flag("icase"), flag("regex"))
+            local_grep(&s("path"), &s("pattern"), flag("icase"), flag("regex"), flag("hidden"))
         }
         "tree" => Ok(local_tree(&s("path"), req.get("hidden").and_then(|v| v.as_bool()).unwrap_or(false), req.get("max").and_then(|v| v.as_u64()).unwrap_or(20000) as usize)),
         op => Err(format!("'{op}' is only available on remote hosts")),
@@ -809,7 +809,7 @@ fn local_tree(root: &str, hidden: bool, limit: usize) -> Value {
 
 /// Search file contents under `root`: the text as typed, or with `regex` a
 /// regular expression (the extended syntax the agent's `grep -E` takes).
-fn local_grep(root: &str, pattern: &str, icase: bool, regex: bool) -> Result<Value, String> {
+fn local_grep(root: &str, pattern: &str, icase: bool, regex: bool, hidden: bool) -> Result<Value, String> {
     let pat = if regex { pattern.to_string() } else { regex::escape(pattern) };
     let re = regex::RegexBuilder::new(&pat).case_insensitive(icase).build().map_err(|e| format!("bad regex: {e}"))?;
     let mut hits = Vec::new();
@@ -819,6 +819,9 @@ fn local_grep(root: &str, pattern: &str, icase: bool, regex: bool) -> Result<Val
         for e in rd.flatten() {
             let p = e.path();
             let name = e.file_name().to_string_lossy().into_owned();
+            if !hidden && (name.starts_with('.') || is_hidden(&e, &name, false)) {
+                continue;
+            }
             let Ok(ft) = e.file_type() else { continue };
             if ft.is_dir() {
                 if ![".git", "node_modules", "target", "__pycache__"].contains(&name.as_str()) {
@@ -853,13 +856,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn local_grep_modes_and_hidden() {
+        use crate::editfind::{to_regex, MatchMode};
+        let d = std::env::temp_dir().join(format!("weft-grep-modes-{}", std::process::id()));
+        std::fs::create_dir_all(d.join(".hid")).unwrap();
+        std::fs::write(d.join("a.txt"), "git status\nvoid Start(int x);\nstash it\n").unwrap();
+        std::fs::write(d.join(".env"), "git status hidden\n").unwrap();
+        std::fs::write(d.join(".hid").join("b.txt"), "git status in hidden dir\n").unwrap();
+        let root = d.display().to_string();
+        // As the Search tab sends it: fuzzy and glob as extended regex.
+        let search = |mode: MatchMode, q: &str, icase, hidden| -> Vec<String> {
+            let regex = mode != MatchMode::Text;
+            let p = if regex { to_regex(mode, q, false) } else { q.to_string() };
+            let v = local_grep(&root, &p, icase, regex, hidden).unwrap();
+            let mut l: Vec<String> = v["hits"].as_array().unwrap().iter().map(|h| h[2].as_str().unwrap().to_string()).collect();
+            l.sort();
+            l
+        };
+        assert_eq!(search(MatchMode::Fuzzy, "gst", true, false), ["git status"]);
+        assert_eq!(search(MatchMode::Glob, "Start*(int", false, false), ["void Start(int x);"]);
+        assert_eq!(search(MatchMode::Glob, "st?sh", false, false), ["stash it"]);
+        assert_eq!(search(MatchMode::Regex, r"^(git|stash) ", false, false), ["git status", "stash it"]);
+        assert_eq!(search(MatchMode::Text, "GIT", true, false), ["git status"], "ignore case on");
+        assert!(search(MatchMode::Text, "GIT", false, false).is_empty(), "ignore case off");
+        assert_eq!(search(MatchMode::Text, "git status", false, true), ["git status", "git status hidden", "git status in hidden dir"], "hidden on");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
     fn local_grep_text_or_regex() {
         let d = std::env::temp_dir().join(format!("weft-grep-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(d.join("a.c"), "void Start(int x);\nStart here\nrestart(\n").unwrap();
         let root = d.display().to_string();
         let lines = |p: &str, icase, rx| -> Result<Vec<String>, String> {
-            let v = local_grep(&root, p, icase, rx)?;
+            let v = local_grep(&root, p, icase, rx, false)?;
             Ok(v["hits"].as_array().unwrap().iter().map(|h| h[2].as_str().unwrap().to_string()).collect())
         };
         assert_eq!(lines("Start(", false, false).unwrap(), ["void Start(int x);"], "text: ( is a character");

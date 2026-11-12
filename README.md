@@ -131,7 +131,7 @@ TUI 그리드(날실) 사이에 GUI(씨실)를 엮어 넣은 터미널. Rust (`e
     이름 목록은 한 번만 받아 오고(원격은 에이전트가 python으로, `.git`·`node_modules`·`target` 등은 안으로 안 들어감, 최대 2만 개) 매칭·정렬은 로컬에서 즉시.
     결과 더블클릭 = 파일 열기 / 폴더는 트리에서 펼쳐 보여 주기, Enter = 첫 결과.
 - **Commands**: 현재 패널의 명령 블록 목록 (클릭 시 스크롤).
-- **Search**: 원격은 `grep -rnI`(POSIX), 로컬은 Rust로 검색. 결과 클릭 = 해당 줄 열기.
+- **Search**: 파일 내용 검색. 모드 `text`(그대로) / `fuzzy`(글자 순서, `gst`→`git status`) / `glob`(`*` `?` `[ab]`) / `regex`(확장 정규식, `\(`는 괄호), `ignore case`, `hidden`(점으로 시작하는 파일·폴더도, 기본 끔). 원격은 `grep -E`(fuzzy·glob도 같은 뜻의 정규식으로 바꿔 보냄), 로컬은 Rust. 잘못된 정규식은 오류로 표시. 결과 클릭 = 해당 줄 열기, 우클릭 = 그 폴더로 cd·Files에서 보기·복사.
 - **Procs**: 원격 `ps` 표, 정렬/필터, 우클릭 TERM/KILL.
 
 ## 연결
@@ -165,7 +165,7 @@ TUI 그리드(날실) 사이에 GUI(씨실)를 엮어 넣은 터미널. Rust (`e
 | `Ctrl+V` | 붙여넣기 (bracketed paste) |
 | `Ctrl+= / Ctrl+-` | 글꼴 크기 |
 | `Ctrl+S` | (에디터) 저장 |
-| `Ctrl+F` / `Ctrl+H` | (에디터) 찾기 / 바꾸기: 글자 그대로 또는 정규식(`.*`, 바꿀 말에 `$1`), 대소문자(`Aa`), `Enter`·`F3` 다음, `Shift+Enter`·`Shift+F3` 이전, `Replace`(하나) / `All`(전부), `Esc` 닫기 |
+| `Ctrl+F` / `Ctrl+H` | (에디터) 찾기 / 바꾸기: `text` / `fuzzy` / `glob` / `regex`(바꿀 말에 `$1`), 대소문자(`Aa`), 일치마다 배경·현재 위치는 진하게, 바꾸기는 `Ctrl+Z`로 되돌림, `Enter`·`F3` 다음, `Shift+Enter`·`Shift+F3` 이전, `Replace`(하나) / `All`(전부), `Esc` 닫기 |
 
 ## 디자인
 

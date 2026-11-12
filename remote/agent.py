@@ -191,28 +191,44 @@ def op_grep(req):
     pattern = req["pattern"]
     root = _path(req.get("path"))
     limit = int(req.get("limit", 500))
-    cmd = ["grep", "-rnI", "--exclude-dir=.git", "--exclude-dir=node_modules", "--exclude-dir=target"]
+    cmd = ["grep", "-rnIH", "--exclude-dir=.git", "--exclude-dir=node_modules", "--exclude-dir=target"]
     if req.get("icase"):
         cmd.append("-i")
-    # Regex: extended syntax (-E), where ( | + ? are operators and \( a
-    # bracket; basic syntax had it the other way round.
-    cmd.append("-E" if req.get("regex") else "-F")
-    cmd += ["-e", pattern, root]
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    # Always extended syntax (-E: ( | + ? are operators, \( a bracket); text
+    # as typed goes escaped. -F with -i crashes some greps (msys).
+    if not req.get("regex"):
+        pattern = "".join("\\" + c if c in ".[]()*+?{}|^$\\" else c for c in pattern)
+    cmd += ["-E", "-e", pattern]
+    cwd = None
+    if req.get("hidden"):
+        cmd.append(root)
+    else:
+        # Skip names starting with a dot. grep applies --exclude-dir to the
+        # folders it is given too, by any part of their path (so all of
+        # ~/.config/x would go): give it the folder's visible entries,
+        # from inside it, and let the rule work on names below.
+        entries = sorted(e for e in os.listdir(root) if not e.startswith("."))
+        if not entries:
+            return {"root": root, "pattern": pattern, "hits": [], "truncated": False}
+        cmd[1:1] = ["--exclude=.*", "--exclude-dir=.*"]
+        cmd += ["--"] + entries
+        cwd = root
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
     hits = []
     for raw in proc.stdout:
         line = raw.decode("utf-8", "replace").rstrip("\n")
         path, _, rest = line.partition(":")
         num, _, text = rest.partition(":")
         if num.isdigit():
-            hits.append([path, int(num), text[:400]])
+            hits.append([os.path.join(root, path) if cwd else path, int(num), text[:400]])
         if len(hits) >= limit:
             proc.kill()
             break
     err = proc.stderr.read().decode("utf-8", "replace").strip()
     proc.wait()
-    # 2: trouble, such as a bad pattern (unreadable files also say so, with hits).
-    if proc.returncode == 2 and not hits:
+    # 0 found, 1 none; 2 is trouble such as a bad pattern (unreadable files
+    # also give 2, alongside hits); anything else, grep itself failed.
+    if proc.returncode not in (0, 1) and not hits and len(hits) < limit:
         raise ValueError(err.splitlines()[0] if err else "grep failed")
     return {"root": root, "pattern": pattern, "hits": hits, "truncated": len(hits) >= limit}
 

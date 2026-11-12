@@ -1541,13 +1541,18 @@ impl App {
             return;
         };
         ui.label(RichText::new(format!("in {host}:{root}")).size(11.5).color(theme::text_faint()));
-        let r = ui.add(TextEdit::singleline(&mut self.side.grep_q).hint_text("text to find (Enter)").desired_width(f32::INFINITY));
+        let r = ui.add(TextEdit::singleline(&mut self.side.grep_q).hint_text(format!("{} (Enter)", self.side.grep_mode.hint())).desired_width(f32::INFINITY));
         if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
             self.actions.push(Action::Grep);
         }
         ui.horizontal(|ui| {
+            egui::ComboBox::from_id_salt("grep-mode").width(62.0).selected_text(RichText::new(self.side.grep_mode.label()).size(12.0)).show_ui(ui, |ui| {
+                for m in editfind::MatchMode::ALL {
+                    ui.selectable_value(&mut self.side.grep_mode, m, m.label()).on_hover_text(m.hint());
+                }
+            });
             ui.checkbox(&mut self.side.grep_icase, RichText::new("ignore case").size(12.0));
-            ui.checkbox(&mut self.side.grep_regex, RichText::new("regex").size(12.0)).on_hover_text("regular expression, extended syntax (grep -E): ( ) | + ? are operators, \\( a bracket");
+            ui.checkbox(&mut self.side.grep_hidden, RichText::new("hidden").size(12.0)).on_hover_text("also in hidden files and folders (names starting with .)");
             if ui.button("Search").clicked() {
                 self.actions.push(Action::Grep);
             }
@@ -2248,8 +2253,13 @@ impl App {
                     bar.case = !bar.case;
                     nav = 2;
                 }
-                if ui.selectable_label(bar.regex, RichText::new(".*").monospace().size(12.0)).on_hover_text("regular expression ($1 in the replacement for a group)").clicked() {
-                    bar.regex = !bar.regex;
+                let before = bar.mode;
+                egui::ComboBox::from_id_salt("editor-find-mode").width(62.0).selected_text(RichText::new(bar.mode.label()).size(12.0)).show_ui(ui, |ui| {
+                    for m in editfind::MatchMode::ALL {
+                        ui.selectable_value(&mut bar.mode, m, m.label()).on_hover_text(m.hint());
+                    }
+                });
+                if bar.mode != before {
                     nav = 2;
                 }
                 match &ms {
@@ -2273,7 +2283,7 @@ impl App {
             });
             if bar.replacing {
                 ui.horizontal(|ui| {
-                    let hint = if bar.regex { "replace with… ($1, $2: groups)" } else { "replace with…" };
+                    let hint = if bar.mode == editfind::MatchMode::Regex { "replace with… ($1, $2: groups)" } else { "replace with…" };
                     ui.add(TextEdit::singleline(&mut bar.replace).id(Id::new("editor-find-r")).hint_text(hint).desired_width(220.0));
                     if ui.add_enabled(count > 0 && !f.loading, egui::Button::new("Replace")).on_hover_text("this match, then on to the next").clicked() {
                         rep_one = true;
