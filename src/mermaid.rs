@@ -60,6 +60,31 @@ enum Entry {
 struct Store {
     entries: HashMap<u64, Entry>,
     finished: Vec<(u64, Result<PathBuf, String>)>,
+    /// When each entry was last asked for (a counter), to drop the oldest.
+    used: HashMap<u64, u64>,
+    tick: u64,
+}
+
+/// Diagrams kept as textures. Each edit of a diagram is a new one; without
+/// a limit their textures piled up on the GPU for as long as weft ran.
+const KEEP: usize = 48;
+
+impl Store {
+    fn touch(&mut self, k: u64) {
+        self.tick += 1;
+        self.used.insert(k, self.tick);
+    }
+
+    /// Drop the least recently used diagrams over KEEP (not ones still
+    /// rendering); dropping a texture handle frees the texture.
+    fn trim(&mut self) {
+        while self.entries.len() > KEEP {
+            let oldest = self.entries.iter().filter(|e| !matches!(e.1, Entry::Rendering)).map(|e| *e.0).min_by_key(|k| self.used.get(k).copied().unwrap_or(0));
+            let Some(k) = oldest else { break };
+            self.entries.remove(&k);
+            self.used.remove(&k);
+        }
+    }
 }
 
 static STORE: OnceLock<Mutex<Store>> = OnceLock::new();
@@ -165,6 +190,8 @@ pub fn status(ctx: &egui::Context, cache_dir: &Path, source: &str, dark: bool, r
         };
         st.entries.insert(fk, entry);
     }
+    st.touch(k);
+    st.trim();
     if let Some(e) = st.entries.get(&k) {
         return match e {
             Entry::Ready(t, s) => Status::Ready(t.id(), *s),

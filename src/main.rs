@@ -44,6 +44,8 @@ struct WeftApp {
     repaint_debug: Option<(Instant, u32, std::collections::BTreeMap<String, u32>)>,
     /// The window title last sent.
     title: String,
+    /// For the health line in the log: since when, frames, font atlas fill.
+    health: (Instant, u64, f32),
 }
 
 impl eframe::App for WeftApp {
@@ -59,6 +61,30 @@ impl eframe::App for WeftApp {
                 *since = Instant::now();
                 *frames = 0;
                 causes.clear();
+            }
+        }
+        // Health, to find what makes a long-running weft misbehave (it
+        // flickered after hours): egui rebuilds every font when the glyph
+        // atlas is 80 % full, a frame that uploads everything again.
+        {
+            let (since, frames, last_fill) = &mut self.health;
+            *frames += 1;
+            let fill = ctx.fonts(|f| f.font_atlas_fill_ratio());
+            if *last_fill > 0.5 && fill < *last_fill * 0.5 {
+                self.app.data.log(&format!("health: font atlas was full ({:.0}%) and was rebuilt", *last_fill * 100.0));
+            }
+            *last_fill = fill;
+            if since.elapsed() >= Duration::from_secs(300) {
+                let textures = ctx.tex_manager().read().num_allocated();
+                let side = ctx.fonts(|f| f.max_texture_side());
+                let lines: usize = self.app.panes.values().map(|p| p.term.history.len()).sum();
+                self.app.data.log(&format!(
+                    "health: {frames} frames in 5 min, font atlas {:.0}% of {side}px, {textures} textures, {} panes, {lines} scrollback lines",
+                    fill * 100.0,
+                    self.app.panes.len()
+                ));
+                *since = Instant::now();
+                *frames = 0;
             }
         }
         let app = &mut self.app;
@@ -217,7 +243,7 @@ fn main() -> eframe::Result<()> {
             let fonts = format!("{} (from {before_fonts})", since_start());
             app.data.log(&format!("startup: window+GL {window}, fonts read {fonts}, app+panes {}", since_start()));
             let repaint_debug = std::env::var_os("WEFT_DEBUG_REPAINT").map(|_| (Instant::now(), 0, Default::default()));
-            Ok(Box::new(WeftApp { app, first_frame: true, repaint_debug, title: String::new() }))
+            Ok(Box::new(WeftApp { app, first_frame: true, repaint_debug, title: String::new(), health: (Instant::now(), 0, 0.0) }))
         }),
     )
 }
