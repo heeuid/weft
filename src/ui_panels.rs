@@ -453,8 +453,11 @@ impl App {
         let mut moved: Option<(usize, usize)> = None;
         let n_tabs = self.tabs.len();
         let font = FontId::proportional(12.5);
-        // Room for the tabs: all of it but the + and connect buttons.
-        let room = (ui.available_width() - 64.0).max(80.0);
+        // The buttons' wider spacing would carry over and push the strip's end
+        // onto the buttons on the right (the palette button lost its tooltip).
+        ui.spacing_mut().item_spacing.x = 2.0;
+        // Room for the tabs: all of it but the + and connect buttons and a margin.
+        let room = (ui.available_width() - 4.0 - 2.0 * (22.0 + 2.0) - 2.0 - 12.0).max(80.0);
         let natural: Vec<f32> = self
             .tabs
             .iter()
@@ -2291,11 +2294,22 @@ impl App {
             egui::Frame::popup(ui.style()).fill(theme::bg_raised()).corner_radius(CornerRadius::same(8)).inner_margin(8.0).show(ui, |ui| {
                 ui.set_width(460.0);
                 let id = Id::new("palette-q");
+                let mut moved = false;
                 if take_key(ui, Key::ArrowDown, |_| true) {
                     st.sel = (st.sel + 1).min(items.len().saturating_sub(1));
+                    moved = true;
                 }
                 if take_key(ui, Key::ArrowUp, |_| true) {
                     st.sel = st.sel.saturating_sub(1);
+                    moved = true;
+                }
+                if take_key(ui, Key::PageDown, |_| true) {
+                    st.sel = (st.sel + 10).min(items.len().saturating_sub(1));
+                    moved = true;
+                }
+                if take_key(ui, Key::PageUp, |_| true) {
+                    st.sel = st.sel.saturating_sub(10);
+                    moved = true;
                 }
                 if take_key(ui, Key::Enter, |_| true) {
                     run = items.get(st.sel).map(|i| i.0);
@@ -2316,17 +2330,24 @@ impl App {
                     st.sel = 0;
                 }
                 ui.add_space(4.0);
-                for (i, (cmd, label, keys)) in items.iter().enumerate() {
-                    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click());
-                    if i == st.sel || resp.hovered() {
-                        ui.painter().rect_filled(rect, CornerRadius::same(5), if i == st.sel { theme::tint(theme::accent(), 45) } else { theme::bg_hover() });
+                // As tall as the window allows below the palette; the rest scrolls.
+                let room = (ctx.screen_rect().bottom() - ui.cursor().top() - 24.0).max(120.0);
+                ScrollArea::vertical().max_height(room).auto_shrink([false, true]).show(ui, |ui| {
+                    for (i, (cmd, label, keys)) in items.iter().enumerate() {
+                        let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click());
+                        if i == st.sel && moved {
+                            ui.scroll_to_rect(rect, None);
+                        }
+                        if i == st.sel || resp.hovered() {
+                            ui.painter().rect_filled(rect, CornerRadius::same(5), if i == st.sel { theme::tint(theme::accent(), 45) } else { theme::bg_hover() });
+                        }
+                        ui.painter().text(pos2(rect.left() + 10.0, rect.center().y), Align2::LEFT_CENTER, label, FontId::proportional(13.0), theme::text());
+                        ui.painter().text(pos2(rect.right() - 10.0, rect.center().y), Align2::RIGHT_CENTER, keys, FontId::proportional(11.5), theme::text_faint());
+                        if resp.clicked() {
+                            run = Some(*cmd);
+                        }
                     }
-                    ui.painter().text(pos2(rect.left() + 10.0, rect.center().y), Align2::LEFT_CENTER, label, FontId::proportional(13.0), theme::text());
-                    ui.painter().text(pos2(rect.right() - 10.0, rect.center().y), Align2::RIGHT_CENTER, keys, FontId::proportional(11.5), theme::text_faint());
-                    if resp.clicked() {
-                        run = Some(*cmd);
-                    }
-                }
+                });
             });
         });
         if clicked_outside(ctx, area.response.rect) {
