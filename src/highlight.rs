@@ -384,10 +384,11 @@ fn assemble(text: &str, lines: &[CachedLine]) -> Vec<Span> {
     out
 }
 
-/// Highlighted layout job.  `find` (case-insensitive) matches get a background.
+/// Highlighted layout job. `marks` (find results, byte ranges) get a
+/// background, `cur` (the current one) a stronger one.
 /// `state` carries the highlighting of the previous version of this file; a
 /// big file's first pass goes to a background thread (quick colors meanwhile).
-pub fn layout(text: &str, ext: &str, font: FontId, find: &str, state: &std::sync::Arc<Mutex<FileState>>, ctx: &egui::Context) -> LayoutJob {
+pub fn layout(text: &str, ext: &str, font: FontId, marks: &[(usize, usize)], cur: Option<(usize, usize)>, state: &std::sync::Arc<Mutex<FileState>>, ctx: &egui::Context) -> LayoutJob {
     let mut job = LayoutJob::default();
     let fmt = |c: Color32, italics: bool| TextFormat { font_id: font.clone(), color: c, italics, ..Default::default() };
     let quick = || spans(text, ext).into_iter().map(|(a, b, c)| (a, b, c, false)).collect::<Vec<_>>();
@@ -416,17 +417,6 @@ pub fn layout(text: &str, ext: &str, font: FontId, find: &str, state: &std::sync
         }
     };
 
-    // Find highlights (char-boundary safe, ASCII case-insensitive).
-    let mut marks: Vec<(usize, usize)> = Vec::new();
-    if find.len() >= 2 {
-        let hay = text.to_ascii_lowercase();
-        let needle = find.to_ascii_lowercase();
-        let mut from = 0;
-        while let Some(p) = hay[from..].find(&needle) {
-            marks.push((from + p, from + p + needle.len()));
-            from += p + needle.len();
-        }
-    }
     let hit_bg = theme::search_hit();
     let mut mi = 0;
     for (s, e, c, italics) in spans {
@@ -443,7 +433,7 @@ pub fn layout(text: &str, ext: &str, font: FontId, find: &str, state: &std::sync
             };
             let mut f = fmt(c, italics);
             if in_mark {
-                f.background = hit_bg;
+                f.background = if cur.map(|c| c.0 <= pos && pos < c.1).unwrap_or(false) { current_hit() } else { hit_bg };
             }
             if text.is_char_boundary(pos) && text.is_char_boundary(next) {
                 job.append(&text[pos..next], 0.0, f);
@@ -454,9 +444,51 @@ pub fn layout(text: &str, ext: &str, font: FontId, find: &str, state: &std::sync
     job
 }
 
+/// Background of the current find result.
+pub fn current_hit() -> Color32 {
+    theme::tint(theme::warn(), 150)
+}
+
+/// Paint find results onto an already laid-out job (rendered markdown):
+/// sections are split at the marks' edges, which get a background.
+pub fn mark_job(job: &mut LayoutJob, marks: &[(usize, usize)], cur: Option<(usize, usize)>) {
+    if marks.is_empty() {
+        return;
+    }
+    let mut cuts: Vec<usize> = marks.iter().flat_map(|m| [m.0, m.1]).collect();
+    cuts.sort_unstable();
+    let mut out = Vec::with_capacity(job.sections.len() + cuts.len());
+    for s in std::mem::take(&mut job.sections) {
+        let mut start = s.byte_range.start;
+        let end = s.byte_range.end;
+        let inner: Vec<usize> = cuts.iter().copied().filter(|&c| c > start && c < end && job.text.is_char_boundary(c)).collect();
+        for c in inner.into_iter().chain(std::iter::once(end)) {
+            let mut sec = s.clone();
+            sec.leading_space = if start == s.byte_range.start { s.leading_space } else { 0.0 };
+            sec.byte_range = start..c;
+            if let Some(m) = marks.iter().find(|m| m.0 <= start && start < m.1) {
+                sec.format.background = if Some(*m) == cur { current_hit() } else { theme::search_hit() };
+            }
+            out.push(sec);
+            start = c;
+        }
+    }
+    job.sections = out;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn marks_split_sections() {
+        let mut job = LayoutJob::default();
+        job.append("hello ", 0.0, TextFormat::default());
+        job.append("world", 0.0, TextFormat::default());
+        mark_job(&mut job, &[(3, 8)], Some((3, 8)));
+        let ranges: Vec<_> = job.sections.iter().map(|s| (s.byte_range.clone(), s.format.background != Color32::TRANSPARENT)).collect();
+        assert_eq!(ranges, [(0..3, false), (3..6, true), (6..8, true), (8..11, false)]);
+    }
 
     fn load() {
         SYNTAXES.get_or_init(two_face::syntax::extra_newlines);

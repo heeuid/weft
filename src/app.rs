@@ -737,7 +737,9 @@ pub struct EditorFile {
     pub saving: bool,
     pub conflict: bool,
     pub goto: Option<usize>,
-    pub find: String,
+    /// Find bar matches (byte ranges) to paint, and the current one.
+    pub marks: std::sync::Arc<Vec<(usize, usize)>>,
+    pub mark_cur: Option<(usize, usize)>,
     /// Markdown shown rendered in place (false: plain source).
     pub rich: bool,
     pub error: Option<String>,
@@ -1470,7 +1472,8 @@ impl App {
             saving: false,
             conflict: false,
             goto: Some(line.max(1)),
-            find: String::new(),
+            marks: Default::default(),
+            mark_cur: None,
             rich: crate::md::is_markdown(path),
             error: None,
         });
@@ -1494,7 +1497,8 @@ impl App {
             saving: false,
             conflict: false,
             goto: None,
-            find: String::new(),
+            marks: Default::default(),
+            mark_cur: None,
             rich: false,
             error: None,
         });
@@ -1592,7 +1596,8 @@ impl App {
             saving: false,
             conflict: false,
             goto: None,
-            find: String::new(),
+            marks: Default::default(),
+            mark_cur: None,
             rich: true,
             error: None,
         });

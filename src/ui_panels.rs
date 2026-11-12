@@ -140,6 +140,15 @@ struct HlCache {
     state: Arc<std::sync::Mutex<highlight::FileState>>,
 }
 
+/// A short key for find results, for the layout caches.
+fn marks_key(marks: &[(usize, usize)], cur: Option<(usize, usize)>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    marks.hash(&mut h);
+    cur.hash(&mut h);
+    h.finish()
+}
+
 fn hash_str(s: &str, extra: &str) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -2275,6 +2284,15 @@ impl App {
                 });
             }
             let ms = ms.unwrap_or_default();
+            if (rep_one || rep_all) && count > 0 {
+                // Ctrl+Z in the file brings back the text from before the replace.
+                let mut st = TextEdit::load_state(ui.ctx(), edit_id).unwrap_or_default();
+                let mut undoer = st.undoer();
+                let range = st.cursor.char_range().unwrap_or_else(|| egui::text::CCursorRange::one(egui::text::CCursor::new(0)));
+                undoer.add_undo(&(range, f.text.clone()));
+                st.set_undoer(undoer);
+                st.store(ui.ctx(), edit_id);
+            }
             if rep_one && count > 0 {
                 match bar.replace_at(&mut f.text, ms[bar.cur]) {
                     Ok(_) => {
@@ -2302,13 +2320,15 @@ impl App {
                 self.editor.select = Some((editfind::char_index(&f.text, a), editfind::char_index(&f.text, b)));
                 f.goto = Some(editfind::line_of(&f.text, a));
             }
-            // Code view: matches get a background (text mode).
-            f.find = if bar.regex { String::new() } else { bar.query.clone() };
+            // Every match gets a background, the current one a stronger one.
+            f.mark_cur = ms.get(bar.cur).copied();
+            f.marks = Arc::new(ms);
             if replaced.is_some() && !f.scratch {
                 f.dirty = true;
             }
             if close {
-                f.find.clear();
+                f.marks = Default::default();
+                f.mark_cur = None;
                 ui.memory_mut(|m| m.request_focus(edit_id));
             } else {
                 self.editor.find = Some(bar);
@@ -2374,7 +2394,8 @@ impl App {
         if let Some(l) = goto {
             sa = sa.vertical_scroll_offset(((l.saturating_sub(4)) as f32 * row_h).max(0.0));
         }
-        let find = f.find.clone();
+        let (marks, mark_cur) = (f.marks.clone(), f.mark_cur);
+        let find = marks_key(&marks, mark_cur);
         let readonly = f.binary || f.loading;
         let mut changed = false;
         sa.show(ui, |ui| {
@@ -2389,7 +2410,7 @@ impl App {
                         Some(j) if cached.key == key => j,
                         _ => {
                             let state = cached.state.clone();
-                            let j = Arc::new(highlight::layout(text, &ext, font.clone(), &find, &state, ui.ctx()));
+                            let j = Arc::new(highlight::layout(text, &ext, font.clone(), &marks, mark_cur, &state, ui.ctx()));
                             ui.ctx().memory_mut(|m| m.data.insert_temp(cache_id, HlCache { key, job: Some(j.clone()), state }));
                             j
                         }
@@ -3077,7 +3098,8 @@ fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size:
         None
     };
     let cache_id = edit_id.with("md");
-    let style_key = format!("{cursor_line:?}|{size}|{breaks}|{renderer:?}|{}|{}|{}", theme::active(), crate::mermaid::generation(), crate::highlight::ready());
+    let (marks, mark_cur) = (f.marks.clone(), f.mark_cur);
+    let style_key = format!("{cursor_line:?}|{size}|{breaks}|{renderer:?}|{}|{}|{}|{}", theme::active(), crate::mermaid::generation(), crate::highlight::ready(), marks_key(&marks, mark_cur));
     let dark = !theme::is_light();
     // Rendered diagram size in points: mmdc renders at scale 2; never wider than the editor.
     let diagram_size = |ctx: &egui::Context, source: &str, wrap: f32| -> Option<(egui::TextureId, egui::Vec2)> {
@@ -3102,7 +3124,8 @@ fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size:
                 Some(j) if cached.key == key => j,
                 _ => {
                     let mut measure = |t: &str, font: &FontId| ui.fonts(|f| f.layout_no_wrap(t.to_owned(), font.clone(), Color32::WHITE).size().x);
-                    let l = md::layout(text, cursor_line, size, breaks, &mut |src: &str| diagram_size(ui.ctx(), src, wrap).map(|(_, s)| s.y), &mut measure);
+                    let mut l = md::layout(text, cursor_line, size, breaks, &mut |src: &str| diagram_size(ui.ctx(), src, wrap).map(|(_, s)| s.y), &mut measure);
+                    crate::highlight::mark_job(&mut l.job, &marks, mark_cur);
                     let j = Arc::new(l.job);
                     ui.ctx().memory_mut(|m| m.data.insert_temp(cache_id, MdCache { key, job: Some(j.clone()), decos: Arc::new(l.decos) }));
                     j
