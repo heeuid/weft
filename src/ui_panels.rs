@@ -615,6 +615,7 @@ impl App {
 
     /// The buttons at the right of the tab bar, right to left.
     fn tabbar_buttons(&mut self, ui: &mut Ui) {
+        ui.spacing_mut().item_spacing.x = 6.0;
         ui.add_space(6.0);
         self.commands_menu(ui);
         if ui.add(egui::Button::new(RichText::new("?").size(13.0).color(theme::text_dim())).frame(false)).on_hover_text("help (F1)").clicked() {
