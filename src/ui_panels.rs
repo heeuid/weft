@@ -364,127 +364,232 @@ impl App {
         ui.horizontal_centered(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             self.dock_grip(ui, Region::Terms);
-            let mut activate = None;
-            let mut close = None;
-            let n_tabs = self.tabs.len();
-            for (ti, tab) in self.tabs.iter().enumerate() {
-                let Some(p) = self.panes.get(&tab.active) else { continue };
-                let title = p.title();
-                let running = p.term.blocks.last().map(|b| b.state() == BlockState::Running).unwrap_or(false);
-                let active = ti == self.active_tab;
-                let font = FontId::proportional(12.5);
-                let galley = ui.painter().layout_no_wrap(title.clone(), font, if active { theme::text() } else { theme::text_dim() });
-                let w = (galley.size().x + 52.0).clamp(110.0, 260.0);
-                let (rect, resp) = ui.allocate_exact_size(vec2(w, 28.0), Sense::click());
-                // contains_pointer, not hovered(): the close button drawn on hover
-                // sits on top of the tab and would "steal" hovered() from it, hiding
-                // itself again next frame -> endless flicker.
-                let hovered = resp.contains_pointer();
-                let bg = if active {
-                    theme::bg_term()
-                } else if hovered {
-                    theme::bg_hover()
-                } else {
-                    theme::bg_base()
-                };
-                ui.painter().rect_filled(rect, CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }, bg);
-                if active {
-                    ui.painter().hline(rect.x_range().shrink(6.0), rect.top() + 1.0, Stroke::new(2.0_f32, host_color(&p.host)));
-                }
-                let dot = Rect2::dot(rect);
-                if running {
-                    // A still ring, not a pulse: an animation here redrew the
-                    // whole window ~16 times a second for as long as anything
-                    // ran (an open nvim, a server).
-                    ui.painter().circle_filled(dot, 3.5, theme::accent());
-                    ui.painter().circle_stroke(dot, 5.5, Stroke::new(1.2_f32, theme::tint(theme::accent(), 140)));
-                } else {
-                    ui.painter().circle_filled(dot, 3.5, host_color(&p.host));
-                }
-                let text_w = rect.width() - 52.0;
-                let mut g = galley;
-                if g.size().x > text_w {
-                    let mut t: String = title.chars().take(((text_w / 7.0) as usize).max(4)).collect();
-                    t.push('…');
-                    g = ui.painter().layout_no_wrap(t, FontId::proportional(12.5), if active { theme::text() } else { theme::text_dim() });
-                }
-                ui.painter().galley(pos2(rect.left() + 22.0, rect.center().y - g.size().y / 2.0), g, theme::text());
-                let cr = egui::Rect::from_center_size(pos2(rect.right() - 15.0, rect.center().y), vec2(18.0, 18.0));
-                if hovered || active {
-                    let cresp = ui.interact(cr, Id::new(("tabclose", ti)), Sense::click());
-                    if cresp.hovered() {
-                        ui.painter().rect_filled(cr, CornerRadius::same(4), theme::bg_hover());
+            // The buttons on the right get their room first; the tabs share
+            // what is left (they used to run on under the buttons).
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                self.tabbar_buttons(ui);
+                ui.with_layout(Layout::left_to_right(Align::Center), |ui| self.tab_strip(ui));
+            });
+        });
+    }
+
+    /// Terminal tabs: shrink to fit, then scroll sideways; drag one to move it.
+    fn tab_strip(&mut self, ui: &mut Ui) {
+        let mut activate = None;
+        let mut close = None;
+        let mut moved: Option<(usize, usize)> = None;
+        let n_tabs = self.tabs.len();
+        let font = FontId::proportional(12.5);
+        // Room for the tabs: all of it but the + and connect buttons.
+        let room = (ui.available_width() - 64.0).max(80.0);
+        let natural: Vec<f32> = self
+            .tabs
+            .iter()
+            .map(|t| self.panes.get(&t.active).map(|p| ui.painter().layout_no_wrap(p.title(), font.clone(), theme::text()).size().x).unwrap_or(0.0))
+            .map(|w| (w + 52.0).clamp(110.0, 260.0))
+            .collect();
+        let total: f32 = natural.iter().sum::<f32>() + 2.0 * n_tabs as f32;
+        // Too wide: every tab gets the same share, but not less than 90.
+        let cap = if total > room { (room / n_tabs.max(1) as f32 - 2.0).max(90.0) } else { f32::INFINITY };
+        let drag_id = Id::new("tab-drag");
+        let mut dragging: Option<usize> = ui.data(|d| d.get_temp(drag_id));
+        let last_active_id = Id::new("tab-last-active");
+        let reveal = ui.data(|d| d.get_temp::<usize>(last_active_id)) != Some(self.active_tab);
+        ui.data_mut(|d| d.insert_temp(last_active_id, self.active_tab));
+        ui.scope(|ui| {
+            ui.style_mut().always_scroll_the_only_direction = true;
+            let scroll = &mut ui.style_mut().spacing.scroll;
+            scroll.floating = false;
+            scroll.bar_width = 3.0;
+            scroll.bar_inner_margin = 1.0;
+            scroll.bar_outer_margin = 0.0;
+            ScrollArea::horizontal().id_salt("term-tabs").max_width(room).auto_shrink([true, true]).drag_to_scroll(false).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    let mut rects: Vec<egui::Rect> = Vec::with_capacity(n_tabs);
+                    for (ti, tab) in self.tabs.iter().enumerate() {
+                        let Some(p) = self.panes.get(&tab.active) else {
+                            rects.push(egui::Rect::NOTHING);
+                            continue;
+                        };
+                        let title = p.title();
+                        let running = p.term.blocks.last().map(|b| b.state() == BlockState::Running).unwrap_or(false);
+                        let active = ti == self.active_tab;
+                        let w = natural[ti].min(cap);
+                        let (rect, resp) = ui.allocate_exact_size(vec2(w, 28.0), Sense::click_and_drag());
+                        rects.push(rect);
+                        if active && reveal {
+                            ui.scroll_to_rect(rect, None);
+                        }
+                        // contains_pointer, not hovered(): the close button drawn on hover
+                        // sits on top of the tab and would "steal" hovered() from it, hiding
+                        // itself again next frame -> endless flicker.
+                        let hovered = resp.contains_pointer();
+                        let lifted = dragging == Some(ti);
+                        let bg = if active || lifted {
+                            theme::bg_term()
+                        } else if hovered {
+                            theme::bg_hover()
+                        } else {
+                            theme::bg_base()
+                        };
+                        ui.painter().rect_filled(rect, CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }, bg);
+                        if active {
+                            ui.painter().hline(rect.x_range().shrink(6.0), rect.top() + 1.0, Stroke::new(2.0_f32, host_color(&p.host)));
+                        }
+                        let dot = Rect2::dot(rect);
+                        if running {
+                            // A still ring, not a pulse: an animation here redrew the
+                            // whole window ~16 times a second for as long as anything
+                            // ran (an open nvim, a server).
+                            ui.painter().circle_filled(dot, 3.5, theme::accent());
+                            ui.painter().circle_stroke(dot, 5.5, Stroke::new(1.2_f32, theme::tint(theme::accent(), 140)));
+                        } else {
+                            ui.painter().circle_filled(dot, 3.5, host_color(&p.host));
+                        }
+                        let color = if active { theme::text() } else { theme::text_dim() };
+                        let text_w = rect.width() - 52.0;
+                        let mut g = ui.painter().layout_no_wrap(title.clone(), font.clone(), color);
+                        if g.size().x > text_w {
+                            // Drop characters until it fits, then add the ellipsis.
+                            let chars: Vec<char> = title.chars().collect();
+                            let mut n = chars.len();
+                            while n > 1 {
+                                n = (n * 9 / 10).min(n - 1);
+                                let t: String = chars[..n].iter().collect::<String>() + "…";
+                                g = ui.painter().layout_no_wrap(t, font.clone(), color);
+                                if g.size().x <= text_w {
+                                    break;
+                                }
+                            }
+                        }
+                        ui.painter().galley(pos2(rect.left() + 22.0, rect.center().y - g.size().y / 2.0), g, theme::text());
+                        let cr = egui::Rect::from_center_size(pos2(rect.right() - 15.0, rect.center().y), vec2(18.0, 18.0));
+                        if (hovered || active) && dragging.is_none() {
+                            let cresp = ui.interact(cr, Id::new(("tabclose", ti)), Sense::click());
+                            if cresp.hovered() {
+                                ui.painter().rect_filled(cr, CornerRadius::same(4), theme::bg_hover());
+                            }
+                            icons::paint(ui.painter(), cr.shrink(4.5), Icon::Cross, if cresp.hovered() { theme::text() } else { theme::text_faint() });
+                            if cresp.clicked() {
+                                close = Some((ti, CloseWhich::This));
+                            }
+                        }
+                        if resp.drag_started_by(egui::PointerButton::Primary) {
+                            dragging = Some(ti);
+                            activate = Some(ti);
+                        }
+                        if resp.clicked() {
+                            activate = Some(ti);
+                        }
+                        if resp.middle_clicked() {
+                            close = Some((ti, CloseWhich::This));
+                        }
+                        resp.on_hover_text(format!("{title}\nclick: switch · drag: move · middle-click: close · right-click: more")).context_menu(|ui| {
+                            if let Some(w) = close_menu(ui, ti, n_tabs) {
+                                close = Some((ti, w));
+                            }
+                        });
                     }
-                    icons::paint(ui.painter(), cr.shrink(4.5), Icon::Cross, if cresp.hovered() { theme::text() } else { theme::text_faint() });
-                    if cresp.clicked() {
-                        close = Some((ti, CloseWhich::This));
-                    }
-                }
-                if resp.clicked() {
-                    activate = Some(ti);
-                }
-                if resp.middle_clicked() {
-                    close = Some((ti, CloseWhich::This));
-                }
-                resp.context_menu(|ui| {
-                    if let Some(w) = close_menu(ui, ti, n_tabs) {
-                        close = Some((ti, w));
+                    // Dragging: where it would land, between tabs; it moves on release.
+                    if let Some(from) = dragging {
+                        let pointer = ui.input(|i| i.pointer.interact_pos());
+                        let to = pointer.map(|p| tab_drop_index(&rects, p.x)).unwrap_or(from);
+                        if let Some(p) = pointer {
+                            // Near the edges, keep the strip scrolling.
+                            let clip = ui.clip_rect();
+                            if p.x < clip.left() + 24.0 || p.x > clip.right() - 24.0 {
+                                ui.scroll_with_delta(vec2(if p.x < clip.left() + 24.0 { 8.0 } else { -8.0 }, 0.0));
+                                ui.ctx().request_repaint();
+                            }
+                        }
+                        if to != from && to != from + 1 {
+                            let x = if to < rects.len() { rects[to].left() - 1.0 } else { rects.last().map(|r| r.right() + 1.0).unwrap_or(0.0) };
+                            let y = rects.first().map(|r| r.y_range()).unwrap_or(egui::Rangef::new(0.0, 28.0));
+                            ui.painter().vline(x, y, Stroke::new(2.0_f32, theme::accent()));
+                        }
+                        if ui.input(|i| i.pointer.any_released()) {
+                            // Index after removing the dragged tab.
+                            let dest = if to > from { to - 1 } else { to };
+                            if dest != from {
+                                moved = Some((from, dest));
+                            }
+                            dragging = None;
+                        }
                     }
                 });
-            }
-            ui.add_space(4.0);
-            if icons::button(ui, Icon::Plus, "new tab on the same host (Ctrl+Shift+T)").clicked() {
-                self.run_cmd(Cmd::NewTab);
-            }
-            if icons::button(ui, Icon::Plug, "connect to a host (Ctrl+Shift+N)").clicked() {
-                self.run_cmd(Cmd::Connect);
-            }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.add_space(6.0);
-                self.commands_menu(ui);
-                if ui.add(egui::Button::new(RichText::new("?").size(13.0).color(theme::text_dim())).frame(false)).on_hover_text("help (F1)").clicked() {
-                    self.help = if self.help.is_some() { None } else { Some(HelpState { features: false, query: String::new() }) };
-                }
-                let fr = ui.add(egui::Button::new(RichText::new("Aa").size(12.5).color(theme::text_dim())).frame(false)).on_hover_text("fonts");
-                if fr.clicked() {
-                    if self.font_menu.is_some() {
-                        self.font_menu = None;
-                    } else {
-                        self.open_font_menu();
-                    }
-                }
-                let ti = if theme::is_light() { Icon::Sun } else { Icon::Moon };
-                let tr = icons::button(ui, ti, "theme");
-                if tr.clicked() {
-                    self.theme_menu = if self.theme_menu.is_some() { None } else { Some(tr.rect) };
-                }
-                let ec = if self.editor.visible { theme::accent() } else { theme::text_dim() };
-                if icons::button_colored(ui, Icon::Editor, "editor (Ctrl+Shift+J)", ec).clicked() {
-                    self.editor.visible = !self.editor.visible;
-                }
-                let sc = if self.settings.sidebar { theme::accent() } else { theme::text_dim() };
-                if icons::button_colored(ui, Icon::Sidebar, "side panel (Ctrl+Shift+B)", sc).clicked() {
-                    self.settings.sidebar = !self.settings.sidebar;
-                }
-                if icons::button(ui, Icon::SplitDown, "split down (Ctrl+Shift+E)").clicked() {
-                    self.split(false);
-                }
-                if icons::button(ui, Icon::SplitRight, "split right (Ctrl+Shift+D)").clicked() {
-                    self.split(true);
-                }
-                if icons::button(ui, Icon::Search, "command palette (Ctrl+Shift+P)").clicked() {
-                    self.palette = Some(PaletteState { query: String::new(), sel: 0 });
-                }
             });
-            if let Some(ti) = activate {
+        });
+        ui.data_mut(|d| match dragging {
+            Some(i) => d.insert_temp(drag_id, i),
+            None => d.remove::<usize>(drag_id),
+        });
+        ui.add_space(4.0);
+        if icons::button(ui, Icon::Plus, "new tab on the same host (Ctrl+Shift+T)").clicked() {
+            self.run_cmd(Cmd::NewTab);
+        }
+        if icons::button(ui, Icon::Plug, "connect to a host (Ctrl+Shift+N)").clicked() {
+            self.run_cmd(Cmd::Connect);
+        }
+        if let Some((from, to)) = moved {
+            let active = self.tabs.get(self.active_tab).map(|t| t.active);
+            let tab = self.tabs.remove(from);
+            self.tabs.insert(to, tab);
+            // The same tab stays active wherever it now is.
+            if let Some(i) = active.and_then(|a| self.tabs.iter().position(|t| t.active == a)) {
+                self.active_tab = i;
+            }
+            self.save_settings();
+        } else if let Some(ti) = activate {
+            if ti != self.active_tab {
                 self.active_tab = ti;
-                self.focus_term = true;
                 self.on_active_changed();
             }
-            if let Some((ti, which)) = close {
-                self.close_tabs(ti, which);
+            self.focus_term = true;
+        }
+        if let Some((ti, which)) = close {
+            self.close_tabs(ti, which);
+        }
+    }
+
+    /// The buttons at the right of the tab bar, right to left.
+    fn tabbar_buttons(&mut self, ui: &mut Ui) {
+        ui.add_space(6.0);
+        self.commands_menu(ui);
+        if ui.add(egui::Button::new(RichText::new("?").size(13.0).color(theme::text_dim())).frame(false)).on_hover_text("help (F1)").clicked() {
+            self.help = if self.help.is_some() { None } else { Some(HelpState { features: false, query: String::new() }) };
+        }
+        let fr = ui.add(egui::Button::new(RichText::new("Aa").size(12.5).color(theme::text_dim())).frame(false)).on_hover_text("fonts");
+        if fr.clicked() {
+            if self.font_menu.is_some() {
+                self.font_menu = None;
+            } else {
+                self.open_font_menu();
             }
-        });
+        }
+        let ti = if theme::is_light() { Icon::Sun } else { Icon::Moon };
+        let tr = icons::button(ui, ti, "theme");
+        if tr.clicked() {
+            self.theme_menu = if self.theme_menu.is_some() { None } else { Some(tr.rect) };
+        }
+        let ec = if self.editor.visible { theme::accent() } else { theme::text_dim() };
+        if icons::button_colored(ui, Icon::Editor, "editor (Ctrl+Shift+J)", ec).clicked() {
+            self.editor.visible = !self.editor.visible;
+        }
+        let sc = if self.settings.sidebar { theme::accent() } else { theme::text_dim() };
+        if icons::button_colored(ui, Icon::Sidebar, "side panel (Ctrl+Shift+B)", sc).clicked() {
+            self.settings.sidebar = !self.settings.sidebar;
+        }
+        if icons::button(ui, Icon::SplitDown, "split down (Ctrl+Shift+E)").clicked() {
+            self.split(false);
+        }
+        if icons::button(ui, Icon::SplitRight, "split right (Ctrl+Shift+D)").clicked() {
+            self.split(true);
+        }
+        if icons::button(ui, Icon::Search, "command palette (Ctrl+Shift+P)").clicked() {
+            self.palette = Some(PaletteState { query: String::new(), sel: 0 });
+        }
+        ui.separator();
     }
 
     // ---- status bar ----------------------------------------------------------------
@@ -2484,6 +2589,11 @@ fn history_matches(all: &[crate::records::Record], q: &str, mode: FindMode, in_o
         .collect())
 }
 
+/// Where a dragged tab lands: the index of the tab it goes before (len: the end).
+fn tab_drop_index(rects: &[egui::Rect], x: f32) -> usize {
+    rects.iter().position(|r| r.is_positive() && x < r.center().x).unwrap_or(rects.len())
+}
+
 /// What a Search result's click or menu asked for.
 enum HitAction {
     Open(String, usize),
@@ -2784,6 +2894,16 @@ fn close_menu(ui: &mut Ui, at: usize, n: usize) -> Option<CloseWhich> {
 mod tests {
     use super::{history_matches, memo_title, FindMode};
     use crate::records::Record;
+
+    #[test]
+    fn dragged_tab_lands_between_tabs() {
+        use egui::{pos2, Rect};
+        let rects: Vec<Rect> = (0..3).map(|i| Rect::from_min_max(pos2(i as f32 * 100.0, 0.0), pos2(i as f32 * 100.0 + 98.0, 28.0))).collect();
+        assert_eq!(super::tab_drop_index(&rects, 10.0), 0);
+        assert_eq!(super::tab_drop_index(&rects, 60.0), 1, "past the middle of the first tab");
+        assert_eq!(super::tab_drop_index(&rects, 160.0), 2);
+        assert_eq!(super::tab_drop_index(&rects, 290.0), 3, "after the last");
+    }
 
     #[test]
     fn history_search() {
