@@ -6,6 +6,7 @@
 //! tools and python, and nothing is written to the remote disk.
 
 mod app;
+mod help;
 mod highlight;
 mod host;
 mod find;
@@ -15,6 +16,7 @@ mod media;
 mod mermaid;
 mod pty;
 mod records;
+mod secret;
 mod term;
 mod theme;
 mod ui_panels;
@@ -62,6 +64,7 @@ impl eframe::App for WeftApp {
         app.ui_theme_menu(ctx);
         app.ui_font_menu(ctx);
         app.ui_records_window(ctx);
+        app.ui_help(ctx);
         app.ui_toasts(ctx);
         app.ui_dock_drop(ctx);
         app.apply_actions();
@@ -85,7 +88,9 @@ impl eframe::App for WeftApp {
 /// `weft --askpass PROMPT`: ssh runs this (SSH_ASKPASS) when weft supplied a
 /// password. Host key questions are shown to the user, never auto-accepted.
 fn askpass(prompt: &str) -> i32 {
-    match host::askpass_answer(prompt, std::env::var(host::ASKPASS_SECRET_VAR).ok()) {
+    // The ticket is spent only on a password prompt, not on a host key question.
+    let secret = if prompt.contains("(yes/no") { None } else { secret::fetch_password().map(|p| p.to_string()) };
+    match host::askpass_answer(prompt, secret) {
         host::AskpassAnswer::Secret(s) => {
             println!("{s}");
             0
@@ -149,12 +154,13 @@ fn confirm_host_key(_text: &str) -> bool {
 fn main() -> eframe::Result<()> {
     STARTED.get_or_init(Instant::now);
     let args: Vec<String> = std::env::args().collect();
-    // ssh invokes SSH_ASKPASS as `weft.exe "<prompt>"` with our secret in the environment.
+    // ssh invokes SSH_ASKPASS as `weft.exe "<prompt>"` with a ticket in the environment.
     let as_askpass = args.get(1).map(|a| a == "--askpass").unwrap_or(false)
-        || (std::env::var_os(host::ASKPASS_SECRET_VAR).is_some() && args.len() == 2);
+        || (std::env::var_os(secret::TICKET_VAR).is_some() && args.len() == 2);
     if as_askpass {
         std::process::exit(askpass(args.last().map(|s| s.as_str()).unwrap_or("")));
     }
+    secret::harden_process();
     #[cfg(all(windows, not(debug_assertions)))]
     release_console();
     let options = eframe::NativeOptions {

@@ -63,6 +63,8 @@ enum Cmd {
     Fonts,
     History,
     Records,
+    Help,
+    Features,
 }
 
 const COMMANDS: &[(Cmd, &str, &str)] = &[
@@ -94,7 +96,9 @@ const COMMANDS: &[(Cmd, &str, &str)] = &[
     (Cmd::ThemePicker, "Theme…", ""),
     (Cmd::Fonts, "Fonts… (terminal font, icon font)", ""),
     (Cmd::History, "History: search every command and its output", "Ctrl+Shift+H"),
-    (Cmd::Records, "Records & logs… (what is kept, how long, how much)", ""),
+    (Cmd::Records, "Privacy… (records, logs, passwords in memory)", ""),
+    (Cmd::Help, "Help: all commands and keys", "F1"),
+    (Cmd::Features, "Help: what each feature does", ""),
     (Cmd::ThemeSystem, "Theme: follow system (dark/light)", ""),
     (Cmd::CursorStyle, "Terminal cursor: block / bar / underline", ""),
     (Cmd::LocalShell(crate::host::LocalShell::Auto), "Local shell: auto (pwsh, else Windows PowerShell)", ""),
@@ -228,6 +232,7 @@ impl App {
                 self.side.tab = SideTab::History;
             }
             Cmd::Records => self.open_records_window(),
+            Cmd::Help | Cmd::Features => self.help = Some(HelpState { features: c == Cmd::Features, query: String::new() }),
             Cmd::Memos => {
                 let dir = self.memo_dir();
                 let _ = std::fs::create_dir_all(&dir);
@@ -266,6 +271,9 @@ impl App {
             if k(cs, key) {
                 cmds.push(cmd);
             }
+        }
+        if k(Modifiers::NONE, Key::F1) {
+            cmds.push(Cmd::Help);
         }
         if k(cs, Key::P) {
             self.palette = if self.palette.is_some() { None } else { Some(PaletteState { query: String::new(), sel: 0 }) };
@@ -431,6 +439,10 @@ impl App {
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.add_space(6.0);
+                self.commands_menu(ui);
+                if ui.add(egui::Button::new(RichText::new("?").size(13.0).color(theme::text_dim())).frame(false)).on_hover_text("help (F1)").clicked() {
+                    self.help = if self.help.is_some() { None } else { Some(HelpState { features: false, query: String::new() }) };
+                }
                 let fr = ui.add(egui::Button::new(RichText::new("Aa").size(12.5).color(theme::text_dim())).frame(false)).on_hover_text("fonts");
                 if fr.clicked() {
                     if self.font_menu.is_some() {
@@ -965,6 +977,95 @@ impl App {
         self.records = if reload { None } else { Some(all) };
     }
 
+    /// Help: every command by group (click to run) with the other keys, or
+    /// what each feature does. F1, `?` in the tab bar, or the ☰ menu.
+    pub fn ui_help(&mut self, ctx: &egui::Context) {
+        let Some(mut h) = self.help.take() else { return };
+        let mut open = true;
+        let mut run: Option<Cmd> = None;
+        egui::Window::new("Help").open(&mut open).collapsible(false).resizable(true).default_size(vec2(600.0, 620.0)).show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                if ui.selectable_label(!h.features, "Commands and keys").clicked() {
+                    h.features = false;
+                }
+                if ui.selectable_label(h.features, "Features").clicked() {
+                    h.features = true;
+                }
+                ui.add(TextEdit::singleline(&mut h.query).hint_text("search help…").desired_width(f32::INFINITY));
+            });
+            ui.separator();
+            let q = h.query.to_lowercase();
+            let hit = |texts: &[&str]| q.is_empty() || texts.iter().any(|t| t.to_lowercase().contains(&q));
+            ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                if h.features {
+                    for (title, text) in crate::help::FEATURES {
+                        if hit(&[title, text]) {
+                            egui::CollapsingHeader::new(RichText::new(*title).strong()).default_open(true).show(ui, |ui| {
+                                ui.label(*text);
+                            });
+                        }
+                    }
+                    return;
+                }
+                for g in GROUPS {
+                    let items: Vec<_> = COMMANDS.iter().filter(|c| group(c.0) == g && hit(&[c.1, c.2])).collect();
+                    if items.is_empty() {
+                        continue;
+                    }
+                    ui.add_space(4.0);
+                    ui.label(RichText::new(g).strong().color(theme::text_dim()));
+                    for (cmd, label, keys) in items {
+                        let r = ui.add(egui::Button::new(*label).shortcut_text(*keys).frame(false).min_size(vec2(ui.available_width(), 0.0)));
+                        if r.on_hover_text("click to run").clicked() {
+                            run = Some(*cmd);
+                        }
+                    }
+                }
+                let keys: Vec<_> = crate::help::KEYS.iter().filter(|k| hit(&[k.0, k.1])).collect();
+                if !keys.is_empty() {
+                    ui.add_space(4.0);
+                    ui.label(RichText::new("Keys and mouse").strong().color(theme::text_dim()));
+                    egui::Grid::new("help-keys").num_columns(2).spacing([16.0, 4.0]).show(ui, |ui| {
+                        for (k, what) in keys {
+                            ui.label(RichText::new(*k).monospace().color(theme::accent()));
+                            ui.label(*what);
+                            ui.end_row();
+                        }
+                    });
+                }
+            });
+        });
+        if let Some(c) = run {
+            open = false;
+            self.run_cmd(c);
+        }
+        if open {
+            self.help = Some(h);
+        }
+    }
+
+    /// The ☰ menu: every command by group.
+    fn commands_menu(&mut self, ui: &mut Ui) {
+        let mut run = None;
+        ui.menu_button(RichText::new("☰").size(14.0).color(theme::text_dim()), |ui| {
+            for g in GROUPS {
+                ui.menu_button(g, |ui| {
+                    for (cmd, label, keys) in COMMANDS.iter().filter(|c| group(c.0) == g) {
+                        if ui.add(egui::Button::new(*label).shortcut_text(*keys)).clicked() {
+                            run = Some(*cmd);
+                            ui.close_menu();
+                        }
+                    }
+                });
+            }
+        })
+        .response
+        .on_hover_text("all commands");
+        if let Some(c) = run {
+            self.run_cmd(c);
+        }
+    }
+
     pub fn open_records_window(&mut self) {
         let root = self.data.root.clone();
         self.records_window = Some(crate::records::Item::ALL.iter().map(|&i| (i, i.size(&root))).collect());
@@ -977,8 +1078,9 @@ impl App {
         let mut open = true;
         let mut changed = false;
         let mut delete: Option<Item> = None;
+        let mut pw_changed = false;
         let dir = self.data.root.display().to_string();
-        egui::Window::new("Records & logs").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
+        egui::Window::new("Privacy").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
             ui.label(RichText::new(format!("Kept in {dir}")).size(11.5).color(theme::text_faint()));
             ui.add_space(4.0);
             egui::Grid::new("records-grid").num_columns(5).spacing([14.0, 8.0]).show(ui, |ui| {
@@ -1015,6 +1117,31 @@ impl App {
                     .on_hover_text("longer output keeps its start and end; 0 = all of it")
                     .changed();
             });
+            ui.add_space(8.0);
+            ui.separator();
+            ui.label(RichText::new("ssh passwords in memory").strong());
+            ui.label(
+                RichText::new(format!(
+                    "{} held now. Never written to disk; ssh gets one through a one-time ticket, not its environment.\n\
+                     Keys + ssh-agent are better still: then weft holds no password at all.",
+                    self.secrets.len()
+                ))
+                .size(11.0)
+                .color(theme::text_faint()),
+            );
+            let pw = &mut self.settings.passwords;
+            let how = if cfg!(windows) { "Encrypt them (ChaCha20, key sealed by Windows)" } else { "Encrypt them (ChaCha20)" };
+            pw_changed |= ui.checkbox(&mut pw.encrypt, how).changed();
+            ui.add_enabled_ui(pw.encrypt, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("New key every");
+                    pw_changed |= secs_input(ui, "pw-rotate", &mut pw.rotate_secs, "never");
+                });
+            });
+            ui.horizontal(|ui| {
+                ui.label("Forget a password unused for");
+                pw_changed |= secs_input(ui, "pw-forget", &mut pw.forget_secs, "never");
+            });
             ui.add_space(6.0);
             ui.label(
                 RichText::new(
@@ -1038,6 +1165,10 @@ impl App {
         }
         if changed {
             self.records_changed();
+        }
+        if pw_changed {
+            self.secrets.configure(self.settings.passwords);
+            self.save_settings();
         }
         if open {
             self.records_window = Some(sizes);
@@ -2311,6 +2442,65 @@ fn history_matches(all: &[crate::records::Record], q: &str, mode: FindMode, in_o
             host_ok(r) && (m.matches(&r.cmd).is_some() || out_re.as_ref().map(|re| re.is_match(&r.out)).unwrap_or(false))
         })
         .collect())
+}
+
+/// Command groups, in the order the menu and help show them.
+const GROUPS: [&str; 6] = ["Tabs and panes", "Terminal", "Panels, files and memos", "Look", "Privacy, settings and logs", "Help"];
+
+fn group(c: Cmd) -> &'static str {
+    match c {
+        Cmd::NewTab | Cmd::Connect | Cmd::SplitRight | Cmd::SplitDown | Cmd::ClosePane | Cmd::Zoom => GROUPS[0],
+        Cmd::Composer
+        | Cmd::Find
+        | Cmd::PrevBlock
+        | Cmd::NextBlock
+        | Cmd::FoldAll
+        | Cmd::UnfoldAll
+        | Cmd::ClearScrollback
+        | Cmd::Reconnect
+        | Cmd::CursorStyle
+        | Cmd::LocalShell(_) => GROUPS[1],
+        Cmd::Sidebar | Cmd::Editor | Cmd::Hidden | Cmd::History | Cmd::NewMemo | Cmd::Memos => GROUPS[2],
+        Cmd::FontUp
+        | Cmd::FontDown
+        | Cmd::FontReset
+        | Cmd::UiUp
+        | Cmd::UiDown
+        | Cmd::UiReset
+        | Cmd::ThemePicker
+        | Cmd::ThemeSystem
+        | Cmd::Theme(_)
+        | Cmd::Fonts
+        | Cmd::MarkdownBreaks => GROUPS[3],
+        Cmd::Records | Cmd::Settings | Cmd::AgentLog => GROUPS[4],
+        Cmd::Help | Cmd::Features => GROUPS[5],
+    }
+}
+
+/// A time setting in seconds, edited as a number and a unit (seconds,
+/// minutes, hours). 0 shows `zero`.
+fn secs_input(ui: &mut Ui, id: &str, secs: &mut u64, zero: &str) -> bool {
+    use crate::secret::{split_secs, UNITS};
+    let unit_id = Id::new(("secs-unit", id));
+    let (mut v, mut u) = split_secs(*secs);
+    // Keep the unit last chosen while it still fits the value.
+    if let Some(saved) = ui.data(|d| d.get_temp::<usize>(unit_id)) {
+        if *secs % UNITS[saved].1 == 0 {
+            (v, u) = (*secs / UNITS[saved].1, saved);
+        }
+    }
+    let zero = zero.to_string();
+    let mut changed = ui.add(egui::DragValue::new(&mut v).range(0..=100_000).speed(0.25).custom_formatter(move |x, _| if x == 0.0 { zero.clone() } else { format!("{x}") })).changed();
+    egui::ComboBox::from_id_salt(("secs-combo", id)).width(76.0).selected_text(UNITS[u].0).show_ui(ui, |ui| {
+        for (i, (name, _)) in UNITS.iter().enumerate() {
+            changed |= ui.selectable_value(&mut u, i, *name).changed();
+        }
+    });
+    ui.data_mut(|d| d.insert_temp(unit_id, u));
+    if changed {
+        *secs = v * UNITS[u].1;
+    }
+    changed
 }
 
 /// A memo's tab name: its first line without markdown marks.

@@ -213,11 +213,12 @@ pub fn askpass_env(secret: &str) -> Vec<(String, String)> {
         ("SSH_ASKPASS".into(), exe),
         ("SSH_ASKPASS_REQUIRE".into(), "force".into()),
         ("DISPLAY".into(), std::env::var("DISPLAY").unwrap_or_else(|_| ":0".into())),
-        (ASKPASS_SECRET_VAR.into(), secret.into()),
     ]
+    .into_iter()
+    // Not the password itself: a one-time ticket for it (see secret.rs).
+    .chain(crate::secret::ticket_env(secret))
+    .collect()
 }
-
-pub const ASKPASS_SECRET_VAR: &str = "WEFT_ASKPASS";
 
 /// What `weft --askpass PROMPT` answers: host key questions go to the user
 /// (never auto-accepted), password/passphrase prompts get the secret.
@@ -930,7 +931,9 @@ mod tests {
         assert!(keys.contains(&"BatchMode=yes".to_string()));
         assert!(!pw.contains(&"BatchMode=yes".to_string()));
         assert!(pw.contains(&"NumberOfPasswordPrompts=1".to_string()));
-        assert!(askpass_env("s").iter().any(|(k, v)| k == ASKPASS_SECRET_VAR && v == "s"));
+        let env = askpass_env("s3cret");
+        assert!(env.iter().all(|(_, v)| !v.contains("s3cret")), "the password is not in ssh's environment");
+        assert!(env.iter().any(|(k, _)| k == crate::secret::TICKET_VAR));
     }
 
     #[test]

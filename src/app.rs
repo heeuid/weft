@@ -350,6 +350,9 @@ pub struct Settings {
     /// What is written to disk (commands, history, logs) and for how long.
     #[serde(default)]
     pub records: crate::records::Records,
+    /// How ssh passwords are held in memory (never on disk).
+    #[serde(default)]
+    pub passwords: crate::secret::VaultSettings,
     #[serde(default)]
     pub session: Vec<SavedNode>,
 }
@@ -369,7 +372,7 @@ impl Default for Settings {
                 },
             });
         }
-        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, layout: Layout::default(), show_hidden: false, find_mode: Default::default(), cursor_style: Default::default(), local_shell: Default::default(), mermaid: Default::default(), follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, term_font: d_font_file(), icon_font: d_font_file(), records: Default::default(), session: Vec::new() }
+        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, layout: Layout::default(), show_hidden: false, find_mode: Default::default(), cursor_style: Default::default(), local_shell: Default::default(), mermaid: Default::default(), follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, term_font: d_font_file(), icon_font: d_font_file(), records: Default::default(), passwords: Default::default(), session: Vec::new() }
     }
 }
 
@@ -749,6 +752,12 @@ pub struct FontMenu {
     pub files: Vec<(String, String, bool)>,
 }
 
+/// The help window: which tab, and the search.
+pub struct HelpState {
+    pub features: bool,
+    pub query: String,
+}
+
 pub struct PaletteState {
     pub query: String,
     pub sel: usize,
@@ -898,6 +907,8 @@ pub struct App {
     pub find_index: HashMap<(String, String), FindIndex>,
     pub find_inflight: HashSet<(String, String)>,
     pub find_result: Option<FindResult>,
+    /// The help window, while open.
+    pub help: Option<HelpState>,
     /// The font picker, while open.
     pub font_menu: Option<FontMenu>,
     /// When the oldest unsaved memo change was made (see autosave_memos).
@@ -909,7 +920,7 @@ pub struct App {
     /// The area the panels share (window minus the status bar).
     pub layout_rect: egui::Rect,
     /// ssh passwords for this session only; never written to disk or logs.
-    pub secrets: HashMap<String, String>,
+    pub secrets: crate::secret::Vault,
     auth_prompted: HashSet<String>,
     pub focus_term: bool,
     pub pane_rects: Vec<(usize, Rect)>,
@@ -960,6 +971,7 @@ impl App {
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
         crate::records::set_switches(&settings.records);
+        let settings_passwords = settings.passwords;
         data.log(&format!("start, data dir {}", data.root.display()));
         let mut app = App {
             ctx,
@@ -1013,7 +1025,7 @@ impl App {
             dock_drag: None,
             panel_rects: HashMap::new(),
             layout_rect: egui::Rect::NOTHING,
-            secrets: HashMap::new(),
+            secrets: crate::secret::Vault::new(settings_passwords),
             auth_prompted: HashSet::new(),
             last_save: Instant::now(),
             records: None,
@@ -1024,6 +1036,7 @@ impl App {
             last_prune: None,
             memo_edited: None,
             font_menu: None,
+            help: None,
         };
         app.side.follow = app.settings.follow_cwd;
         let session = std::mem::take(&mut app.settings.session);
@@ -1092,14 +1105,15 @@ impl App {
 
     pub fn ensure_conn(&mut self, host: &str) {
         if !self.conns.contains_key(host) {
-            let conn = Conn::open(self.profile(host), &self.data, self.wake(), self.secrets.get(host).cloned());
+            let secret = self.secrets.get(host).map(|s| s.to_string());
+            let conn = Conn::open(self.profile(host), &self.data, self.wake(), secret);
             self.conns.insert(host.to_string(), conn);
         }
     }
 
     pub fn reconnect(&mut self, host: &str) {
         let wake = self.wake();
-        let secret = self.secrets.get(host).cloned();
+        let secret = self.secrets.get(host).map(|s| s.to_string());
         if let Some(c) = self.conns.get_mut(host) {
             c.connect(wake, secret);
         }
@@ -1107,10 +1121,11 @@ impl App {
 
     /// Remember a password for this session only (never saved) and retry the agent.
     pub fn set_password(&mut self, host: &str, password: String) {
+        let password = zeroize::Zeroizing::new(password);
         if password.is_empty() {
             self.secrets.remove(host);
         } else {
-            self.secrets.insert(host.to_string(), password);
+            self.secrets.insert(host, password);
         }
         self.agent_retried.insert(host.to_string());
         self.auth_prompted.remove(host);
@@ -1137,11 +1152,11 @@ impl App {
         id
     }
 
-    fn start_pty(&self, pane: &mut Pane) {
+    fn start_pty(&mut self, pane: &mut Pane) {
         let prof = self.profile(&pane.host);
         let secret = if prof.is_local() { None } else { self.secrets.get(&pane.host) };
         let mut argv = prof.pty_argv(pane.initial_cwd.as_deref(), secret.is_some());
-        let mut env = secret.map(|s| host::askpass_env(s)).unwrap_or_default();
+        let mut env = secret.as_deref().map(|s| host::askpass_env(s)).unwrap_or_default();
         if prof.is_local() {
             let (a, e) = host::local_shell(self.settings.local_shell);
             argv = a;
@@ -1663,6 +1678,13 @@ impl App {
 
     pub fn poll(&mut self) {
         self.autosave_memos();
+        let (forgotten, next) = self.secrets.tick();
+        for h in forgotten {
+            self.data.log(&format!("{h}: unused password forgotten"));
+        }
+        if let Some(d) = next {
+            self.ctx.request_repaint_after(d.max(Duration::from_millis(200)));
+        }
         let mut events: Vec<(usize, TermEvent)> = Vec::new();
         let mut new_history: Vec<(String, String)> = Vec::new();
         let mut new_records: Vec<crate::records::Record> = Vec::new();
@@ -1772,7 +1794,7 @@ impl App {
             let denied = matches!(self.conns.get(&h).map(|c| &c.status), Some(ConnStatus::Failed(e)) if e.contains("Permission denied"));
             if denied && self.auth_prompt.is_none() && !self.auth_prompted.contains(&h) {
                 self.auth_prompted.insert(h.clone());
-                if self.secrets.remove(&h).is_some() {
+                if self.secrets.remove(&h) {
                     self.toast(format!("{h}: password was rejected"), ToastKind::Error);
                 }
                 self.auth_prompt = Some((h.clone(), String::new()));
