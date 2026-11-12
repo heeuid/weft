@@ -146,6 +146,9 @@ pub struct Block {
     pub folded: bool,
     /// Found by guessing (the shell sends no OSC 133): no exit code.
     pub guessed: bool,
+    /// Typed with a leading space: kept out of history and records, as
+    /// bash's HISTCONTROL=ignorespace does.
+    pub private: bool,
 }
 
 impl Block {
@@ -777,6 +780,7 @@ impl Term {
         self.next_block += 1;
         self.blocks.push(Block {
             guessed: false,
+            private: false,
             id,
             prompt_line: line,
             input: None,
@@ -812,6 +816,7 @@ impl Term {
             None => String::new(),
         };
         let b = self.blocks.last_mut().unwrap();
+        b.private = cmd.starts_with(char::is_whitespace);
         b.command = cmd.trim().to_string();
         b.out_line = Some(here.0 + if here.1 > 0 { 1 } else { 0 });
         b.started = Some(Instant::now());
@@ -855,7 +860,7 @@ impl Term {
             // only note what was typed.
             let here = (self.cursor_abs(), self.cx);
             let cmd = b.input.map(|inp| self.text_between(inp, here)).unwrap_or_default();
-            self.pending_start = Some((cmd.trim().to_string(), here.0 + if here.1 > 0 { 1 } else { 0 }, Instant::now()));
+            self.pending_start = Some((cmd.trim_end().to_string(), here.0 + if here.1 > 0 { 1 } else { 0 }, Instant::now()));
             return;
         }
         self.mark_output();
@@ -1535,7 +1540,8 @@ impl Perform for Term {
                         // No C from this shell: the command started at Enter.
                         if let Some((cmd, out, at)) = self.pending_start.take() {
                             if let Some(b) = self.blocks.last_mut().filter(|b| b.state() == BlockState::Prompt) {
-                                b.command = cmd;
+                                b.private = cmd.starts_with(char::is_whitespace);
+                                b.command = cmd.trim().to_string();
                                 b.out_line = Some(out);
                                 b.started = Some(at);
                             }
@@ -1753,6 +1759,22 @@ mod tests {
         assert_eq!(b.exit, Some(2));
         assert_eq!(t.block_output(b), "a\nb");
         assert!(t.at_prompt());
+        assert!(!b.private);
+    }
+
+    #[test]
+    fn leading_space_makes_a_command_private() {
+        // Integrated shell (OSC 133) and a guessed one (Enter, then D without C).
+        let mut t = Term::new(30, 4);
+        run(&mut t, "\x1b]133;A\x07$ \x1b]133;B\x07 export TOKEN=x\r\n\x1b]133;C\x07\x1b]133;D;0\x07");
+        assert_eq!(t.blocks[0].command, "export TOKEN=x");
+        assert!(t.blocks[0].private);
+        let mut t = Term::new(30, 4);
+        run(&mut t, "\x1b]133;A\x07$ \x1b]133;B\x07  secret");
+        t.user_enter();
+        run(&mut t, "\r\n\x1b]133;D;0\x07");
+        assert_eq!(t.blocks[0].command, "secret");
+        assert!(t.blocks[0].private);
     }
 
     #[test]

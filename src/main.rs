@@ -14,6 +14,7 @@ mod md;
 mod media;
 mod mermaid;
 mod pty;
+mod records;
 mod term;
 mod theme;
 mod ui_panels;
@@ -60,6 +61,7 @@ impl eframe::App for WeftApp {
         app.ui_auth(ctx);
         app.ui_theme_menu(ctx);
         app.ui_font_menu(ctx);
+        app.ui_records_window(ctx);
         app.ui_toasts(ctx);
         app.ui_dock_drop(ctx);
         app.apply_actions();

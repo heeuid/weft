@@ -368,11 +368,21 @@ impl DataDir {
         OpenOptions::new().create(true).append(true).open(self.root.join("logs").join(name)).ok()
     }
 
+    /// weft's own log, one file a day (logs/weft-<date>.log); nothing when
+    /// switched off in the records settings.
     pub fn log(&self, line: &str) {
-        if let Some(mut f) = self.open_log("weft.log") {
+        if !crate::records::app_log_on() {
+            return;
+        }
+        if let Some(mut f) = self.open_log(&format!("weft-{}.log", crate::records::today())) {
             let _ = writeln!(f, "{} {}", timestamp(), line);
         }
     }
+}
+
+/// An agent log's file name for a host and day.
+pub fn agent_log_name(host: &str, day: &str) -> String {
+    format!("agent-{}-{day}.log", safe_name(host))
 }
 
 pub fn timestamp() -> String {
@@ -424,7 +434,9 @@ pub struct Conn {
     pub info: Value,
     next_id: u64,
     backend: Backend,
-    log: Option<File>,
+    /// logs/agent-<host>-<date>.log, opened for the day it is.
+    log_dir: PathBuf,
+    log: Option<(String, File)>,
     stderr_tail: String,
     /// Failures for requests that could not even be sent; delivered by `poll`.
     backend_failures: Vec<Value>,
@@ -432,14 +444,14 @@ pub struct Conn {
 
 impl Conn {
     pub fn open(profile: Profile, data: &DataDir, wake: impl Fn() + Send + Clone + 'static, password: Option<String>) -> Conn {
-        let log = data.open_log(&format!("agent-{}.log", safe_name(&profile.name)));
         let mut conn = Conn {
+            log_dir: data.path("logs"),
+            log: None,
             profile,
             status: ConnStatus::Connecting,
             info: Value::Null,
             next_id: 1,
             backend: Backend::Dead,
-            log,
             stderr_tail: String::new(),
             backend_failures: Vec::new(),
         };
@@ -476,7 +488,15 @@ impl Conn {
     }
 
     fn write_log(&mut self, line: &str) {
-        if let Some(f) = self.log.as_mut() {
+        if !crate::records::agent_log_on() {
+            return;
+        }
+        let day = crate::records::today();
+        if self.log.as_ref().map(|l| l.0 != day).unwrap_or(true) {
+            let path = self.log_dir.join(agent_log_name(&self.profile.name, &day));
+            self.log = OpenOptions::new().create(true).append(true).open(path).ok().map(|f| (day, f));
+        }
+        if let Some((_, f)) = self.log.as_mut() {
             let _ = writeln!(f, "{} {}", timestamp(), line);
         }
     }

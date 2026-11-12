@@ -347,6 +347,9 @@ pub struct Settings {
     /// Where icons the terminal font lacks come from (a Nerd Font), same form.
     #[serde(default = "d_font_file")]
     pub icon_font: String,
+    /// What is written to disk (commands, history, logs) and for how long.
+    #[serde(default)]
+    pub records: crate::records::Records,
     #[serde(default)]
     pub session: Vec<SavedNode>,
 }
@@ -366,7 +369,7 @@ impl Default for Settings {
                 },
             });
         }
-        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, layout: Layout::default(), show_hidden: false, find_mode: Default::default(), cursor_style: Default::default(), local_shell: Default::default(), mermaid: Default::default(), follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, term_font: d_font_file(), icon_font: d_font_file(), session: Vec::new() }
+        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, layout: Layout::default(), show_hidden: false, find_mode: Default::default(), cursor_style: Default::default(), local_shell: Default::default(), mermaid: Default::default(), follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, term_font: d_font_file(), icon_font: d_font_file(), records: Default::default(), session: Vec::new() }
     }
 }
 
@@ -586,6 +589,9 @@ pub struct Pane {
     /// The first size was applied (the first layout applies immediately).
     pub sized: bool,
     pub hist_seen: u64,
+    /// Last block written to the records, and where the running one started.
+    pub rec_seen: u64,
+    pub rec_cwd: Option<(u64, String)>,
     pub flash_block: Option<(u64, Instant)>,
 }
 
@@ -614,6 +620,8 @@ impl Pane {
             pending_size: None,
             sized: false,
             hist_seen: 0,
+            rec_seen: 0,
+            rec_cwd: None,
             seen: (false, false),
             flash_block: None,
         }
@@ -664,6 +672,7 @@ pub struct DirListing {
 pub enum SideTab {
     Files,
     Blocks,
+    History,
     Search,
     Procs,
 }
@@ -908,6 +917,15 @@ pub struct App {
     pub actions: Vec<Action>,
     agent_retried: HashSet<String>,
     last_save: Instant,
+    /// Records for the History panel, loaded when it is first shown.
+    pub records: Option<Vec<crate::records::Record>>,
+    pub records_query: String,
+    /// Search the output too (else commands only).
+    pub records_in_output: bool,
+    pub records_host: Option<String>,
+    /// The records settings window is open (with sizes measured on opening).
+    pub records_window: Option<Vec<(crate::records::Item, u64)>>,
+    last_prune: Option<Instant>,
 }
 
 pub fn join(dir: &str, name: &str) -> String {
@@ -941,6 +959,7 @@ impl App {
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
+        crate::records::set_switches(&settings.records);
         data.log(&format!("start, data dir {}", data.root.display()));
         let mut app = App {
             ctx,
@@ -997,6 +1016,12 @@ impl App {
             secrets: HashMap::new(),
             auth_prompted: HashSet::new(),
             last_save: Instant::now(),
+            records: None,
+            records_query: String::new(),
+            records_in_output: false,
+            records_host: None,
+            records_window: None,
+            last_prune: None,
             memo_edited: None,
             font_menu: None,
         };
@@ -1105,7 +1130,7 @@ impl App {
         self.panes.insert(id, pane);
         if !self.history.contains_key(host) {
             let hist = std::fs::read_to_string(self.data.path(&format!("history/{}.txt", host::safe_name(host))))
-                .map(|s| s.lines().map(String::from).collect())
+                .map(|s| s.lines().filter_map(crate::records::history_command).map(String::from).collect())
                 .unwrap_or_default();
             self.history.insert(host.to_string(), hist);
         }
@@ -1415,6 +1440,25 @@ impl App {
         self.editor.visible = true;
     }
 
+    // ---- records ----------------------------------------------------------------
+
+    /// Apply the keep times and size limits, on another thread.
+    pub fn prune_records(&mut self) {
+        let (root, rules, data) = (self.data.root.clone(), self.settings.records.clone(), self.data.clone());
+        std::thread::spawn(move || {
+            for line in crate::records::prune(&root, &rules) {
+                data.log(&line);
+            }
+        });
+    }
+
+    /// The records settings changed: switches, limits and the settings file.
+    pub fn records_changed(&mut self) {
+        crate::records::set_switches(&self.settings.records);
+        self.prune_records();
+        self.save_settings();
+    }
+
     // ---- fonts ------------------------------------------------------------------
 
     /// Fonts you download go here (or anywhere: a path can be entered).
@@ -1621,6 +1665,7 @@ impl App {
         self.autosave_memos();
         let mut events: Vec<(usize, TermEvent)> = Vec::new();
         let mut new_history: Vec<(String, String)> = Vec::new();
+        let mut new_records: Vec<crate::records::Record> = Vec::new();
         let mut timings: Vec<String> = Vec::new();
         let mut guessing = false;
         for (id, pane) in self.panes.iter_mut() {
@@ -1658,9 +1703,24 @@ impl App {
             for b in &pane.term.blocks {
                 if b.id > pane.hist_seen && b.state() != BlockState::Prompt {
                     pane.hist_seen = b.id;
-                    if !b.command.is_empty() {
+                    pane.rec_cwd = Some((b.id, pane.term.cwd.clone().or(pane.initial_cwd.clone()).unwrap_or_default()));
+                    if !b.command.is_empty() && !b.private {
                         new_history.push((pane.host.clone(), b.command.clone()));
                     }
+                }
+                if b.id > pane.rec_seen && b.state() == BlockState::Done {
+                    pane.rec_seen = b.id;
+                    if b.private || !self.settings.records.commands.on {
+                        continue;
+                    }
+                    let mut out = pane.term.block_output(b);
+                    if b.command.is_empty() && out.trim().is_empty() {
+                        continue;
+                    }
+                    let cut = crate::records::limit_output(&mut out, self.settings.records.output_kb);
+                    let dur = b.duration.unwrap_or_default().as_secs_f64();
+                    let cwd = pane.rec_cwd.take().filter(|c| c.0 == b.id).map(|c| c.1).unwrap_or_default();
+                    new_records.push(crate::records::Record { t: crate::records::now() - dur, host: pane.host.clone(), cwd, cmd: b.command.clone(), exit: b.exit, dur, out, cut });
                 }
             }
         }
@@ -1672,6 +1732,19 @@ impl App {
         }
         for (host, cmd) in new_history {
             self.record_history(&host, cmd);
+        }
+        for r in new_records {
+            if let Err(e) = crate::records::append(&self.data.root, &r) {
+                self.data.log(&format!("record not written: {e}"));
+            }
+            if let Some(all) = self.records.as_mut() {
+                all.push(r);
+            }
+        }
+        // Old records and logs go at start and then hourly, off this thread.
+        if self.last_prune.map(|t| t.elapsed() > Duration::from_secs(3600)).unwrap_or(true) {
+            self.last_prune = Some(Instant::now());
+            self.prune_records();
         }
         for (id, e) in events {
             self.handle_term_event(id, e);
@@ -1731,13 +1804,17 @@ impl App {
         if hist.len() > 5000 {
             hist.remove(0);
         }
-        // Rewrite occasionally would be nicer; appending keeps it cheap and greppable.
+        if !self.settings.records.history.on {
+            return;
+        }
+        // Appending keeps it cheap and greppable; the time line is bash's
+        // HISTTIMEFORMAT form, used for the keep time.
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(self.data.path(&format!("history/{}.txt", host::safe_name(host))))
         {
-            let _ = writeln!(f, "{}", cmd.replace('\n', " "));
+            let _ = writeln!(f, "#{}\n{}", crate::records::now() as i64, cmd.replace('\n', " "));
         }
     }
 

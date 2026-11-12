@@ -61,6 +61,8 @@ enum Cmd {
     NewMemo,
     Memos,
     Fonts,
+    History,
+    Records,
 }
 
 const COMMANDS: &[(Cmd, &str, &str)] = &[
@@ -91,6 +93,8 @@ const COMMANDS: &[(Cmd, &str, &str)] = &[
     (Cmd::UiReset, "UI scale 100%", ""),
     (Cmd::ThemePicker, "Theme…", ""),
     (Cmd::Fonts, "Fonts… (terminal font, icon font)", ""),
+    (Cmd::History, "History: search every command and its output", "Ctrl+Shift+H"),
+    (Cmd::Records, "Records & logs… (what is kept, how long, how much)", ""),
     (Cmd::ThemeSystem, "Theme: follow system (dark/light)", ""),
     (Cmd::CursorStyle, "Terminal cursor: block / bar / underline", ""),
     (Cmd::LocalShell(crate::host::LocalShell::Auto), "Local shell: auto (pwsh, else Windows PowerShell)", ""),
@@ -219,6 +223,11 @@ impl App {
             }
             Cmd::NewMemo => self.new_memo(),
             Cmd::Fonts => self.open_font_menu(),
+            Cmd::History => {
+                self.settings.sidebar = true;
+                self.side.tab = SideTab::History;
+            }
+            Cmd::Records => self.open_records_window(),
             Cmd::Memos => {
                 let dir = self.memo_dir();
                 let _ = std::fs::create_dir_all(&dir);
@@ -228,7 +237,7 @@ impl App {
             }
             Cmd::AgentLog => {
                 let h = self.active_host();
-                let p = self.data.path(&format!("logs/agent-{}.log", crate::host::safe_name(&h))).display().to_string().replace('\\', "/");
+                let p = self.data.path(&format!("logs/{}", crate::host::agent_log_name(&h, &crate::records::today()))).display().to_string().replace('\\', "/");
                 self.open_file("local", &p, 1);
             }
         }
@@ -249,6 +258,7 @@ impl App {
             (Key::B, Cmd::Sidebar),
             (Key::J, Cmd::Editor),
             (Key::M, Cmd::NewMemo),
+            (Key::H, Cmd::History),
             (Key::ArrowUp, Cmd::PrevBlock),
             (Key::ArrowDown, Cmd::NextBlock),
         ];
@@ -545,7 +555,7 @@ impl App {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             self.dock_grip(ui, Region::Side);
-            for (tab, label) in [(SideTab::Files, "Files"), (SideTab::Blocks, "Commands"), (SideTab::Search, "Search"), (SideTab::Procs, "Procs")] {
+            for (tab, label) in [(SideTab::Files, "Files"), (SideTab::Blocks, "Commands"), (SideTab::History, "History"), (SideTab::Search, "Search"), (SideTab::Procs, "Procs")] {
                 let sel = self.side.tab == tab;
                 let txt = RichText::new(label).size(12.5).color(if sel { theme::text() } else { theme::text_dim() });
                 if ui.selectable_label(sel, txt).clicked() {
@@ -558,6 +568,7 @@ impl App {
         match self.side.tab {
             SideTab::Files => self.ui_files(ui),
             SideTab::Blocks => self.ui_blocks(ui),
+            SideTab::History => self.ui_history(ui),
             SideTab::Search => self.ui_grep(ui),
             SideTab::Procs => self.ui_procs(ui),
         }
@@ -822,6 +833,215 @@ impl App {
                 });
             }
         });
+    }
+
+    /// History panel: every recorded command (all hosts, all days), searched
+    /// by command (fuzzy / glob / regex) and optionally by output.
+    fn ui_history(&mut self, ui: &mut Ui) {
+        use crate::records::{local_time, Record};
+        if self.records.is_none() {
+            self.records = Some(crate::records::load(&self.data.root));
+        }
+        let mut reload = false;
+        ui.horizontal(|ui| {
+            let w = (ui.available_width() - 130.0).max(80.0);
+            ui.add(TextEdit::singleline(&mut self.records_query).hint_text("search commands…").desired_width(w));
+            egui::ComboBox::from_id_salt("history-mode")
+                .width(58.0)
+                .selected_text(RichText::new(self.settings.find_mode.label()).size(12.0))
+                .show_ui(ui, |ui| {
+                    for m in FindMode::ALL {
+                        ui.selectable_value(&mut self.settings.find_mode, m, m.label()).on_hover_text(m.hint());
+                    }
+                });
+            if icons::button(ui, Icon::Refresh, "read the records again").clicked() {
+                reload = true;
+            }
+        });
+        let all = self.records.take().unwrap_or_default();
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut self.records_in_output, RichText::new("in output too").size(12.0)).on_hover_text("also find the text in what the commands printed");
+            let mut hosts: Vec<&str> = all.iter().map(|r| r.host.as_str()).collect();
+            hosts.sort();
+            hosts.dedup();
+            egui::ComboBox::from_id_salt("history-host")
+                .width(90.0)
+                .selected_text(RichText::new(self.records_host.clone().unwrap_or_else(|| "all hosts".into())).size(12.0))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.records_host, None, "all hosts");
+                    for h in hosts {
+                        ui.selectable_value(&mut self.records_host, Some(h.to_string()), h);
+                    }
+                });
+            if ui.small_button("Records…").on_hover_text("what is kept, for how long, how much").clicked() {
+                self.open_records_window();
+            }
+        });
+        if !self.settings.records.commands.on {
+            ui.label(RichText::new("Recording commands is off (Records…).").size(11.5).color(theme::warn()));
+        }
+        // Matches, worked out again only when the search or the records change.
+        let q = self.records_query.trim().to_string();
+        let key = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            (&q, self.settings.find_mode.label(), self.records_in_output, &self.records_host, all.len()).hash(&mut h);
+            h.finish()
+        };
+        let cache_id = Id::new("history-hits");
+        let cached: Option<(u64, Arc<Result<Vec<usize>, String>>)> = ui.data(|d| d.get_temp(cache_id));
+        let hits = match cached {
+            Some((k, hits)) if k == key => hits,
+            _ => {
+                let hits = Arc::new(history_matches(&all, &q, self.settings.find_mode, self.records_in_output, self.records_host.as_deref()));
+                ui.data_mut(|d| d.insert_temp(cache_id, (key, hits.clone())));
+                hits
+            }
+        };
+        let hits: &[usize] = match hits.as_ref() {
+            Ok(h) => h,
+            Err(e) => {
+                ui.colored_label(theme::error(), e);
+                &[]
+            }
+        };
+        ui.label(RichText::new(format!("{} of {} commands", hits.len(), all.len())).size(11.0).color(theme::text_faint()));
+        let pane = self.active_pane_id();
+        let mut open: Option<&Record> = None;
+        ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, 40.0, hits.len(), |ui, range| {
+            for &i in &hits[range] {
+                let r = &all[i];
+                let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 40.0), Sense::click());
+                let pt = ui.painter();
+                if resp.hovered() {
+                    pt.rect_filled(rect, CornerRadius::same(5), theme::bg_hover());
+                }
+                let (icon, col) = match r.exit {
+                    Some(0) => (Icon::Check, theme::success()),
+                    None => (Icon::Dot, theme::text_faint()),
+                    _ => (Icon::Cross, theme::error()),
+                };
+                icons::paint(pt, egui::Rect::from_min_size(rect.min + vec2(6.0, 6.0), vec2(14.0, 14.0)), icon, col);
+                let cmd: String = if r.cmd.is_empty() { "(output)".into() } else { r.cmd.chars().take(80).collect() };
+                pt.text(rect.min + vec2(26.0, 5.0), Align2::LEFT_TOP, cmd, FontId::monospace(12.5), theme::text());
+                let exit = match r.exit {
+                    Some(c) if c != 0 => format!(" · exit {c}"),
+                    _ => String::new(),
+                };
+                let meta = format!("{} · {} · {}{exit} · {}", local_time(r.t), r.host, fmt_dur(Duration::from_secs_f64(r.dur)), r.cwd);
+                pt.text(rect.min + vec2(26.0, 23.0), Align2::LEFT_TOP, meta, FontId::proportional(11.0), theme::text_faint());
+                let resp = resp.on_hover_text("click: open with its output · right-click: more");
+                if resp.clicked() {
+                    open = Some(r);
+                }
+                resp.context_menu(|ui| {
+                    if ui.button("Copy command").clicked() {
+                        self.actions.push(Action::Copy(r.cmd.clone()));
+                        ui.close_menu();
+                    }
+                    if ui.button("Copy output").clicked() {
+                        self.actions.push(Action::Copy(r.out.clone()));
+                        ui.close_menu();
+                    }
+                    if let Some(id) = pane {
+                        if ui.add_enabled(!r.cmd.is_empty(), egui::Button::new("Run again in this pane")).clicked() {
+                            self.actions.push(Action::Run(id, r.cmd.clone()));
+                            ui.close_menu();
+                        }
+                    }
+                    if ui.button("Open in editor").clicked() {
+                        open = Some(r);
+                        ui.close_menu();
+                    }
+                });
+            }
+        });
+        if let Some(r) = open {
+            let exit = r.exit.map(|c| c.to_string()).unwrap_or_else(|| "not reported".into());
+            let cut = if r.cut > 0 { format!("\n({} bytes of output left out in the middle)", r.cut) } else { String::new() };
+            let text = format!("$ {}\n# {} · {} · {} · exit {exit} · {}{cut}\n\n{}", r.cmd, local_time(r.t), r.host, r.cwd, fmt_dur(Duration::from_secs_f64(r.dur)), r.out);
+            self.actions.push(Action::OpenScratch(format!("{} {}", local_time(r.t), r.cmd.chars().take(30).collect::<String>()), text));
+        }
+        self.records = if reload { None } else { Some(all) };
+    }
+
+    pub fn open_records_window(&mut self) {
+        let root = self.data.root.clone();
+        self.records_window = Some(crate::records::Item::ALL.iter().map(|&i| (i, i.size(&root))).collect());
+    }
+
+    /// What is kept on disk and for how long, item by item.
+    pub fn ui_records_window(&mut self, ctx: &egui::Context) {
+        use crate::records::Item;
+        let Some(sizes) = self.records_window.take() else { return };
+        let mut open = true;
+        let mut changed = false;
+        let mut delete: Option<Item> = None;
+        let dir = self.data.root.display().to_string();
+        egui::Window::new("Records & logs").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
+            ui.label(RichText::new(format!("Kept in {dir}")).size(11.5).color(theme::text_faint()));
+            ui.add_space(4.0);
+            egui::Grid::new("records-grid").num_columns(5).spacing([14.0, 8.0]).show(ui, |ui| {
+                for h in ["", "Keep", "Up to", "Now", ""] {
+                    ui.label(RichText::new(h).size(11.5).color(theme::text_dim()));
+                }
+                ui.end_row();
+                for (item, size) in &sizes {
+                    let rule = item.rule_mut(&mut self.settings.records);
+                    changed |= ui.checkbox(&mut rule.on, item.label()).on_hover_text(item.hint()).changed();
+                    changed |= ui
+                        .add(egui::DragValue::new(&mut rule.keep_days).range(0..=3650).speed(0.5).custom_formatter(|v, _| if v == 0.0 { "forever".into() } else { format!("{v} days") }))
+                        .on_hover_text("drag or type; 0 = forever")
+                        .changed();
+                    changed |= ui
+                        .add(egui::DragValue::new(&mut rule.max_mb).range(0..=100_000).speed(1.0).custom_formatter(|v, _| if v == 0.0 { "no limit".into() } else { format!("{v} MB") }))
+                        .on_hover_text(if *item == Item::History { "per host; drag or type; 0 = no limit" } else { "drag or type; 0 = no limit" })
+                        .changed();
+                    ui.label(RichText::new(human_size(*size)).size(12.0).color(theme::text_dim()));
+                    ui.menu_button(RichText::new("Delete…").size(12.0), |ui| {
+                        if ui.button(RichText::new(format!("Delete all {}", item.label().to_lowercase())).color(theme::error())).clicked() {
+                            delete = Some(*item);
+                            ui.close_menu();
+                        }
+                    });
+                    ui.end_row();
+                }
+            });
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label("Output kept per command:");
+                changed |= ui
+                    .add(egui::DragValue::new(&mut self.settings.records.output_kb).range(0..=1_000_000).speed(4.0).custom_formatter(|v, _| if v == 0.0 { "all".into() } else { format!("{v} KB") }))
+                    .on_hover_text("longer output keeps its start and end; 0 = all of it")
+                    .changed();
+            });
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new(
+                    "Limits apply at start and every hour; dated files go a whole day at a time.\n\
+                     Keystrokes are never written, so passwords typed at a prompt are in none of these.\n\
+                     A command typed with a leading space is left out of commands and history.",
+                )
+                .size(11.0)
+                .color(theme::text_faint()),
+            );
+        });
+        let mut sizes = sizes;
+        if let Some(item) = delete {
+            let n = crate::records::delete_all(&self.data.root, item);
+            if item == Item::Commands {
+                self.records = None;
+            }
+            self.toast(format!("{}: deleted {n} file(s)", item.label()), ToastKind::Info);
+            let root = self.data.root.clone();
+            sizes = Item::ALL.iter().map(|&i| (i, i.size(&root))).collect();
+        }
+        if changed {
+            self.records_changed();
+        }
+        if open {
+            self.records_window = Some(sizes);
+        }
     }
 
     fn ui_blocks(&mut self, ui: &mut Ui) {
@@ -2066,6 +2286,33 @@ struct MdCache {
 /// backgrounds and rules are painted at the galley positions afterwards.
 /// Returns whether the text changed.
 #[allow(clippy::too_many_arguments)]
+/// History search: indices into `all`, newest first. The command is matched
+/// whole with the filter's mode; with `in_output`, output is searched for the
+/// text as typed (any case), or with the regex in regex mode.
+fn history_matches(all: &[crate::records::Record], q: &str, mode: FindMode, in_output: bool, host: Option<&str>) -> Result<Vec<usize>, String> {
+    let host_ok = |r: &crate::records::Record| host.map(|h| r.host == h).unwrap_or(true);
+    if q.is_empty() {
+        return Ok((0..all.len()).rev().filter(|&i| host_ok(&all[i])).collect());
+    }
+    let m = match find::Matcher::new(mode, q)? {
+        find::Matcher::Pattern { re, .. } => find::Matcher::Pattern { re, full_path: true },
+        m => m,
+    };
+    let out_re = if in_output {
+        let (pat, icase) = if mode == FindMode::Regex { (q.to_string(), !q.chars().any(char::is_uppercase)) } else { (regex::escape(q), true) };
+        Some(regex::RegexBuilder::new(&pat).case_insensitive(icase).build().map_err(|e| e.to_string())?)
+    } else {
+        None
+    };
+    Ok((0..all.len())
+        .rev()
+        .filter(|&i| {
+            let r = &all[i];
+            host_ok(r) && (m.matches(&r.cmd).is_some() || out_re.as_ref().map(|re| re.is_match(&r.out)).unwrap_or(false))
+        })
+        .collect())
+}
+
 /// A memo's tab name: its first line without markdown marks.
 fn memo_title(text: &str) -> String {
     const MAX: usize = 24;
@@ -2263,7 +2510,27 @@ fn close_menu(ui: &mut Ui, at: usize, n: usize) -> Option<CloseWhich> {
 
 #[cfg(test)]
 mod tests {
-    use super::memo_title;
+    use super::{history_matches, memo_title, FindMode};
+    use crate::records::Record;
+
+    #[test]
+    fn history_search() {
+        let rec = |host: &str, cmd: &str, out: &str| Record { t: 0.0, host: host.into(), cwd: String::new(), cmd: cmd.into(), exit: Some(0), dur: 0.0, out: out.into(), cut: 0 };
+        let all = [rec("local", "git status", "On branch main"), rec("srv", "cargo build --release", "error[E0425]: not found"), rec("srv", "ls /var/log", "syslog")];
+        let find = |q: &str, mode, out, host| history_matches(&all, q, mode, out, host).unwrap();
+        // Newest first; everything for an empty query.
+        assert_eq!(find("", FindMode::Fuzzy, false, None), [2, 1, 0]);
+        assert_eq!(find("", FindMode::Fuzzy, false, Some("srv")), [2, 1]);
+        assert_eq!(find("gst", FindMode::Fuzzy, false, None), [0]);
+        // Glob over the whole command, slashes and all.
+        assert_eq!(find("ls /var/*", FindMode::Glob, false, None), [2]);
+        assert_eq!(find("^cargo .*release$", FindMode::Regex, false, None), [1]);
+        // Output: only when asked, as typed in any case, or by regex.
+        assert!(find("E0425", FindMode::Fuzzy, false, None).is_empty());
+        assert_eq!(find("e0425", FindMode::Fuzzy, true, None), [1]);
+        assert_eq!(find(r"E\d{4}", FindMode::Regex, true, None), [1]);
+        assert!(history_matches(&all, "(", FindMode::Regex, false, None).is_err());
+    }
 
     #[test]
     fn memo_tab_is_named_after_the_first_line() {
