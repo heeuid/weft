@@ -1105,11 +1105,17 @@ impl App {
             }
         }
 
-        // Context menu.
+        // Context menu. While an app takes the mouse (nvim, htop…) a right-click
+        // is the app's; Shift+right-click opens this menu instead, the same
+        // way Shift+drag selects here instead of in the app.
         let has_sel = p.sel.is_some();
         let sel_text = p.sel.map(|s| selection_text(t, s));
         let cwd = t.cwd.clone();
-        resp.context_menu(|ui| {
+        let app_mouse = t.mouse_mode != 0 && (t.alt_active || p.scroll == 0);
+        let menu_id = term_id.with("weft-menu");
+        let menu_open = ui.data(|d| d.get_temp::<bool>(menu_id).unwrap_or(false));
+        let ours = !app_mouse || mods.shift || menu_open;
+        let shown = ours.then(|| resp.context_menu(|ui| {
             ui.set_min_width(200.0);
             if ui.add_enabled(has_sel, egui::Button::new("Copy selection")).clicked() {
                 if let Some(s) = sel_text.clone() {
@@ -1147,7 +1153,15 @@ impl App {
                 acts.push(Action::ClosePane(id));
                 ui.close_menu();
             }
-        });
+            if app_mouse {
+                ui.separator();
+                ui.label(egui::RichText::new("The app here uses the mouse:\nShift+drag selects text for weft,\nShift+right-click opens this menu.").size(11.0).color(theme::text_faint()));
+            }
+        }));
+        let open_now = shown.flatten().is_some();
+        if open_now != menu_open {
+            ui.data_mut(|d| d.insert_temp(menu_id, open_now));
+        }
 
         // IME position. Every focused frame must report one: a frame without it
         // makes egui disable the IME, and Windows then commits the syllable being

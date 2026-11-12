@@ -203,6 +203,8 @@ pub struct Term {
     pub cwd: Option<String>,
     pub cwd_host: Option<String>,
     pub replies: Vec<u8>,
+    /// An XTGETTCAP request (DCS + q) being received.
+    xtgettcap: Option<Vec<u8>>,
     pub events: Vec<TermEvent>,
     pub blocks: Vec<Block>,
     next_block: u64,
@@ -256,6 +258,7 @@ impl Term {
             cwd: None,
             cwd_host: None,
             replies: Vec::new(),
+            xtgettcap: None,
             events: Vec::new(),
             blocks: Vec::new(),
             next_block: 1,
@@ -1463,7 +1466,9 @@ impl Perform for Term {
                 }
                 _ => {}
             },
-            ('c', []) => self.replies.extend_from_slice(b"\x1b[?62;22c"),
+            // 52: clipboard writes (OSC 52) work. Neovim 0.10+ over ssh
+            // then yanks "+ into this computer's clipboard on its own.
+            ('c', []) => self.replies.extend_from_slice(b"\x1b[?62;22;52c"),
             ('c', [b'>']) => self.replies.extend_from_slice(b"\x1b[>0;10;1c"),
             ('t', []) => {
                 if ps.first() == Some(&18) {
@@ -1578,9 +1583,37 @@ impl Perform for Term {
         }
     }
 
-    fn hook(&mut self, _params: &Params, _intermediates: &[u8], _ignore: bool, _action: char) {}
-    fn put(&mut self, _byte: u8) {}
-    fn unhook(&mut self) {}
+    fn hook(&mut self, _params: &Params, intermediates: &[u8], _ignore: bool, action: char) {
+        if intermediates == b"+" && action == 'q' {
+            self.xtgettcap = Some(Vec::new());
+        }
+    }
+
+    fn put(&mut self, byte: u8) {
+        if let Some(b) = self.xtgettcap.as_mut().filter(|b| b.len() < 1024) {
+            b.push(byte);
+        }
+    }
+
+    /// XTGETTCAP: apps ask for terminfo capabilities by hex-encoded name.
+    /// Only Ms (clipboard writes through OSC 52) is answered: Neovim 0.10+
+    /// asks for it to decide on its OSC 52 clipboard. Others: not known.
+    fn unhook(&mut self) {
+        let Some(req) = self.xtgettcap.take() else { return };
+        for name in req.split(|&b| b == b';') {
+            let hex = String::from_utf8_lossy(name).to_uppercase();
+            let reply = match hex.as_str() {
+                // "Ms" = \E]52;%p1%s;%p2%s\007
+                "4D73" => format!("\x1bP1+r{hex}={}\x1b\\", hex_encode(b"\x1b]52;%p1%s;%p2%s\x07")),
+                _ => format!("\x1bP0+r{hex}\x1b\\"),
+            };
+            self.replies.extend_from_slice(reply.as_bytes());
+        }
+    }
+}
+
+fn hex_encode(b: &[u8]) -> String {
+    b.iter().map(|c| format!("{c:02X}")).collect()
 }
 
 #[cfg(test)]
@@ -1754,6 +1787,19 @@ mod tests {
         run(&mut t, "\x1b]9;9;C:\\Users\\me\x1b\\\x1b]9;9;\"D:\\a b\"\x07");
         assert_eq!(t.cwd.as_deref(), Some("D:/a b"));
         assert!(t.events.iter().all(|e| !matches!(e, TermEvent::Notify(_))), "not a notification");
+    }
+
+    #[test]
+    fn clipboard_support_is_reported() {
+        // DA1 lists 52 (OSC 52 clipboard), as Neovim 0.11 checks.
+        let mut t = Term::new(40, 3);
+        run(&mut t, "\x1b[c");
+        assert_eq!(t.replies, b"\x1b[?62;22;52c");
+        // XTGETTCAP Ms (Neovim 0.10) and an unknown name, in one request.
+        let mut t = Term::new(40, 3);
+        run(&mut t, "\x1bP+q4d73;5a5a\x1b\\");
+        let r = String::from_utf8(t.replies.clone()).unwrap();
+        assert_eq!(r, format!("\x1bP1+r4D73={}\x1b\\\x1bP0+r5A5A\x1b\\", hex_encode(b"\x1b]52;%p1%s;%p2%s\x07")));
     }
 
     #[test]
