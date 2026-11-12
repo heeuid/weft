@@ -518,6 +518,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn tui_symbols_never_show_as_boxes() {
+        // Symbols TUIs put in key hints and status lines (gitui, lazygit,
+        // btop, nvim plugins). Not every font has them all (Hack has no ␣ or
+        // ⏎); the fallback chain must, whichever built-in font is chosen.
+        let symbols = "␣⏎↵⇧⌘⌥⎋⌦⌫⇥⇤↑↓←→⇐⇒▲▼◀▶●○◆◇■□▪✓✔✗✘⚠…│─┼╭╮╯╰█▏▕░▒▓⣿\u{f1050}\u{e0b0}\u{f418}";
+        for (spec, name, _) in BUILTIN_FONTS {
+            let ctx = egui::Context::default();
+            install_fonts(&ctx, spec, DEFAULT_FONT);
+            let _ = ctx.run(Default::default(), |_| {});
+            let missing: String = symbols.chars().filter(|c| !ctx.fonts(|f| f.has_glyph(&term_font(14.0), *c))).collect();
+            assert!(missing.is_empty(), "{name}: no glyph for {missing}");
+        }
+    }
+
+    #[test]
     fn text_runs_stay_on_the_cell_grid() {
         // ASCII runs are drawn as one string; their glyphs must land on the
         // columns the grid (cursor, backgrounds) uses, at any size and scale.
