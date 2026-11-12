@@ -362,15 +362,85 @@ pub fn take_key(ui: &Ui, key: Key, pred: impl Fn(Modifiers) -> bool) -> bool {
     })
 }
 
+/// A row of what is on screen: the alternate screen while a full-screen app
+/// runs, else the primary buffer (scrollback + screen).
+fn row_at(t: &Term, abs: u64) -> Option<&term::Row> {
+    if t.alt_active {
+        t.screen.get(abs.checked_sub(t.screen_base())? as usize)
+    } else {
+        t.line(abs)
+    }
+}
+
+/// The word around a cell as columns [start, end): a run of characters
+/// between spaces and brackets/quotes; a separator alone is its own word.
+fn word_span(t: &Term, abs: u64, col: usize) -> Option<(usize, usize)> {
+    let chars = row_at(t, abs)?.chars_with_cols();
+    let idx = chars.iter().rposition(|&(_, c)| c <= col)?;
+    let delim = |c: char| c.is_whitespace() || "\"'`<>()[]{}|;,".contains(c);
+    let end_of = |i: usize| chars.get(i + 1).map(|n| n.1).unwrap_or(chars[i].1 + 1);
+    if delim(chars[idx].0) {
+        return Some((chars[idx].1, end_of(idx)));
+    }
+    let (mut s, mut e) = (idx, idx);
+    while s > 0 && !delim(chars[s - 1].0) {
+        s -= 1;
+    }
+    while e + 1 < chars.len() && !delim(chars[e + 1].0) {
+        e += 1;
+    }
+    Some((chars[s].1, end_of(e)))
+}
+
+/// Ordered ends (inclusive), widened to whole words or lines by the mode.
+fn sel_ends(t: &Term, s: Selection) -> ((u64, usize), (u64, usize)) {
+    let (mut a, mut b) = if s.a <= s.b { (s.a, s.b) } else { (s.b, s.a) };
+    match s.mode {
+        SelMode::Char => {}
+        SelMode::Word => {
+            if let Some((st, _)) = word_span(t, a.0, a.1) {
+                a.1 = st;
+            }
+            if let Some((_, e)) = word_span(t, b.0, b.1) {
+                b.1 = e.saturating_sub(1);
+            }
+        }
+        SelMode::Line => {
+            a.1 = 0;
+            b.1 = row_at(t, b.0).map(|r| r.cells.len()).unwrap_or(1).saturating_sub(1);
+        }
+        SelMode::Block => {
+            a.1 = s.a.1.min(s.b.1);
+            b.1 = s.a.1.max(s.b.1);
+        }
+    }
+    (a, b)
+}
+
+/// The selection's columns [c0, c1) on row `abs`, or None when off it.
+fn sel_cols(t: &Term, s: Selection, abs: u64, cols: usize) -> Option<(usize, usize)> {
+    let (a, b) = sel_ends(t, s);
+    if abs < a.0 || abs > b.0 {
+        return None;
+    }
+    if s.mode == SelMode::Block {
+        return Some((a.1, (b.1 + 1).min(cols)));
+    }
+    Some((if abs == a.0 { a.1 } else { 0 }, if abs == b.0 { (b.1 + 1).min(cols) } else { cols }))
+}
+
 fn selection_text(t: &Term, s: Selection) -> String {
-    let (a, b) = if s.a <= s.b { (s.a, s.b) } else { (s.b, s.a) };
+    let (a, b) = sel_ends(t, s);
+    // A block is its columns of each row, one row per line.
+    if s.mode == SelMode::Block {
+        return (a.0..=b.0).filter_map(|abs| row_at(t, abs).map(|r| r.text_range(a.1, b.1 + 1))).collect::<Vec<_>>().join("\n");
+    }
     if !t.alt_active {
         return t.text_between(a, (b.0, b.1 + 1));
     }
-    let base = t.screen_base();
     let mut out = String::new();
     for abs in a.0..=b.0 {
-        let Some(row) = t.screen.get((abs.saturating_sub(base)) as usize) else { continue };
+        let Some(row) = row_at(t, abs) else { continue };
         let from = if abs == a.0 { a.1 } else { 0 };
         let to = if abs == b.0 { b.1 + 1 } else { row.cells.len() };
         out.push_str(&row.text_range(from, to));
@@ -726,16 +796,44 @@ impl App {
                         p.scroll = p.scroll.saturating_sub(n);
                     }
                 }
-                // Selection.
-                if resp.drag_started_by(PointerButton::Primary) {
+                // Selection, as in WezTerm: drag = characters, double-click
+                // (and drag) = words, triple-click (and drag) = lines,
+                // Alt+drag = a block of columns.
+                let clicks_id = term_id.with("clicks");
+                let mut clicks: u8 = ui.data(|d| d.get_temp::<(f64, u8, egui::Pos2)>(clicks_id)).map(|c| c.1).unwrap_or(1);
+                for ev in &events {
+                    if let Event::PointerButton { pos, button: PointerButton::Primary, pressed: true, modifiers } = ev {
+                        if !inner.contains(*pos) {
+                            continue;
+                        }
+                        let now = ui.input(|i| i.time);
+                        let last = ui.data(|d| d.get_temp::<(f64, u8, egui::Pos2)>(clicks_id));
+                        clicks = match last {
+                            Some((t0, n, p0)) if now - t0 < 0.45 && p0.distance(*pos) < 6.0 => n % 3 + 1,
+                            _ => 1,
+                        };
+                        ui.data_mut(|d| d.insert_temp(clicks_id, (now, clicks, *pos)));
+                        if clicks >= 2 {
+                            if let Some(a) = hit(&p.term, *pos) {
+                                let mode = if clicks == 2 { SelMode::Word } else { SelMode::Line };
+                                p.sel = Some(Selection { a, b: a, mode });
+                                p.selecting = true;
+                            }
+                        } else if modifiers.alt {
+                            p.sel = None;
+                        }
+                    }
+                }
+                if resp.drag_started_by(PointerButton::Primary) && clicks == 1 {
                     if let Some(origin) = ui.input(|i| i.pointer.press_origin()) {
                         if let Some(a) = hit(&p.term, origin) {
-                            p.sel = Some(Selection { a, b: a });
+                            let mode = if mods.alt { SelMode::Block } else { SelMode::Char };
+                            p.sel = Some(Selection { a, b: a, mode });
                             p.selecting = true;
                         }
                     }
                 }
-                if p.selecting && resp.dragged_by(PointerButton::Primary) {
+                if p.selecting && ui.input(|i| i.pointer.primary_down()) {
                     if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
                         if pos.y < inner.top() && !t_alt {
                             p.scroll += 1;
@@ -747,21 +845,14 @@ impl App {
                         }
                     }
                 }
-                if resp.drag_stopped() {
+                if p.selecting && !ui.input(|i| i.pointer.primary_down()) {
                     p.selecting = false;
-                    if p.sel.map(|s| s.a == s.b).unwrap_or(false) {
+                    // A plain click leaves no selection; words and lines stay.
+                    if p.sel.map(|s| s.a == s.b && matches!(s.mode, SelMode::Char | SelMode::Block)).unwrap_or(false) {
                         p.sel = None;
                     }
                 }
-                if resp.double_clicked() {
-                    if let Some(pos) = resp.interact_pointer_pos() {
-                        if let Some((abs, col)) = hit(&p.term, pos) {
-                            if let Some((_, s, e)) = p.term.token_at(abs, col) {
-                                p.sel = Some(Selection { a: (abs, s), b: (abs, e.saturating_sub(1)) });
-                            }
-                        }
-                    }
-                } else if resp.clicked() {
+                if resp.clicked() && clicks == 1 {
                     p.sel = None;
                     if mods.ctrl {
                         if let Some(pos) = resp.interact_pointer_pos() {
@@ -840,14 +931,9 @@ impl App {
             }
         }
         if let Some(sel) = p.sel {
-            let (a, b) = if sel.a <= sel.b { (sel.a, sel.b) } else { (sel.b, sel.a) };
             for (i, vr) in window.iter().enumerate() {
                 let Some(abs) = vr.abs(t) else { continue };
-                if abs < a.0 || abs > b.0 {
-                    continue;
-                }
-                let c0 = if abs == a.0 { a.1 } else { 0 };
-                let c1 = if abs == b.0 { b.1 + 1 } else { cols };
+                let Some((c0, c1)) = sel_cols(t, sel, abs, cols) else { continue };
                 let r = Rect::from_min_size(pos2(inner.left() + c0 as f32 * cw, row_y(i)), vec2((c1.saturating_sub(c0)) as f32 * cw, ch));
                 painter.rect_filled(r, CornerRadius::ZERO, theme::selection());
             }
@@ -1436,6 +1522,27 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selection_modes() {
+        let mut t = Term::new(30, 4);
+        let mut parser = vte::Parser::new();
+        t.feed(&mut parser, b"ls -l src/main.rs\r\nfoo(bar) baz\r\nabcdef\r\n123456");
+        let sel = |a, b, mode| Selection { a, b, mode };
+        // Characters, either drag direction.
+        assert_eq!(selection_text(&t, sel((0, 3), (0, 4), SelMode::Char)), "-l");
+        assert_eq!(selection_text(&t, sel((0, 4), (0, 3), SelMode::Char)), "-l");
+        // Words: both ends widened; brackets split words.
+        assert_eq!(selection_text(&t, sel((0, 8), (0, 8), SelMode::Word)), "src/main.rs");
+        assert_eq!(selection_text(&t, sel((1, 5), (1, 10), SelMode::Word)), "bar) baz");
+        // Lines: whole rows.
+        assert_eq!(selection_text(&t, sel((1, 4), (2, 1), SelMode::Line)), "foo(bar) baz\nabcdef");
+        // Block: the same columns on each row, from any corner.
+        assert_eq!(selection_text(&t, sel((3, 3), (2, 1), SelMode::Block)), "bcd\n234");
+        assert_eq!(sel_cols(&t, sel((3, 3), (2, 1), SelMode::Block), 2, 30), Some((1, 4)));
+        assert_eq!(sel_cols(&t, sel((3, 3), (2, 1), SelMode::Block), 1, 30), None);
+        assert_eq!(sel_cols(&t, sel((1, 4), (2, 1), SelMode::Line), 1, 30), Some((0, 30)));
+    }
 
     #[test]
     fn keys() {

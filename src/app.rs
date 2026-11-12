@@ -487,10 +487,24 @@ pub struct Tab {
 // Panes and their GUI layers
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Copy, PartialEq)]
+/// What a terminal selection is made of between its two ends.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum SelMode {
+    Char,
+    /// Double-click: whole words at both ends.
+    Word,
+    /// Triple-click: whole lines.
+    Line,
+    /// Alt+drag: the same columns on every row.
+    Block,
+}
+
+/// `a` is where it started, `b` where the pointer is (any order).
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Selection {
     pub a: (u64, usize),
     pub b: (u64, usize),
+    pub mode: SelMode,
 }
 
 pub struct SearchState {
