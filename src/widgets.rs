@@ -9,6 +9,20 @@ use crate::theme;
 use egui::{pos2, vec2, Align2, CornerRadius, FontId, Id, Rect, Sense, Stroke, Ui};
 use std::cmp::Ordering;
 
+/// Text at `pos` (left edge, vertically centred) cut with … to `max_w`,
+/// so it never runs into whatever sits to its right.
+pub fn text_fit(p: &egui::Painter, pos: egui::Pos2, text: &str, font: FontId, color: egui::Color32, max_w: f32) {
+    let mut job = egui::text::LayoutJob::simple_singleline(text.to_owned(), font, color);
+    job.wrap = egui::text::TextWrapping { max_width: max_w.max(8.0), max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
+    let g = p.layout_job(job);
+    p.galley(pos2(pos.x, pos.y - g.size().y / 2.0), g, color);
+}
+
+/// Width of a single line of text.
+pub fn text_width(p: &egui::Painter, text: &str, font: FontId) -> f32 {
+    p.layout_no_wrap(text.to_owned(), font, egui::Color32::WHITE).size().x
+}
+
 pub fn human_size(n: u64) -> String {
     let mut v = n as f64;
     for u in ["B", "K", "M", "G", "T"] {

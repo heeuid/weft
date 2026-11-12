@@ -1240,7 +1240,7 @@ impl App {
             let bx = hr.right() - 26.0;
             let zx = bx - 34.0;
             let title_clip = Rect::from_min_max(hr.min, pos2(zx - 6.0, hr.bottom()));
-            painter.with_clip_rect(title_clip).text(pos2(hr.left() + 28.0, hr.center().y), Align2::LEFT_CENTER, title, FontId::proportional(12.0), if active { theme::text() } else { theme::text_dim() });
+            crate::widgets::text_fit(&painter.with_clip_rect(title_clip), pos2(hr.left() + 28.0, hr.center().y), &title, FontId::proportional(12.0), if active { theme::text() } else { theme::text_dim() }, title_clip.right() - hr.left() - 34.0);
             if icons::overlay_button_styled(ui, Rect::from_min_size(pos2(bx, hr.top() + 2.0), vec2(20.0, 20.0)), Id::new(("close", id)), Icon::Cross, "close pane (Ctrl+Shift+W)", true).clicked() {
                 acts.push(Action::ClosePane(id));
             }
