@@ -493,6 +493,8 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
                     let mut rects: Vec<egui::Rect> = Vec::with_capacity(n_tabs);
+                    // The tab being dragged: drawn under the pointer (title, dot color, width).
+                    let mut ghost: Option<(String, Color32, f32)> = None;
                     for (ti, tab) in self.tabs.iter().enumerate() {
                         let Some(p) = self.panes.get(&tab.active) else {
                             rects.push(egui::Rect::NOTHING);
@@ -512,6 +514,12 @@ impl App {
                         // itself again next frame -> endless flicker.
                         let hovered = resp.contains_pointer();
                         let lifted = dragging == Some(ti);
+                        if lifted {
+                            // Its place: an empty slot; the tab itself rides under the pointer.
+                            ui.painter().rect_filled(rect, CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }, theme::tint(theme::accent(), 22));
+                            ui.painter().rect_stroke(rect.shrink(1.0), CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }, Stroke::new(1.0_f32, theme::tint(theme::accent(), 110)), egui::StrokeKind::Inside);
+                            ghost = Some((title.clone(), host_color(&p.host), rect.width()));
+                        }
                         let bg = if active || lifted {
                             theme::bg_term()
                         } else if hovered {
@@ -519,37 +527,39 @@ impl App {
                         } else {
                             theme::bg_base()
                         };
-                        ui.painter().rect_filled(rect, CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }, bg);
-                        if active {
-                            ui.painter().hline(rect.x_range().shrink(6.0), rect.top() + 1.0, Stroke::new(2.0_f32, host_color(&p.host)));
-                        }
-                        let dot = Rect2::dot(rect);
-                        if running {
-                            // A still ring, not a pulse: an animation here redrew the
-                            // whole window ~16 times a second for as long as anything
-                            // ran (an open nvim, a server).
-                            ui.painter().circle_filled(dot, 3.5, theme::accent());
-                            ui.painter().circle_stroke(dot, 5.5, Stroke::new(1.2_f32, theme::tint(theme::accent(), 140)));
-                        } else {
-                            ui.painter().circle_filled(dot, 3.5, host_color(&p.host));
-                        }
-                        let color = if active { theme::text() } else { theme::text_dim() };
-                        let text_w = rect.width() - 52.0;
-                        let mut g = ui.painter().layout_no_wrap(title.clone(), font.clone(), color);
-                        if g.size().x > text_w {
-                            // Drop characters until it fits, then add the ellipsis.
-                            let chars: Vec<char> = title.chars().collect();
-                            let mut n = chars.len();
-                            while n > 1 {
-                                n = (n * 9 / 10).min(n - 1);
-                                let t: String = chars[..n].iter().collect::<String>() + "…";
-                                g = ui.painter().layout_no_wrap(t, font.clone(), color);
-                                if g.size().x <= text_w {
-                                    break;
+                        if !lifted {
+                            ui.painter().rect_filled(rect, CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }, bg);
+                            if active {
+                                ui.painter().hline(rect.x_range().shrink(6.0), rect.top() + 1.0, Stroke::new(2.0_f32, host_color(&p.host)));
+                            }
+                            let dot = Rect2::dot(rect);
+                            if running {
+                                // A still ring, not a pulse: an animation here redrew the
+                                // whole window ~16 times a second for as long as anything
+                                // ran (an open nvim, a server).
+                                ui.painter().circle_filled(dot, 3.5, theme::accent());
+                                ui.painter().circle_stroke(dot, 5.5, Stroke::new(1.2_f32, theme::tint(theme::accent(), 140)));
+                            } else {
+                                ui.painter().circle_filled(dot, 3.5, host_color(&p.host));
+                            }
+                            let color = if active { theme::text() } else { theme::text_dim() };
+                            let text_w = rect.width() - 52.0;
+                            let mut g = ui.painter().layout_no_wrap(title.clone(), font.clone(), color);
+                            if g.size().x > text_w {
+                                // Drop characters until it fits, then add the ellipsis.
+                                let chars: Vec<char> = title.chars().collect();
+                                let mut n = chars.len();
+                                while n > 1 {
+                                    n = (n * 9 / 10).min(n - 1);
+                                    let t: String = chars[..n].iter().collect::<String>() + "…";
+                                    g = ui.painter().layout_no_wrap(t, font.clone(), color);
+                                    if g.size().x <= text_w {
+                                        break;
+                                    }
                                 }
                             }
+                            ui.painter().galley(pos2(rect.left() + 22.0, rect.center().y - g.size().y / 2.0), g, theme::text());
                         }
-                        ui.painter().galley(pos2(rect.left() + 22.0, rect.center().y - g.size().y / 2.0), g, theme::text());
                         let cr = egui::Rect::from_center_size(pos2(rect.right() - 15.0, rect.center().y), vec2(18.0, 18.0));
                         if (hovered || active) && dragging.is_none() {
                             let cresp = ui.interact(cr, Id::new(("tabclose", ti)), Sense::click());
@@ -564,6 +574,9 @@ impl App {
                         if resp.drag_started_by(egui::PointerButton::Primary) {
                             dragging = Some(ti);
                             activate = Some(ti);
+                            // Where on the tab it was picked up, so the ghost stays under the pointer.
+                            let grab = ui.input(|i| i.pointer.press_origin()).map(|p| p.x - rect.left()).unwrap_or(rect.width() / 2.0);
+                            ui.data_mut(|d| d.insert_temp(Id::new("tab-grab"), grab));
                         }
                         if resp.clicked() {
                             activate = Some(ti);
@@ -589,10 +602,33 @@ impl App {
                                 ui.ctx().request_repaint();
                             }
                         }
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
                         if to != from && to != from + 1 {
+                            // Where it lands: a thick line with a dot at each end.
                             let x = if to < rects.len() { rects[to].left() - 1.0 } else { rects.last().map(|r| r.right() + 1.0).unwrap_or(0.0) };
                             let y = rects.first().map(|r| r.y_range()).unwrap_or(egui::Rangef::new(0.0, 28.0));
-                            ui.painter().vline(x, y, Stroke::new(2.0_f32, theme::accent()));
+                            ui.painter().vline(x, y, Stroke::new(3.0_f32, theme::accent()));
+                            ui.painter().circle_filled(pos2(x, y.min + 2.0), 3.5, theme::accent());
+                            ui.painter().circle_filled(pos2(x, y.max - 2.0), 3.5, theme::accent());
+                        }
+                        // The tab itself, lifted, following the pointer along the strip.
+                        if let (Some(p), Some((title, dot, w))) = (pointer, ghost.take()) {
+                            let grab: f32 = ui.data(|d| d.get_temp(Id::new("tab-grab"))).unwrap_or(w / 2.0);
+                            let top = rects.first().map(|r| r.top()).unwrap_or(p.y) - 3.0;
+                            egui::Area::new(Id::new("tab-ghost")).order(egui::Order::Tooltip).fixed_pos(pos2(p.x - grab, top)).interactable(false).show(ui.ctx(), |ui| {
+                                egui::Frame::new()
+                                    .fill(theme::bg_term())
+                                    .stroke(Stroke::new(1.5_f32, theme::accent()))
+                                    .corner_radius(CornerRadius::same(6))
+                                    .shadow(egui::epaint::Shadow { offset: [0, 4], blur: 12, spread: 0, color: Color32::from_black_alpha(90) })
+                                    .show(ui, |ui| {
+                                        let (r, _) = ui.allocate_exact_size(vec2(w, 28.0), Sense::hover());
+                                        ui.painter().circle_filled(Rect2::dot(r), 3.5, dot);
+                                        let g = ui.painter().layout_no_wrap(title, FontId::proportional(12.5), theme::text());
+                                        let clip = r.with_min_x(r.left() + 22.0).with_max_x(r.right() - 10.0);
+                                        ui.painter().with_clip_rect(clip).galley(pos2(r.left() + 22.0, r.center().y - g.size().y / 2.0), g, theme::text());
+                                    });
+                            });
                         }
                         if ui.input(|i| i.pointer.any_released()) {
                             // Index after removing the dragged tab.
