@@ -1599,6 +1599,8 @@ impl App {
         ui.separator();
         let Some(res) = self.side.grep.clone() else { return };
         let hits = res["hits"].as_array().cloned().unwrap_or_default();
+        // The matched part of each line gets the find background.
+        let marker = self.side.grep_ran.as_ref().and_then(|(m, q, icase)| editfind::line_matcher(*m, q, *icase));
         let base = res["root"].as_str().unwrap_or("").replace('\\', "/");
         ui.label(RichText::new(format!("{} matches{}", hits.len(), if res["truncated"].as_bool().unwrap_or(false) { " (truncated)" } else { "" })).size(11.5).color(theme::text_dim()));
         // The active terminal can be sent to a result's folder when it is on
@@ -1623,7 +1625,19 @@ impl App {
                     });
                     last_file = path.clone();
                 }
-                let r = ui.add(egui::Label::new(RichText::new(format!("{line:>5}  {}", text.chars().take(120).collect::<String>())).monospace().size(12.0).color(theme::text_dim())).sense(Sense::click()));
+                let shown: String = text.chars().take(120).collect();
+                let font = FontId::monospace(12.0);
+                let plain = egui::TextFormat { font_id: font.clone(), color: theme::text_dim(), ..Default::default() };
+                let mut job = LayoutJob::default();
+                job.append(&format!("{line:>5}  "), 0.0, egui::TextFormat { color: theme::text_faint(), ..plain.clone() });
+                let mut at = 0;
+                for (a, b) in marker.as_ref().map(|re| editfind::line_marks(re, &shown)).unwrap_or_default() {
+                    job.append(&shown[at..a], 0.0, plain.clone());
+                    job.append(&shown[a..b], 0.0, egui::TextFormat { color: theme::text(), background: theme::search_hit(), ..plain.clone() });
+                    at = b;
+                }
+                job.append(&shown[at..], 0.0, plain);
+                let r = ui.add(egui::Label::new(job).sense(Sense::click()));
                 if r.hovered() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 }

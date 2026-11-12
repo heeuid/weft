@@ -100,6 +100,20 @@ pub fn to_regex(mode: MatchMode, q: &str, lazy: bool) -> String {
     }
 }
 
+/// A regex for marking matches in one line of text (the Search tab's
+/// results), or None when the query can't be one.
+pub fn line_matcher(mode: MatchMode, q: &str, icase: bool) -> Option<Regex> {
+    if q.is_empty() {
+        return None;
+    }
+    RegexBuilder::new(&to_regex(mode, q, true)).case_insensitive(icase).build().ok()
+}
+
+/// Byte ranges matched in `text` (empty matches skipped).
+pub fn line_marks(re: &Regex, text: &str) -> Vec<(usize, usize)> {
+    re.find_iter(text).map(|m| (m.start(), m.end())).filter(|m| m.0 < m.1).collect()
+}
+
 #[derive(Clone, Default)]
 pub struct FindBar {
     pub query: String,
@@ -179,6 +193,20 @@ mod tests {
     fn found(mode: MatchMode, q: &str, t: &str) -> Vec<String> {
         let b = FindBar { query: q.into(), mode, ..Default::default() };
         b.matches(t).unwrap().into_iter().map(|(a, e)| t[a..e].to_string()).collect()
+    }
+
+    #[test]
+    fn search_result_marks() {
+        let line = "void Start(int x); // start here";
+        let marks = |mode, q: &str, icase| line_matcher(mode, q, icase).map(|re| line_marks(&re, line).into_iter().map(|(a, b)| &line[a..b]).collect::<Vec<_>>()).unwrap_or_default();
+        assert_eq!(marks(MatchMode::Text, "start", true), ["Start", "start"]);
+        assert_eq!(marks(MatchMode::Text, "start", false), ["start"]);
+        assert_eq!(marks(MatchMode::Text, "Start(", false), ["Start("]);
+        assert_eq!(marks(MatchMode::Fuzzy, "sti", true), ["Start(i"], "fuzzy: shortest run");
+        assert_eq!(marks(MatchMode::Glob, "S*(", false), ["Start("]);
+        assert_eq!(marks(MatchMode::Regex, r"\w+\(", false), ["Start("]);
+        assert!(marks(MatchMode::Regex, "(", false).is_empty(), "a bad regex marks nothing");
+        assert!(marks(MatchMode::Text, "", false).is_empty());
     }
 
     #[test]

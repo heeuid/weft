@@ -716,6 +716,8 @@ pub struct SideState {
     pub grep_mode: crate::editfind::MatchMode,
     /// Search hidden files and folders too.
     pub grep_hidden: bool,
+    /// What the shown results were searched with (mode, query, ignore case), to mark them.
+    pub grep_ran: Option<(crate::editfind::MatchMode, String, bool)>,
     pub grep_busy: bool,
     pub grep: Option<Value>,
     pub procs: Option<Result<Vec<Value>, String>>,
@@ -1044,6 +1046,7 @@ impl App {
                 grep_icase: true,
                 grep_mode: Default::default(),
                 grep_hidden: false,
+                grep_ran: None,
                 grep_busy: false,
                 grep: None,
                 procs: None,
@@ -2221,6 +2224,7 @@ impl App {
                     // Fuzzy and glob go as the extended regex they mean, so a
                     // remote grep -E and the local search agree.
                     let mode = self.side.grep_mode;
+                    self.side.grep_ran = Some((mode, self.side.grep_q.clone(), self.side.grep_icase));
                     let regex = mode != crate::editfind::MatchMode::Text;
                     let pattern = if regex { crate::editfind::to_regex(mode, &self.side.grep_q, false) } else { self.side.grep_q.clone() };
                     let req = json!({"op": "grep", "pattern": pattern, "path": root,
