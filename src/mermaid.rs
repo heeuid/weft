@@ -174,7 +174,7 @@ fn load_png(ctx: &egui::Context, path: &Path, name: &str) -> Result<(egui::Textu
     let img = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png).map_err(|e| e.to_string())?.to_rgba8();
     let size = [img.width() as usize, img.height() as usize];
     let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
-    let tex = ctx.load_texture(name, color, egui::TextureOptions::LINEAR);
+    let tex = crate::media::load_texture(ctx, name.to_string(), color);
     Ok((tex, egui::vec2(size[0] as f32, size[1] as f32)))
 }
 

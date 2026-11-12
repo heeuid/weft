@@ -40,9 +40,17 @@ pub struct ImageState {
     from_len: usize,
 }
 
-/// The largest texture side weft uses (main.rs gives egui no more):
-/// bigger images and PDF pages are shown downscaled.
-pub const MAX_SIDE: u32 = 4096;
+/// GPUs cap texture sides; bigger images are shown downscaled.
+const MAX_SIDE: u32 = 8192;
+
+/// A texture for an image, a PDF page or a diagram, at full size: egui is
+/// told of a smaller largest side, for its glyph atlas only (main.rs), and
+/// its load_texture would object; the GPU takes these up to its own limit.
+pub fn load_texture(ctx: &egui::Context, name: String, image: egui::ColorImage) -> egui::TextureHandle {
+    let manager = ctx.tex_manager();
+    let id = manager.write().alloc(name, image.into(), egui::TextureOptions::LINEAR);
+    egui::TextureHandle::new(manager, id)
+}
 
 fn decode(ctx: &egui::Context, name: &str, bytes: &[u8]) -> Result<(egui::TextureHandle, [usize; 2]), String> {
     let img = image::load_from_memory(bytes).map_err(|e| e.to_string())?;
@@ -50,7 +58,7 @@ fn decode(ctx: &egui::Context, name: &str, bytes: &[u8]) -> Result<(egui::Textur
     let img = if img.width() > MAX_SIDE || img.height() > MAX_SIDE { img.thumbnail(MAX_SIDE, MAX_SIDE) } else { img };
     let rgba = img.to_rgba8();
     let color = egui::ColorImage::from_rgba_unmultiplied([rgba.width() as usize, rgba.height() as usize], rgba.as_raw());
-    Ok((ctx.load_texture(name, color, egui::TextureOptions::LINEAR), size))
+    Ok((load_texture(ctx, name.to_string(), color), size))
 }
 
 /// Toolbar (fit, 1:1, zoom) and the image, centered, scrollable when larger.
@@ -138,9 +146,7 @@ pub struct PdfState {
 /// Page `i` as premultiplied RGBA on white, `width` pixels wide.
 fn render_page(pdf: &hayro::hayro_syntax::Pdf, i: usize, width: u32) -> Option<(u32, u32, Vec<u8>)> {
     let page = pdf.pages().get(i)?;
-    let (w, h) = page.render_dimensions();
-    // No side over MAX_SIDE: a tall page is drawn a little narrower.
-    let s = (width as f32 / w.max(1.0)).min(MAX_SIDE as f32 / h.max(1.0));
+    let s = width as f32 / page.render_dimensions().0.max(1.0);
     // RenderCache is not Send: one per render, on the worker thread.
     let cache = hayro::RenderCache::new();
     let px = hayro::render(
@@ -176,7 +182,7 @@ pub fn pdf_view(ui: &mut Ui, st: &mut PdfState, path: &str, bytes: &[u8]) {
     for (i, w, h, rgba) in done {
         st.pending.remove(&i);
         let img = egui::ColorImage::from_rgba_premultiplied([w as usize, h as usize], &rgba);
-        let tex = ui.ctx().load_texture(format!("pdf:{path}:{i}"), img, egui::TextureOptions::LINEAR);
+        let tex = load_texture(ui.ctx(), format!("pdf:{path}:{i}"), img);
         st.pages.insert(i, (w, tex));
     }
     ui.horizontal(|ui| {
@@ -208,7 +214,7 @@ pub fn pdf_view(ui: &mut Ui, st: &mut PdfState, path: &str, bytes: &[u8]) {
             let p = ui.painter();
             p.rect_filled(page.translate(vec2(2.0, 2.0)), CornerRadius::same(2), Color32::from_black_alpha(60));
             p.rect_filled(page, CornerRadius::same(2), Color32::WHITE);
-            let want = ((size.x * ppp).round() as u32).clamp(64, MAX_SIDE);
+            let want = ((size.x * ppp).round() as u32).clamp(64, 6000);
             match st.pages.get(&i) {
                 Some((have, tex)) => {
                     p.image(tex.id(), page, egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);

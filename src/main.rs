@@ -60,13 +60,15 @@ impl eframe::App for WeftApp {
     /// Past half full, rebuild as the next pass starts: egui does so when
     /// max_texture_side changes, so it is flipped by one.
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
-        // At most 4096 px: egui makes its glyph atlas as wide as this, and
-        // with the GPU's own limit (16384 and more) the atlas grew into
+        // At most 4096 px for the glyph atlas: egui makes it as wide as
+        // this, and with the GPU's own limit (16384 and more) it grew into
         // textures of hundreds of MB, reallocated and uploaded whole each time
         // it doubled; the text drawn from it went blank for a frame (the
         // flicker after hours). 4096 holds every Hangul syllable at a size
-        // with room to spare. WEFT_MAX_TEXTURE sets another (to try things).
-        let cap = std::env::var("WEFT_MAX_TEXTURE").ok().and_then(|s| s.parse::<usize>().ok()).unwrap_or(media::MAX_SIDE as usize);
+        // with room to spare. Images, PDF pages and diagrams don't go by this
+        // value (media::load_texture): they keep their full size.
+        // WEFT_MAX_TEXTURE sets another (to try things).
+        let cap = std::env::var("WEFT_MAX_TEXTURE").ok().and_then(|s| s.parse::<usize>().ok()).unwrap_or(4096);
         let side = raw.max_texture_side.unwrap_or(cap).min(cap).max(1024);
         let off = std::env::var("WEFT_ATLAS_REBUILD").is_ok_and(|v| v == "off");
         if !off && !self.first_frame && ctx.fonts(|f| f.font_atlas_fill_ratio()) > 0.5 {
