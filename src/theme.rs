@@ -283,7 +283,10 @@ pub const TERM_FONT: &str = "term";
 /// licenses are next to them in fonts/.
 pub const BUILTIN_FONTS: &[(&str, &str, &[u8])] = &[
     // Hangul of its own, two cells wide exactly, and the widest symbol range.
-    ("builtin:d2coding", "D2Coding Nerd Font (한글)", include_bytes!("../fonts/D2CodingLigatureNerdFontMono-Regular.ttf")),
+    // Not the "Mono" build: that one gives Hangul a one-cell advance while the
+    // glyph is two cells wide, so it overlapped wherever text is laid out as a
+    // run (editor, markdown) rather than cell by cell.
+    ("builtin:d2coding", "D2Coding Nerd Font (한글)", include_bytes!("../fonts/D2CodingLigatureNerdFont-Regular.ttf")),
     ("builtin:jetbrains-mono", "JetBrains Mono Nerd Font", include_bytes!("../fonts/JetBrainsMonoNerdFontMono-Regular.ttf")),
     ("builtin:hack", "Hack Nerd Font", include_bytes!("../fonts/HackNerdFontMono-Regular.ttf")),
 ];
@@ -389,6 +392,11 @@ pub fn install_fonts(ctx: &egui::Context, term: &str, icons: &str) -> Vec<String
         }
     };
     let (term_data, icon_data) = (pick(term, DEFAULT_FONT), pick(icons, DEFAULT_ICON_FONT));
+    // Hangul/CJK two cells wide even in fonts that say one ("Mono" builds).
+    let term_data = match (term_data.index, crate::fontfix::fit_advances_to_ink(&term_data.font)) {
+        (0, Some(fixed)) => FontData { font: fixed.into(), ..term_data },
+        _ => term_data,
+    };
     fonts.font_data.insert("mono".into(), Arc::new(term_data));
     fonts.font_data.insert("icons".into(), Arc::new(icon_data));
     let dir = std::env::var("WINDIR").map(|w| format!("{w}\\Fonts")).unwrap_or_else(|_| "C:\\Windows\\Fonts".into());
@@ -553,6 +561,25 @@ mod tests {
                     let drift = run - cw * 120.0;
                     assert!(drift.abs() < 1.0, "{name} ×{ppp} {size}pt: 120 columns off by {drift:.2}px");
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn hangul_takes_its_width_in_text_runs() {
+        // The editor and markdown lay text out as runs: a Hangul syllable must
+        // advance by its own width (two cells), or the next one overlaps it.
+        for (spec, name, _) in BUILTIN_FONTS {
+            let ctx = egui::Context::default();
+            install_fonts(&ctx, spec, spec);
+            let _ = ctx.run(Default::default(), |_| {});
+            let f = FontId::monospace(14.0);
+            let (cw, run) = ctx.fonts(|fo| (cell_width(fo, &f), fo.layout_no_wrap("설정파일없음".into(), f.clone(), Color32::WHITE).size().x));
+            let per = run / 6.0 / cw;
+            if *spec == DEFAULT_FONT {
+                assert!((per - 2.0).abs() < 0.05, "{name}: Hangul advances {per:.2} cells");
+            } else {
+                assert!(per > 1.5, "{name}: Hangul advances {per:.2} cells");
             }
         }
     }

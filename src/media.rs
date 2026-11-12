@@ -38,6 +38,19 @@ pub struct ImageState {
     zoom: Option<f32>,
     /// The bytes the texture was made from (reload replaces them).
     from_len: usize,
+    /// Drawn this frame (see `unload_hidden`).
+    drawn: bool,
+}
+
+impl ImageState {
+    /// Off the GPU unless it was drawn since the last call: an image in a
+    /// tab behind another, or in a hidden editor, held its texture for as
+    /// long as the tab was open. Showing it again decodes it again.
+    pub fn unload_hidden(&mut self) {
+        if !std::mem::take(&mut self.drawn) {
+            self.tex = None;
+        }
+    }
 }
 
 /// GPUs cap texture sides; bigger images are shown downscaled.
@@ -63,6 +76,7 @@ fn decode(ctx: &egui::Context, name: &str, bytes: &[u8]) -> Result<(egui::Textur
 
 /// Toolbar (fit, 1:1, zoom) and the image, centered, scrollable when larger.
 pub fn image_view(ui: &mut Ui, st: &mut ImageState, path: &str, bytes: &[u8]) {
+    st.drawn = true;
     if st.tex.is_none() && st.error.is_none() || st.from_len != bytes.len() {
         st.from_len = bytes.len();
         match decode(ui.ctx(), &format!("image:{path}"), bytes) {
@@ -141,6 +155,18 @@ pub struct PdfState {
     done: std::sync::Arc<std::sync::Mutex<Vec<Rendered>>>,
     /// Relative to fit-width (1.0).
     zoom: f32,
+    /// Drawn this frame (see `unload_hidden`).
+    drawn: bool,
+}
+
+impl PdfState {
+    /// Page pictures off the GPU unless the PDF was drawn since the last
+    /// call; showing it again renders the pages on screen again.
+    pub fn unload_hidden(&mut self) {
+        if !std::mem::take(&mut self.drawn) {
+            self.pages.clear();
+        }
+    }
 }
 
 /// Page `i` as premultiplied RGBA on white, `width` pixels wide.
@@ -177,6 +203,7 @@ pub fn pdf_view(ui: &mut Ui, st: &mut PdfState, path: &str, bytes: &[u8]) {
         return;
     }
     let Some(doc) = st.doc.clone() else { return };
+    st.drawn = true;
     // Finished renders become textures.
     let done: Vec<Rendered> = std::mem::take(&mut *st.done.lock().unwrap());
     for (i, w, h, rgba) in done {

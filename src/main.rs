@@ -12,6 +12,7 @@ mod help;
 mod highlight;
 mod host;
 mod find;
+mod fontfix;
 mod icons;
 mod keys;
 mod md;
@@ -152,6 +153,10 @@ impl eframe::App for WeftApp {
         app.ui_toasts(ctx);
         app.ui_dock_drop(ctx);
         app.apply_actions();
+        for f in &mut app.editor.files {
+            f.image.unload_hidden();
+            f.pdf.unload_hidden();
+        }
 
         let title = app.active_pane().map(|p| format!("weft — {}", p.title())).unwrap_or_else(|| "weft".into());
         // Only on change: every viewport command asks for another frame, so

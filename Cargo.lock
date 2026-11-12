@@ -4391,6 +4391,7 @@ dependencies = [
  "serde",
  "serde_json",
  "syntect",
+ "ttf-parser",
  "two-face",
  "vte",
  "windows-sys 0.59.0",
