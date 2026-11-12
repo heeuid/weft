@@ -81,6 +81,22 @@ fn shifted_symbol(key: Key) -> bool {
 
 /// The command bound to a key press: of the shortcuts that match, the one
 /// with the most modifiers (Ctrl+Shift+Tab before Ctrl+Tab).
+/// The key press behind a clipboard event. egui-winit turns Ctrl+X/C/V
+/// (whatever else is held, so Ctrl+Shift+X too), Shift+Delete and
+/// Shift+Insert into Cut/Copy/Paste and sends no key event for them.
+pub fn clipboard_key(e: &egui::Event, m: Modifiers) -> Option<(Key, Modifiers)> {
+    let ctrl = m.ctrl || m.command;
+    let key = match e {
+        egui::Event::Cut if ctrl => Key::X,
+        egui::Event::Cut => Key::Delete,
+        egui::Event::Copy => Key::C,
+        egui::Event::Paste(_) if ctrl => Key::V,
+        egui::Event::Paste(_) => Key::Insert,
+        _ => return None,
+    };
+    Some((key, m))
+}
+
 pub fn lookup<T: Copy>(map: &[(T, Vec<Shortcut>)], key: Key, m: Modifiers, usable: impl Fn(T) -> bool) -> Option<T> {
     map.iter()
         .filter(|(c, _)| usable(*c))
@@ -92,6 +108,19 @@ pub fn lookup<T: Copy>(map: &[(T, Vec<Shortcut>)], key: Key, m: Modifiers, usabl
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clipboard_events_find_their_bindings() {
+        let map = vec![("copy_mode", vec![Shortcut::parse("Ctrl+Shift+X").unwrap()]), ("other", vec![Shortcut::parse("Shift+Delete").unwrap()])];
+        let ctrl_shift = Modifiers { ctrl: true, shift: true, ..Default::default() };
+        let (k, m) = clipboard_key(&egui::Event::Cut, ctrl_shift).unwrap();
+        assert_eq!(lookup(&map, k, m, |_| true), Some("copy_mode"));
+        let (k, m) = clipboard_key(&egui::Event::Cut, Modifiers::SHIFT).unwrap();
+        assert_eq!(lookup(&map, k, m, |_| true), Some("other"));
+        // Plain Ctrl+X is bound to nothing: it stays the terminal's.
+        let (k, m) = clipboard_key(&egui::Event::Cut, Modifiers::CTRL).unwrap();
+        assert_eq!(lookup(&map, k, m, |_| true), None);
+    }
 
     #[test]
     fn parse_and_label() {

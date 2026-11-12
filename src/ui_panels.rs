@@ -341,15 +341,20 @@ impl App {
         let keymap = &self.keymap;
         let mut cmds: Vec<Cmd> = ctx.input_mut(|i| {
             let mut out = Vec::new();
-            i.events.retain(|e| match e {
-                egui::Event::Key { key, pressed: true, modifiers, .. } => match crate::keys::lookup(keymap, *key, *modifiers, usable) {
+            let mods = i.modifiers;
+            i.events.retain(|e| {
+                let pressed = match e {
+                    egui::Event::Key { key, pressed: true, modifiers, .. } => Some((*key, *modifiers)),
+                    // Ctrl+Shift+X and the like arrive as clipboard events only.
+                    _ => crate::keys::clipboard_key(e, mods),
+                };
+                match pressed.and_then(|(key, m)| crate::keys::lookup(keymap, key, m, usable)) {
                     Some(c) => {
                         out.push(c);
                         false
                     }
                     None => true,
-                },
-                _ => true,
+                }
             });
             out
         });
@@ -428,9 +433,10 @@ impl App {
     /// (Esc cancels). Nothing typed meanwhile reaches the terminal.
     fn capture_key(&mut self, ctx: &egui::Context) {
         let got = ctx.input_mut(|i| {
+            let mods = i.modifiers;
             let got = i.events.iter().find_map(|e| match e {
                 egui::Event::Key { key, pressed: true, modifiers, .. } => Some((*key, *modifiers)),
-                _ => None,
+                _ => crate::keys::clipboard_key(e, mods),
             });
             i.events.retain(|e| !matches!(e, egui::Event::Key { .. } | egui::Event::Text(_) | egui::Event::Copy | egui::Event::Cut | egui::Event::Paste(_)));
             got
