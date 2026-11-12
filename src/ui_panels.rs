@@ -13,6 +13,7 @@ use crate::ui_term::{fmt_dur, take_key, visual_rows, VRow};
 use crate::widgets::human_size;
 use egui::text::LayoutJob;
 use egui::{pos2, vec2, Align, Align2, Color32, CornerRadius, FontId, Id, Key, Layout, Modifiers, RichText, ScrollArea, Sense, Stroke, TextEdit, Ui};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -25,8 +26,8 @@ pub fn host_color(host: &str) -> Color32 {
     palette[(h as usize) % palette.len()]
 }
 
-#[derive(Clone, Copy, PartialEq)]
-enum Cmd {
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum Cmd {
     LocalShell(crate::host::LocalShell),
     CursorStyle,
     MarkdownBreaks,
@@ -65,50 +66,67 @@ enum Cmd {
     Records,
     Help,
     Features,
+    Palette,
+    Keys,
+    NextTab,
+    PrevTab,
+    FocusLeft,
+    FocusRight,
+    FocusUp,
+    FocusDown,
 }
 
-const COMMANDS: &[(Cmd, &str, &str)] = &[
-    (Cmd::NewTab, "New tab (same host)", "Ctrl+Shift+T"),
-    (Cmd::Connect, "Connect to host…", "Ctrl+Shift+N"),
-    (Cmd::SplitRight, "Split right", "Ctrl+Shift+D"),
-    (Cmd::SplitDown, "Split down", "Ctrl+Shift+E"),
-    (Cmd::ClosePane, "Close pane", "Ctrl+Shift+W"),
-    (Cmd::Zoom, "Zoom / restore pane", "Ctrl+Shift+Z"),
-    (Cmd::Composer, "Open composer (GUI command line)", "Ctrl+Space"),
-    (Cmd::Find, "Find in scrollback", "Ctrl+Shift+F"),
-    (Cmd::PrevBlock, "Jump to previous command", "Ctrl+Shift+Up"),
-    (Cmd::NextBlock, "Jump to next command", "Ctrl+Shift+Down"),
-    (Cmd::FoldAll, "Fold all command outputs", ""),
-    (Cmd::UnfoldAll, "Unfold all command outputs", ""),
-    (Cmd::ClearScrollback, "Clear scrollback", ""),
-    (Cmd::Sidebar, "Toggle side panel", "Ctrl+Shift+B"),
-    (Cmd::Editor, "Toggle editor", "Ctrl+Shift+J"),
-    (Cmd::NewMemo, "New memo (markdown, saved automatically)", "Ctrl+Shift+M"),
-    (Cmd::Memos, "Show memos in Files", ""),
-    (Cmd::Hidden, "Toggle hidden files", ""),
-    (Cmd::Reconnect, "Reconnect agent for this host", ""),
-    (Cmd::FontUp, "Bigger font", "Ctrl+="),
-    (Cmd::FontDown, "Smaller font", "Ctrl+-"),
-    (Cmd::FontReset, "Default font size", "Ctrl+0"),
-    (Cmd::UiUp, "Bigger UI (icons, tabs, panels)", "Ctrl+Shift+wheel"),
-    (Cmd::UiDown, "Smaller UI (icons, tabs, panels)", "Ctrl+Shift+wheel"),
-    (Cmd::UiReset, "UI scale 100%", ""),
-    (Cmd::ThemePicker, "Theme…", ""),
-    (Cmd::Fonts, "Fonts… (terminal font, icon font)", ""),
-    (Cmd::History, "History: search every command and its output", "Ctrl+Shift+H"),
-    (Cmd::Records, "Privacy… (records, logs, passwords in memory)", ""),
-    (Cmd::Help, "Help: all commands and keys", "F1"),
-    (Cmd::Features, "Help: what each feature does", ""),
-    (Cmd::ThemeSystem, "Theme: follow system (dark/light)", ""),
-    (Cmd::CursorStyle, "Terminal cursor: block / bar / underline", ""),
-    (Cmd::LocalShell(crate::host::LocalShell::Auto), "Local shell: auto (pwsh, else Windows PowerShell)", ""),
-    (Cmd::LocalShell(crate::host::LocalShell::Pwsh), "Local shell: PowerShell 7 (pwsh)", ""),
-    (Cmd::LocalShell(crate::host::LocalShell::Powershell), "Local shell: Windows PowerShell 5.1", ""),
-    (Cmd::LocalShell(crate::host::LocalShell::Cmd), "Local shell: cmd", ""),
-    (Cmd::LocalShell(crate::host::LocalShell::Nu), "Local shell: nushell", ""),
-    (Cmd::MarkdownBreaks, "Markdown: toggle line breaks (GitHub PR style / CommonMark)", ""),
-    (Cmd::Settings, "Open settings.json", ""),
-    (Cmd::AgentLog, "Open agent log for this host", ""),
+/// Every command: (command, id for settings "keys", label, default keys).
+const COMMANDS: &[(Cmd, &str, &str, &[&str])] = &[
+    (Cmd::NewTab, "new_tab", "New tab (same host)", &["Ctrl+Shift+T"]),
+    (Cmd::Connect, "connect", "Connect to host…", &["Ctrl+Shift+N"]),
+    (Cmd::SplitRight, "split_right", "Split right", &["Ctrl+Shift+D"]),
+    (Cmd::SplitDown, "split_down", "Split down", &["Ctrl+Shift+E"]),
+    (Cmd::ClosePane, "close_pane", "Close pane", &["Ctrl+Shift+W"]),
+    (Cmd::Zoom, "zoom", "Zoom / restore pane", &["Ctrl+Shift+Z"]),
+    (Cmd::NextTab, "next_tab", "Next tab", &["Ctrl+Tab"]),
+    (Cmd::PrevTab, "prev_tab", "Previous tab", &["Ctrl+Shift+Tab"]),
+    (Cmd::FocusLeft, "focus_left", "Focus the pane on the left (split)", &["Alt+Left"]),
+    (Cmd::FocusRight, "focus_right", "Focus the pane on the right (split)", &["Alt+Right"]),
+    (Cmd::FocusUp, "focus_up", "Focus the pane above (split)", &["Alt+Up"]),
+    (Cmd::FocusDown, "focus_down", "Focus the pane below (split)", &["Alt+Down"]),
+    (Cmd::Composer, "composer", "Open composer (GUI command line)", &["Ctrl+Space"]),
+    (Cmd::Find, "find", "Find in scrollback", &["Ctrl+Shift+F"]),
+    (Cmd::PrevBlock, "prev_command", "Jump to previous command", &["Ctrl+Shift+Up"]),
+    (Cmd::NextBlock, "next_command", "Jump to next command", &["Ctrl+Shift+Down"]),
+    (Cmd::FoldAll, "fold_all", "Fold all command outputs", &[]),
+    (Cmd::UnfoldAll, "unfold_all", "Unfold all command outputs", &[]),
+    (Cmd::ClearScrollback, "clear_scrollback", "Clear scrollback", &[]),
+    (Cmd::Sidebar, "side_panel", "Toggle side panel", &["Ctrl+Shift+B"]),
+    (Cmd::Editor, "editor", "Toggle editor", &["Ctrl+Shift+J"]),
+    (Cmd::NewMemo, "new_memo", "New memo (markdown, saved automatically)", &["Ctrl+Shift+M"]),
+    (Cmd::Memos, "memos", "Show memos in Files", &[]),
+    (Cmd::Hidden, "hidden_files", "Toggle hidden files", &[]),
+    (Cmd::Reconnect, "reconnect", "Reconnect agent for this host", &[]),
+    (Cmd::FontUp, "font_bigger", "Bigger font", &["Ctrl+=", "Ctrl+Plus"]),
+    (Cmd::FontDown, "font_smaller", "Smaller font", &["Ctrl+-"]),
+    (Cmd::FontReset, "font_default", "Default font size", &["Ctrl+0"]),
+    (Cmd::UiUp, "ui_bigger", "Bigger UI (icons, tabs, panels)", &[]),
+    (Cmd::UiDown, "ui_smaller", "Smaller UI (icons, tabs, panels)", &[]),
+    (Cmd::UiReset, "ui_default", "UI scale 100%", &[]),
+    (Cmd::ThemePicker, "theme", "Theme…", &[]),
+    (Cmd::Fonts, "fonts", "Fonts… (terminal font, icon font)", &[]),
+    (Cmd::History, "history", "History: search every command and its output", &["Ctrl+Shift+H"]),
+    (Cmd::Records, "privacy", "Privacy… (records, logs, passwords in memory)", &[]),
+    (Cmd::Help, "help", "Help: all commands and keys", &["F1"]),
+    (Cmd::Features, "features", "Help: what each feature does", &[]),
+    (Cmd::Palette, "palette", "Command palette", &["Ctrl+Shift+P"]),
+    (Cmd::Keys, "keys", "Keyboard shortcuts… (bind keys to commands)", &[]),
+    (Cmd::ThemeSystem, "theme_system", "Theme: follow system (dark/light)", &[]),
+    (Cmd::CursorStyle, "cursor_style", "Terminal cursor: block / bar / underline", &[]),
+    (Cmd::LocalShell(crate::host::LocalShell::Auto), "shell_auto", "Local shell: auto (pwsh, else Windows PowerShell)", &[]),
+    (Cmd::LocalShell(crate::host::LocalShell::Pwsh), "shell_pwsh", "Local shell: PowerShell 7 (pwsh)", &[]),
+    (Cmd::LocalShell(crate::host::LocalShell::Powershell), "shell_powershell", "Local shell: Windows PowerShell 5.1", &[]),
+    (Cmd::LocalShell(crate::host::LocalShell::Cmd), "shell_cmd", "Local shell: cmd", &[]),
+    (Cmd::LocalShell(crate::host::LocalShell::Nu), "shell_nu", "Local shell: nushell", &[]),
+    (Cmd::MarkdownBreaks, "markdown_breaks", "Markdown: toggle line breaks (GitHub PR style / CommonMark)", &[]),
+    (Cmd::Settings, "settings_file", "Open settings.json", &[]),
+    (Cmd::AgentLog, "agent_log", "Open agent log for this host", &[]),
 ];
 
 #[derive(Clone, Default)]
@@ -232,6 +250,21 @@ impl App {
                 self.side.tab = SideTab::History;
             }
             Cmd::Records => self.open_records_window(),
+            Cmd::Palette => self.palette = if self.palette.is_some() { None } else { Some(PaletteState { query: String::new(), sel: 0 }) },
+            Cmd::Keys => self.keys_window = Some(KeysWindow { query: String::new(), capture: None }),
+            Cmd::NextTab | Cmd::PrevTab => {
+                if !self.tabs.is_empty() {
+                    let n = self.tabs.len() as i32;
+                    let step = if c == Cmd::NextTab { 1 } else { -1 };
+                    self.active_tab = (self.active_tab as i32 + step).rem_euclid(n) as usize;
+                    self.focus_term = true;
+                    self.on_active_changed();
+                }
+            }
+            Cmd::FocusLeft => self.focus_dir(-1.0, 0.0),
+            Cmd::FocusRight => self.focus_dir(1.0, 0.0),
+            Cmd::FocusUp => self.focus_dir(0.0, -1.0),
+            Cmd::FocusDown => self.focus_dir(0.0, 1.0),
             Cmd::Help | Cmd::Features => self.help = Some(HelpState { features: c == Cmd::Features, query: String::new() }),
             Cmd::Memos => {
                 let dir = self.memo_dir();
@@ -249,53 +282,33 @@ impl App {
     }
 
     pub fn handle_global_keys(&mut self, ctx: &egui::Context) {
-        let cs = Modifiers::CTRL | Modifiers::SHIFT;
-        let k = |m: Modifiers, key: Key| ctx.input_mut(|i| i.consume_key(m, key));
-        let mut cmds = Vec::new();
-        let table = [
-            (Key::T, Cmd::NewTab),
-            (Key::N, Cmd::Connect),
-            (Key::W, Cmd::ClosePane),
-            (Key::Z, Cmd::Zoom),
-            (Key::D, Cmd::SplitRight),
-            (Key::E, Cmd::SplitDown),
-            (Key::F, Cmd::Find),
-            (Key::B, Cmd::Sidebar),
-            (Key::J, Cmd::Editor),
-            (Key::M, Cmd::NewMemo),
-            (Key::H, Cmd::History),
-            (Key::ArrowUp, Cmd::PrevBlock),
-            (Key::ArrowDown, Cmd::NextBlock),
-        ];
-        for (key, cmd) in table {
-            if k(cs, key) {
-                cmds.push(cmd);
-            }
+        if self.keys_window.as_ref().map(|w| w.capture.is_some()).unwrap_or(false) {
+            self.capture_key(ctx);
+            return;
         }
-        if k(Modifiers::NONE, Key::F1) {
-            cmds.push(Cmd::Help);
+        if self.keymap.is_empty() {
+            self.rebuild_keys();
         }
-        if k(cs, Key::P) {
-            self.palette = if self.palette.is_some() { None } else { Some(PaletteState { query: String::new(), sel: 0 }) };
-        }
-        let mut tab_step = 0i32;
-        if k(cs, Key::Tab) {
-            tab_step = -1;
-        } else if k(Modifiers::CTRL, Key::Tab) {
-            tab_step = 1;
-        }
-        if k(Modifiers::CTRL, Key::Space) {
-            cmds.push(Cmd::Composer);
-        }
-        if k(Modifiers::CTRL, Key::Equals) || k(Modifiers::CTRL, Key::Plus) {
-            cmds.push(Cmd::FontUp);
-        }
-        if k(Modifiers::CTRL, Key::Minus) {
-            cmds.push(Cmd::FontDown);
-        }
-        if k(Modifiers::CTRL, Key::Num0) {
-            cmds.push(Cmd::FontReset);
-        }
+        // Moving between split panes only takes its keys while there is a
+        // split; otherwise Alt+arrows stay the shell's.
+        let multi = self.pane_rects.len() > 1;
+        let usable = |c: Cmd| multi || !matches!(c, Cmd::FocusLeft | Cmd::FocusRight | Cmd::FocusUp | Cmd::FocusDown);
+        // A bound key runs its command and never reaches the terminal.
+        let keymap = &self.keymap;
+        let mut cmds: Vec<Cmd> = ctx.input_mut(|i| {
+            let mut out = Vec::new();
+            i.events.retain(|e| match e {
+                egui::Event::Key { key, pressed: true, modifiers, .. } => match crate::keys::lookup(keymap, *key, *modifiers, usable) {
+                    Some(c) => {
+                        out.push(c);
+                        false
+                    }
+                    None => true,
+                },
+                _ => true,
+            });
+            out
+        });
         // Ctrl+wheel: text size; Ctrl+Shift+wheel: the whole UI. With Shift
         // held egui turns the wheel into horizontal scrolling, so its zoom
         // delta stays 1: read those wheel events directly (one notch = one step).
@@ -335,27 +348,75 @@ impl App {
                 cmds.push(Cmd::UiDown);
             }
         }
-        let multi = self.pane_rects.len() > 1;
-        let mut dir = None;
-        if multi {
-            for (key, d) in [(Key::ArrowLeft, (-1.0, 0.0)), (Key::ArrowRight, (1.0, 0.0)), (Key::ArrowUp, (0.0, -1.0)), (Key::ArrowDown, (0.0, 1.0))] {
-                if k(Modifiers::ALT, key) {
-                    dir = Some(d);
-                }
-            }
-        }
         for c in cmds {
             self.run_cmd(c);
         }
-        if tab_step != 0 && !self.tabs.is_empty() {
-            let n = self.tabs.len() as i32;
-            self.active_tab = (self.active_tab as i32 + tab_step).rem_euclid(n) as usize;
-            self.focus_term = true;
-            self.on_active_changed();
+    }
+
+    // ---- keyboard shortcuts --------------------------------------------------------
+
+    /// The keys in force: the defaults, with settings "keys" replacing them per command.
+    pub fn rebuild_keys(&mut self) {
+        let parse = |l: &[String]| l.iter().filter_map(|k| crate::keys::Shortcut::parse(k)).collect::<Vec<_>>();
+        self.keymap = COMMANDS
+            .iter()
+            .map(|(c, id, _, defaults)| {
+                let keys = match self.settings.keys.get(*id) {
+                    Some(l) => parse(l),
+                    None => parse(&defaults.iter().map(|d| d.to_string()).collect::<Vec<_>>()),
+                };
+                (*c, keys)
+            })
+            .collect();
+    }
+
+    /// A command's keys as shown in menus: "Ctrl+= / Ctrl+Plus".
+    fn keys_label(&self, c: Cmd) -> String {
+        let keys: Vec<String> = self.keymap.iter().find(|k| k.0 == c).map(|k| k.1.iter().map(|s| s.label()).collect()).unwrap_or_default();
+        let mut s = keys.join(" / ");
+        if matches!(c, Cmd::UiUp | Cmd::UiDown) {
+            s = if s.is_empty() { "Ctrl+Shift+wheel".into() } else { s + " / Ctrl+Shift+wheel" };
         }
-        if let Some((dx, dy)) = dir {
-            self.focus_dir(dx, dy);
+        s
+    }
+
+    /// The next key press becomes a binding of the command being set
+    /// (Esc cancels). Nothing typed meanwhile reaches the terminal.
+    fn capture_key(&mut self, ctx: &egui::Context) {
+        let got = ctx.input_mut(|i| {
+            let got = i.events.iter().find_map(|e| match e {
+                egui::Event::Key { key, pressed: true, modifiers, .. } => Some((*key, *modifiers)),
+                _ => None,
+            });
+            i.events.retain(|e| !matches!(e, egui::Event::Key { .. } | egui::Event::Text(_) | egui::Event::Copy | egui::Event::Cut | egui::Event::Paste(_)));
+            got
+        });
+        let Some((key, m)) = got else { return };
+        let Some(id) = self.keys_window.as_mut().and_then(|w| w.capture.take()) else { return };
+        if key == Key::Escape && !m.any() {
+            return;
         }
+        let sc = crate::keys::Shortcut { ctrl: m.ctrl || m.command, shift: m.shift, alt: m.alt, key };
+        let mut list = self.bindings_of(id);
+        if !list.contains(&sc.label()) {
+            list.push(sc.label());
+        }
+        self.set_bindings(id, Some(list));
+    }
+
+    fn bindings_of(&self, id: &str) -> Vec<String> {
+        let c = COMMANDS.iter().find(|c| c.1 == id).map(|c| c.0);
+        self.keymap.iter().find(|k| Some(k.0) == c).map(|k| k.1.iter().map(|s| s.label()).collect()).unwrap_or_default()
+    }
+
+    /// New keys for a command (None: back to its defaults), kept in settings.
+    fn set_bindings(&mut self, id: &str, keys: Option<Vec<String>>) {
+        match keys {
+            Some(k) => self.settings.keys.insert(id.to_string(), k),
+            None => self.settings.keys.remove(id),
+        };
+        self.rebuild_keys();
+        self.save_settings();
     }
 
     // ---- tab bar -----------------------------------------------------------------
@@ -1088,6 +1149,7 @@ impl App {
     /// what each feature does. F1, `?` in the tab bar, or the ☰ menu.
     pub fn ui_help(&mut self, ctx: &egui::Context) {
         let Some(mut h) = self.help.take() else { return };
+        let key_labels: Vec<String> = COMMANDS.iter().map(|c| self.keys_label(c.0)).collect();
         let mut open = true;
         let mut run: Option<Cmd> = None;
         egui::Window::new("Help").open(&mut open).collapsible(false).resizable(true).default_size(vec2(600.0, 620.0)).show(ctx, |ui| {
@@ -1115,14 +1177,14 @@ impl App {
                     return;
                 }
                 for g in GROUPS {
-                    let items: Vec<_> = COMMANDS.iter().filter(|c| group(c.0) == g && hit(&[c.1, c.2])).collect();
+                    let items: Vec<_> = COMMANDS.iter().zip(&key_labels).filter(|(c, k)| group(c.0) == g && hit(&[c.2, k])).collect();
                     if items.is_empty() {
                         continue;
                     }
                     ui.add_space(4.0);
                     ui.label(RichText::new(g).strong().color(theme::text_dim()));
-                    for (cmd, label, keys) in items {
-                        let r = ui.add(egui::Button::new(*label).shortcut_text(*keys).frame(false).min_size(vec2(ui.available_width(), 0.0)));
+                    for ((cmd, _, label, _), keys) in items {
+                        let r = ui.add(egui::Button::new(*label).shortcut_text(keys.as_str()).frame(false).min_size(vec2(ui.available_width(), 0.0)));
                         if r.on_hover_text("click to run").clicked() {
                             run = Some(*cmd);
                         }
@@ -1155,6 +1217,7 @@ impl App {
     /// (submenus opened on hover and switched while moving to them).
     fn commands_menu(&mut self, ui: &mut Ui) {
         let mut run = None;
+        let key_labels: Vec<String> = COMMANDS.iter().map(|c| self.keys_label(c.0)).collect();
         ui.menu_button(RichText::new("☰").size(14.0).color(theme::text_dim()), |ui| {
             ui.set_min_width(340.0);
             let height = (ui.ctx().screen_rect().height() - 80.0).max(200.0);
@@ -1164,8 +1227,8 @@ impl App {
                         ui.separator();
                     }
                     ui.label(RichText::new(*g).size(11.5).strong().color(theme::text_dim()));
-                    for (cmd, label, keys) in COMMANDS.iter().filter(|c| group(c.0) == *g) {
-                        if ui.add(egui::Button::new(*label).shortcut_text(*keys).min_size(vec2(ui.available_width(), 0.0))).clicked() {
+                    for ((cmd, _, label, _), keys) in COMMANDS.iter().zip(&key_labels).filter(|(c, _)| group(c.0) == *g) {
+                        if ui.add(egui::Button::new(*label).shortcut_text(keys.as_str()).min_size(vec2(ui.available_width(), 0.0))).clicked() {
                             run = Some(*cmd);
                             ui.close_menu();
                         }
@@ -1177,6 +1240,91 @@ impl App {
         .on_hover_text("all commands");
         if let Some(c) = run {
             self.run_cmd(c);
+        }
+    }
+
+    /// Keyboard shortcuts: every command with its keys; + binds the next key
+    /// pressed, a key's × removes it, Reset goes back to the defaults.
+    pub fn ui_keys_window(&mut self, ctx: &egui::Context) {
+        let Some(mut w) = self.keys_window.take() else { return };
+        let mut open = true;
+        // Who uses each key, to flag a key bound twice.
+        let mut uses: HashMap<String, Vec<&str>> = HashMap::new();
+        for (c, keys) in &self.keymap {
+            let label = COMMANDS.iter().find(|x| x.0 == *c).map(|x| x.2).unwrap_or("");
+            for k in keys {
+                uses.entry(k.label()).or_default().push(label);
+            }
+        }
+        let mut change: Option<(&'static str, Option<Vec<String>>)> = None;
+        let mut reset_all = false;
+        let q = w.query.to_lowercase();
+        egui::Window::new("Keyboard shortcuts").open(&mut open).collapsible(false).resizable(true).default_size(vec2(640.0, 620.0)).show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.add(TextEdit::singleline(&mut w.query).hint_text("search commands or keys…").desired_width(ui.available_width() - 90.0));
+                if ui.add_enabled(!self.settings.keys.is_empty(), egui::Button::new("Reset all")).on_hover_text("every command back to its default keys").clicked() {
+                    reset_all = true;
+                }
+            });
+            ui.label(
+                RichText::new("+ then press the keys (Esc cancels) · click a key to remove it · kept in settings.json under \"keys\" · bound keys never reach the terminal")
+                    .size(11.0)
+                    .color(theme::text_faint()),
+            );
+            ui.separator();
+            ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                for g in GROUPS {
+                    let rows: Vec<_> = COMMANDS
+                        .iter()
+                        .filter(|c| group(c.0) == g)
+                        .filter(|c| q.is_empty() || c.2.to_lowercase().contains(&q) || self.keys_label(c.0).to_lowercase().contains(&q))
+                        .collect();
+                    if rows.is_empty() {
+                        continue;
+                    }
+                    ui.add_space(6.0);
+                    ui.label(RichText::new(g).strong().color(theme::text_dim()));
+                    egui::Grid::new(("keys-grid", g)).num_columns(3).striped(true).spacing([12.0, 4.0]).min_col_width(60.0).show(ui, |ui| {
+                        for (cmd, id, label, defaults) in rows {
+                            ui.label(*label);
+                            ui.horizontal_wrapped(|ui| {
+                                let keys = self.keymap.iter().find(|k| k.0 == *cmd).map(|k| k.1.clone()).unwrap_or_default();
+                                for sc in &keys {
+                                    let l = sc.label();
+                                    let others: Vec<&str> = uses.get(&l).map(|v| v.iter().copied().filter(|x| x != label).collect()).unwrap_or_default();
+                                    let color = if others.is_empty() { theme::text() } else { theme::error() };
+                                    let tip = if others.is_empty() { "click to remove".to_string() } else { format!("also bound to: {} · click to remove", others.join(", ")) };
+                                    if ui.add(egui::Button::new(RichText::new(format!("{l}  ×")).monospace().size(12.0).color(color))).on_hover_text(tip).clicked() {
+                                        let rest: Vec<String> = keys.iter().map(|k| k.label()).filter(|k| *k != l).collect();
+                                        change = Some((id, Some(rest)));
+                                    }
+                                }
+                                if w.capture == Some(*id) {
+                                    ui.label(RichText::new("press keys… (Esc: cancel)").color(theme::accent()));
+                                } else if ui.small_button("+").on_hover_text("add a key: click, then press it").clicked() {
+                                    w.capture = Some(id);
+                                }
+                            });
+                            let custom = self.settings.keys.contains_key(*id);
+                            let def = if defaults.is_empty() { "none".to_string() } else { defaults.join(" / ") };
+                            if ui.add_enabled(custom, egui::Button::new("Reset").small()).on_hover_text(format!("default: {def}")).clicked() {
+                                change = Some((id, None));
+                            }
+                            ui.end_row();
+                        }
+                    });
+                }
+            });
+        });
+        if reset_all {
+            self.settings.keys.clear();
+            self.rebuild_keys();
+            self.save_settings();
+        } else if let Some((id, keys)) = change {
+            self.set_bindings(id, keys);
+        }
+        if open {
+            self.keys_window = Some(w);
         }
     }
 
@@ -2120,7 +2268,7 @@ impl App {
             theme::themes().map(|(i, _, name, light)| (Cmd::Theme(i), format!("Theme: {name}"), if light { "light".into() } else { "dark".into() })).collect();
         let items: Vec<(Cmd, String, String)> = COMMANDS
             .iter()
-            .map(|(c, l, k)| (*c, l.to_string(), k.to_string()))
+            .map(|(c, _, l, _)| (*c, l.to_string(), self.keys_label(*c)))
             .chain(theme_items)
             .filter(|(_, l, _)| q.is_empty() || l.to_lowercase().contains(&q))
             .collect();
@@ -2637,11 +2785,22 @@ fn hit_menu(ui: &mut Ui, path: &str, line: Option<(usize, &str)>, can_cd: bool, 
 }
 
 /// Command groups, in the order the menu and help show them.
-const GROUPS: [&str; 6] = ["Tabs and panes", "Terminal", "Panels, files and memos", "Look", "Privacy, settings and logs", "Help"];
+const GROUPS: [&str; 6] = ["Tabs and panes", "Terminal", "Panels, files and memos", "Look", "Privacy, settings and keys", "Help"];
 
 fn group(c: Cmd) -> &'static str {
     match c {
-        Cmd::NewTab | Cmd::Connect | Cmd::SplitRight | Cmd::SplitDown | Cmd::ClosePane | Cmd::Zoom => GROUPS[0],
+        Cmd::NewTab
+        | Cmd::Connect
+        | Cmd::SplitRight
+        | Cmd::SplitDown
+        | Cmd::ClosePane
+        | Cmd::Zoom
+        | Cmd::NextTab
+        | Cmd::PrevTab
+        | Cmd::FocusLeft
+        | Cmd::FocusRight
+        | Cmd::FocusUp
+        | Cmd::FocusDown => GROUPS[0],
         Cmd::Composer
         | Cmd::Find
         | Cmd::PrevBlock
@@ -2664,8 +2823,8 @@ fn group(c: Cmd) -> &'static str {
         | Cmd::Theme(_)
         | Cmd::Fonts
         | Cmd::MarkdownBreaks => GROUPS[3],
-        Cmd::Records | Cmd::Settings | Cmd::AgentLog => GROUPS[4],
-        Cmd::Help | Cmd::Features => GROUPS[5],
+        Cmd::Records | Cmd::Settings | Cmd::AgentLog | Cmd::Keys => GROUPS[4],
+        Cmd::Help | Cmd::Features | Cmd::Palette => GROUPS[5],
     }
 }
 
@@ -2894,6 +3053,21 @@ fn close_menu(ui: &mut Ui, at: usize, n: usize) -> Option<CloseWhich> {
 mod tests {
     use super::{history_matches, memo_title, FindMode};
     use crate::records::Record;
+
+    #[test]
+    fn default_keys_are_valid_and_distinct() {
+        let mut ids = std::collections::HashSet::new();
+        let mut keys = std::collections::HashMap::new();
+        for (cmd, id, label, defaults) in super::COMMANDS {
+            assert!(ids.insert(*id), "id {id} used twice");
+            for d in *defaults {
+                let k = crate::keys::Shortcut::parse(d).unwrap_or_else(|| panic!("{label}: {d} doesn't parse"));
+                if let Some(other) = keys.insert(k.label(), *cmd) {
+                    panic!("{d} is the default of both {other:?} and {cmd:?}");
+                }
+            }
+        }
+    }
 
     #[test]
     fn dragged_tab_lands_between_tabs() {

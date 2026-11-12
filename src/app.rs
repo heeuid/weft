@@ -353,6 +353,10 @@ pub struct Settings {
     /// How ssh passwords are held in memory (never on disk).
     #[serde(default)]
     pub passwords: crate::secret::VaultSettings,
+    /// Keyboard shortcuts that differ from the defaults: command id -> keys
+    /// ("Ctrl+Shift+T"); an empty list leaves the command without a key.
+    #[serde(default)]
+    pub keys: std::collections::BTreeMap<String, Vec<String>>,
     #[serde(default)]
     pub session: Vec<SavedNode>,
 }
@@ -372,7 +376,7 @@ impl Default for Settings {
                 },
             });
         }
-        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, layout: Layout::default(), show_hidden: false, find_mode: Default::default(), cursor_style: Default::default(), local_shell: Default::default(), mermaid: Default::default(), follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, term_font: d_font_file(), icon_font: d_font_file(), records: Default::default(), passwords: Default::default(), session: Vec::new() }
+        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, layout: Layout::default(), show_hidden: false, find_mode: Default::default(), cursor_style: Default::default(), local_shell: Default::default(), mermaid: Default::default(), follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, term_font: d_font_file(), icon_font: d_font_file(), records: Default::default(), passwords: Default::default(), keys: Default::default(), session: Vec::new() }
     }
 }
 
@@ -766,6 +770,13 @@ pub struct FontMenu {
     pub files: Vec<(String, String, bool)>,
 }
 
+/// The keyboard shortcuts window: the search, and the command (by id)
+/// waiting for a key to be pressed.
+pub struct KeysWindow {
+    pub query: String,
+    pub capture: Option<&'static str>,
+}
+
 /// The help window: which tab, and the search.
 pub struct HelpState {
     pub features: bool,
@@ -923,6 +934,10 @@ pub struct App {
     pub find_result: Option<FindResult>,
     /// The help window, while open.
     pub help: Option<HelpState>,
+    /// Keys in force per command (see rebuild_keys).
+    pub keymap: Vec<(crate::ui_panels::Cmd, Vec<crate::keys::Shortcut>)>,
+    /// The keyboard shortcuts window, while open.
+    pub keys_window: Option<KeysWindow>,
     /// The font picker, while open.
     pub font_menu: Option<FontMenu>,
     /// When the oldest unsaved memo change was made (see autosave_memos).
@@ -1051,6 +1066,8 @@ impl App {
             memo_edited: None,
             font_menu: None,
             help: None,
+            keymap: Vec::new(),
+            keys_window: None,
         };
         app.side.follow = app.settings.follow_cwd;
         let session = std::mem::take(&mut app.settings.session);

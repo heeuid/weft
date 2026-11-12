@@ -1,12 +1,9 @@
 //! Help window text: keys and mouse beyond the command list, and what each
 //! feature does. Kept short; README.md has the long form.
 
-/// Keys and mouse actions that are not palette commands.
+/// Keys and mouse actions that are not commands (those are listed, with the
+/// keys bound to them, from ui_panels::COMMANDS).
 pub const KEYS: &[(&str, &str)] = &[
-    ("Ctrl+Shift+P", "명령 팔레트: 모든 명령을 이름으로 찾아 실행"),
-    ("F1", "이 도움말"),
-    ("Ctrl+Tab / Ctrl+Shift+Tab", "다음 / 이전 탭"),
-    ("Alt+←↑→↓", "분할된 페인 사이 포커스 이동"),
     ("Ctrl+C", "선택한 글자 복사 (선택이 없으면 ^C로 중단)"),
     ("Ctrl+V", "붙여넣기 (bracketed paste)"),
     ("Ctrl+S", "에디터: 파일 저장"),
