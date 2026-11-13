@@ -247,6 +247,13 @@ fn confirm_host_key(_text: &str) -> bool {
     false
 }
 
+/// The window and taskbar icon (assets/weft.png, 256 px; made by
+/// assets/make_icon.py, which also writes the .ico built into weft.exe).
+fn app_icon() -> egui::IconData {
+    let img = image::load_from_memory(include_bytes!("../assets/weft.png")).expect("assets/weft.png").to_rgba8();
+    egui::IconData { width: img.width(), height: img.height(), rgba: img.into_raw() }
+}
+
 fn main() -> eframe::Result<()> {
     STARTED.get_or_init(Instant::now);
     let args: Vec<String> = std::env::args().collect();
@@ -263,7 +270,8 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_title("weft")
             .with_inner_size([1400.0, 860.0])
-            .with_min_inner_size([720.0, 420.0]),
+            .with_min_inner_size([720.0, 420.0])
+            .with_icon(app_icon()),
         ..Default::default()
     };
     eframe::run_native(
