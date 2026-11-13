@@ -994,9 +994,13 @@ pub struct FontMenu {
 
 /// The keyboard shortcuts window: the search, and the command (by id)
 /// waiting for a key to be pressed.
+#[derive(Default)]
 pub struct KeysWindow {
     pub query: String,
     pub capture: Option<&'static str>,
+    /// Show only the commands whose keys were changed / that share a key.
+    pub changed_only: bool,
+    pub clashes_only: bool,
 }
 
 /// A point where borders meet: the vertical ones and the horizontal ones
@@ -1093,9 +1097,18 @@ pub struct HelpState {
     pub query: String,
 }
 
+#[derive(Default)]
 pub struct PaletteState {
     pub query: String,
     pub sel: usize,
+    /// Just opened: the list starts at the top.
+    pub fresh: bool,
+}
+
+impl PaletteState {
+    pub fn new() -> PaletteState {
+        PaletteState { fresh: true, ..Default::default() }
+    }
 }
 
 pub struct ConnectState {

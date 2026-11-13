@@ -294,8 +294,8 @@ impl App {
                 self.side.tab = SideTab::History;
             }
             Cmd::Records => self.open_records_window(),
-            Cmd::Palette => self.palette = if self.palette.is_some() { None } else { Some(PaletteState { query: String::new(), sel: 0 }) },
-            Cmd::Keys => self.keys_window = Some(KeysWindow { query: String::new(), capture: None }),
+            Cmd::Palette => self.palette = if self.palette.is_some() { None } else { Some(PaletteState::new()) },
+            Cmd::Keys => self.keys_window = Some(KeysWindow::default()),
             Cmd::GoTab(n) => {
                 // Alt+9 is the last tab, as in browsers; a number past the end does nothing.
                 let to = if n == usize::MAX { self.tabs.len().checked_sub(1) } else { Some(n).filter(|&n| n < self.tabs.len()) };
@@ -453,8 +453,13 @@ impl App {
     }
 
     /// A command's keys as shown in menus: "Ctrl+= / Ctrl+Plus".
+    /// The keys bound to a command now, as labels ("Ctrl+Shift+T").
+    fn keymap_labels(&self, c: Cmd) -> Vec<String> {
+        self.keymap.iter().find(|k| k.0 == c).map(|k| k.1.iter().map(|s| s.label()).collect()).unwrap_or_default()
+    }
+
     fn keys_label(&self, c: Cmd) -> String {
-        let keys: Vec<String> = self.keymap.iter().find(|k| k.0 == c).map(|k| k.1.iter().map(|s| s.label()).collect()).unwrap_or_default();
+        let keys = self.keymap_labels(c);
         let mut s = keys.join(" / ");
         if matches!(c, Cmd::UiUp | Cmd::UiDown) {
             s = if s.is_empty() { "Ctrl+Shift+wheel".into() } else { s + " / Ctrl+Shift+wheel" };
@@ -771,7 +776,7 @@ impl App {
             self.split(true);
         }
         if icons::button(ui, Icon::Search, "command palette (Ctrl+Shift+P)").clicked() {
-            self.palette = Some(PaletteState { query: String::new(), sel: 0 });
+            self.palette = Some(PaletteState::new());
         }
         ui.separator();
     }
@@ -1428,60 +1433,101 @@ impl App {
         let mut change: Option<(&'static str, Option<Vec<String>>)> = None;
         let mut reset_all = false;
         let q = w.query.to_lowercase();
-        crate::widgets::dialog(ctx, "Keyboard shortcuts", vec2(640.0, 620.0)).open(&mut open).resizable(true).show(ctx, |ui| {
+        let clashing = |keys: &[String], label: &str| keys.iter().any(|k| uses.get(k).is_some_and(|v| v.iter().any(|x| *x != label)));
+        let changed_n = self.settings.keys.len();
+        let clash_n = COMMANDS.iter().filter(|c| clashing(&self.keymap_labels(c.0), c.2)).count();
+        crate::widgets::dialog(ctx, "Keyboard shortcuts", vec2(680.0, 600.0)).open(&mut open).resizable(true).show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.add(TextEdit::singleline(&mut w.query).hint_text("search commands or keys…").desired_width(ui.available_width() - 90.0));
-                if ui.add_enabled(!self.settings.keys.is_empty(), egui::Button::new("Reset all")).on_hover_text("every command back to its default keys").clicked() {
+                ui.add(TextEdit::singleline(&mut w.query).hint_text("search commands or keys…").desired_width(ui.available_width() - 96.0));
+                if ui.add_enabled(changed_n > 0, egui::Button::new("Reset all")).on_hover_text("every command back to its default keys").clicked() {
                     reset_all = true;
                 }
             });
-            ui.label(
-                RichText::new("+ then press the keys (Esc cancels) · click a key to remove it · kept in settings.json under \"keys\" · bound keys never reach the terminal")
-                    .size(11.0)
-                    .color(theme::text_faint()),
-            );
+            ui.horizontal(|ui| {
+                ui.toggle_value(&mut w.changed_only, RichText::new(format!("changed ({changed_n})")).size(12.0)).on_hover_text("only the commands whose keys you changed");
+                ui.add_enabled_ui(clash_n > 0 || w.clashes_only, |ui| {
+                    let label = RichText::new(format!("clashes ({clash_n})")).size(12.0);
+                    let label = if clash_n > 0 { label.color(theme::error()) } else { label };
+                    ui.toggle_value(&mut w.clashes_only, label).on_hover_text("only the commands sharing a key with another");
+                });
+                ui.label(RichText::new("+ then press the keys · click a key to remove it · bound keys never reach the terminal").size(11.0).color(theme::text_faint()));
+            });
+            ui.add_space(2.0);
             ui.separator();
             ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                let mut stripe = false;
                 for g in GROUPS {
                     let rows: Vec<_> = COMMANDS
                         .iter()
                         .filter(|c| group(c.0) == g)
-                        .filter(|c| q.is_empty() || c.2.to_lowercase().contains(&q) || self.keys_label(c.0).to_lowercase().contains(&q))
+                        .filter(|c| q.is_empty() || c.2.to_lowercase().contains(&q) || c.1.contains(&q) || self.keys_label(c.0).to_lowercase().contains(&q))
+                        .filter(|c| !w.changed_only || self.settings.keys.contains_key(c.1))
+                        .filter(|c| !w.clashes_only || clashing(&self.keymap_labels(c.0), c.2))
                         .collect();
                     if rows.is_empty() {
                         continue;
                     }
-                    ui.add_space(6.0);
-                    ui.label(RichText::new(g).strong().color(theme::text_dim()));
-                    egui::Grid::new(("keys-grid", g)).num_columns(3).striped(true).spacing([12.0, 4.0]).min_col_width(60.0).show(ui, |ui| {
-                        for (cmd, id, label, defaults) in rows {
-                            ui.label(*label);
-                            ui.horizontal_wrapped(|ui| {
-                                let keys = self.keymap.iter().find(|k| k.0 == *cmd).map(|k| k.1.clone()).unwrap_or_default();
-                                for sc in &keys {
-                                    let l = sc.label();
-                                    let others: Vec<&str> = uses.get(&l).map(|v| v.iter().copied().filter(|x| x != label).collect()).unwrap_or_default();
-                                    let color = if others.is_empty() { theme::text() } else { theme::error() };
-                                    let tip = if others.is_empty() { "click to remove".to_string() } else { format!("also bound to: {} · click to remove", others.join(", ")) };
-                                    if ui.add(egui::Button::new(RichText::new(format!("{l}  ×")).monospace().size(12.0).color(color))).on_hover_text(tip).clicked() {
-                                        let rest: Vec<String> = keys.iter().map(|k| k.label()).filter(|k| *k != l).collect();
-                                        change = Some((id, Some(rest)));
-                                    }
-                                }
-                                if w.capture == Some(*id) {
-                                    ui.label(RichText::new("press keys… (Esc: cancel)").color(theme::accent()));
-                                } else if ui.small_button("+").on_hover_text("add a key: click, then press it").clicked() {
-                                    w.capture = Some(id);
-                                }
-                            });
-                            let custom = self.settings.keys.contains_key(*id);
-                            let def = if defaults.is_empty() { "none".to_string() } else { defaults.join(" / ") };
-                            if ui.add_enabled(custom, egui::Button::new("Reset").small()).on_hover_text(format!("default: {def}")).clicked() {
+                    ui.add_space(8.0);
+                    ui.label(RichText::new(g).size(11.5).strong().color(theme::text_dim()));
+                    ui.add_space(2.0);
+                    for (cmd, id, label, defaults) in rows {
+                        stripe = !stripe;
+                        let keys = self.keymap_labels(*cmd);
+                        let custom = self.settings.keys.contains_key(*id);
+                        let capturing = w.capture == Some(*id);
+                        // One line per command: its name on the left; on the
+                        // right its keys, the + to add one, and ↺ when changed.
+                        let (row, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::hover());
+                        let bg = if capturing {
+                            theme::tint(theme::accent(), 40)
+                        } else if resp.hovered() {
+                            theme::bg_hover()
+                        } else if stripe {
+                            theme::tint(theme::text_faint(), 7)
+                        } else {
+                            Color32::TRANSPARENT
+                        };
+                        ui.painter().rect_filled(row, CornerRadius::same(5), bg);
+                        if capturing {
+                            ui.painter().rect_stroke(row, CornerRadius::same(5), Stroke::new(1.0_f32, theme::accent()), egui::StrokeKind::Inside);
+                        }
+                        let mut right = ui.new_child(egui::UiBuilder::new().max_rect(row.shrink2(vec2(6.0, 0.0))).layout(egui::Layout::right_to_left(egui::Align::Center)));
+                        right.spacing_mut().item_spacing.x = 4.0;
+                        let def = if defaults.is_empty() { "no key".to_string() } else { defaults.join(", ") };
+                        if custom {
+                            if icons::button(&mut right, Icon::Refresh, &format!("back to the default: {def}")).clicked() {
                                 change = Some((id, None));
                             }
-                            ui.end_row();
+                        } else {
+                            right.add_space(22.0);
                         }
-                    });
+                        if capturing {
+                            right.label(RichText::new("press keys… (Esc cancels)").size(12.0).color(theme::accent()));
+                        } else if icons::button(&mut right, Icon::Plus, "add a key: click, then press it").clicked() {
+                            w.capture = Some(id);
+                        }
+                        if keys.is_empty() && !capturing {
+                            right.label(RichText::new("no key").size(11.5).italics().color(theme::text_faint()));
+                        }
+                        for k in keys.iter().rev() {
+                            let others: Vec<&str> = uses.get(k).map(|v| v.iter().copied().filter(|x| x != label).collect()).unwrap_or_default();
+                            if key_chip(&mut right, k, !others.is_empty(), &others).clicked() {
+                                let rest: Vec<String> = keys.iter().filter(|x| *x != k).cloned().collect();
+                                change = Some((id, Some(rest)));
+                            }
+                        }
+                        // The name gets what the right side left.
+                        let name_right = right.min_rect().left() - 10.0;
+                        let x = row.left() + 10.0;
+                        if custom {
+                            ui.painter().circle_filled(pos2(row.left() + 6.0, row.center().y), 2.5, theme::accent());
+                        }
+                        let color = if custom { theme::text() } else { theme::text_dim() };
+                        text_fit(ui.painter(), pos2(x + 4.0, row.center().y), label, FontId::proportional(13.0), color, name_right - x - 4.0);
+                        if custom {
+                            resp.on_hover_text(format!("changed · default: {def}"));
+                        }
+                    }
                 }
             });
         });
@@ -3011,9 +3057,23 @@ impl App {
                     st.sel = 0;
                 }
                 ui.add_space(4.0);
-                // As tall as the window allows below the palette; the rest scrolls.
-                let room = (ctx.screen_rect().bottom() - ui.cursor().top() - 24.0).max(120.0);
-                ScrollArea::vertical().max_height(room).auto_shrink([false, true]).show(ui, |ui| {
+                // As tall as the window allows below the palette (anchored 70
+                // from the top, its search line above); the rest scrolls. From
+                // the window size alone: the cursor is elsewhere while egui
+                // sizes a newly opened popup, which left room for three rows.
+                let room = (ctx.screen_rect().height() - 70.0 - 48.0 - 24.0).max(120.0);
+                // egui keeps a popup's size from before and lets it grow only
+                // when its content overflows, which a scroll list never does:
+                // after a short result list (3 themes) the palette stayed that
+                // small. Asking for the height the rows need makes it grow back.
+                let want = room.min(items.len() as f32 * 26.0);
+                // A new palette or a new query starts at the top, not where
+                // the list was scrolled last time.
+                let mut list = ScrollArea::vertical().id_salt("palette-list").max_height(room).min_scrolled_height(want).auto_shrink([false, true]);
+                if r.changed() || std::mem::take(&mut st.fresh) {
+                    list = list.vertical_scroll_offset(0.0);
+                }
+                list.show(ui, |ui| {
                     for (i, (cmd, label, keys)) in items.iter().enumerate() {
                         let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click());
                         if i == st.sel && moved {
@@ -3582,6 +3642,32 @@ fn group(c: Cmd) -> &'static str {
 
 /// A time setting in seconds, edited as a number and a unit (seconds,
 /// minutes, hours). 0 shows `zero`.
+/// A key binding drawn as keycaps ("Ctrl" "Shift" "T"); hovering shows the
+/// × that a click acts on (remove). Red when another command has it too.
+fn key_chip(ui: &mut Ui, label: &str, clash: bool, others: &[&str]) -> egui::Response {
+    let font = FontId::monospace(11.5);
+    let parts: Vec<&str> = if label.ends_with("++") { vec![label.trim_end_matches("++"), "+"] } else { label.split('+').collect() };
+    let widths: Vec<f32> = parts.iter().map(|p| text_width(ui.painter(), p, font.clone()) + 10.0).collect();
+    let gap = 3.0;
+    let cross = 14.0;
+    let w = widths.iter().sum::<f32>() + gap * (parts.len().saturating_sub(1)) as f32 + 8.0 + cross;
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, 22.0), Sense::click());
+    let hot = resp.hovered();
+    let edge = if clash { theme::error() } else if hot { theme::text_dim() } else { theme::border() };
+    ui.painter().rect(rect, CornerRadius::same(5), if hot { theme::bg_hover() } else { theme::bg_raised() }, Stroke::new(1.0_f32, edge), egui::StrokeKind::Inside);
+    let mut x = rect.left() + 4.0;
+    for (p, pw) in parts.iter().zip(&widths) {
+        let cap = egui::Rect::from_min_size(pos2(x, rect.top() + 3.0), vec2(*pw, 16.0));
+        ui.painter().rect_filled(cap, CornerRadius::same(3), theme::bg_base());
+        ui.painter().text(cap.center(), Align2::CENTER_CENTER, *p, font.clone(), if clash { theme::error() } else { theme::text() });
+        x += pw + gap;
+    }
+    let cx = rect.right() - cross / 2.0 - 3.0;
+    ui.painter().text(pos2(cx, rect.center().y), Align2::CENTER_CENTER, "\u{00d7}", FontId::proportional(13.0), if hot { theme::error() } else { theme::text_faint() });
+    let tip = if others.is_empty() { "click to remove this key".to_string() } else { format!("also bound to: {} · click to remove", others.join(", ")) };
+    resp.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
 fn secs_input(ui: &mut Ui, id: &str, secs: &mut u64, zero: &str) -> bool {
     use crate::secret::{split_secs, UNITS};
     let unit_id = Id::new(("secs-unit", id));
