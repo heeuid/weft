@@ -76,6 +76,8 @@ pub(crate) enum Cmd {
     GoTab(usize),
     /// Another side panel or editor beside the focused one (true: to the right).
     PanelSplit(Region, bool),
+    /// Start the newest weft (a new build or install) with the same tabs and settings.
+    Restart,
     FocusLeft,
     FocusRight,
     FocusUp,
@@ -141,6 +143,7 @@ const COMMANDS: &[(Cmd, &str, &str, &[&str])] = &[
     (Cmd::Features, "features", "Help: what each feature does", &[]),
     (Cmd::Palette, "palette", "Command palette", &["Ctrl+Shift+P"]),
     (Cmd::Keys, "keys", "Keyboard shortcuts… (bind keys to commands)", &[]),
+    (Cmd::Restart, "restart", "Restart weft: the newest build or install, same tabs, folders and settings", &[]),
     (Cmd::ThemeSystem, "theme_system", "Theme: follow system (dark/light)", &[]),
     (Cmd::CursorStyle, "cursor_style", "Terminal cursor: block / bar / underline", &[]),
     (Cmd::LocalShell(crate::host::LocalShell::Auto), "shell_auto", "Local shell: auto (pwsh, else Windows PowerShell)", &[]),
@@ -197,6 +200,7 @@ impl App {
             }
             Cmd::Zoom => self.toggle_zoom(),
             Cmd::Sidebar => self.settings.sidebar = !self.settings.sidebar,
+            Cmd::Restart => self.restart(),
             Cmd::PanelSplit(region, right) => {
                 let focus = if region == Region::Side { self.side_focus } else { self.editor_focus };
                 let all = self.panels_of(region);
@@ -809,6 +813,14 @@ impl App {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 // Sizes, always at hand: clicking doesn't close anything; the value resets.
                 let mut step: Option<Cmd> = None;
+                // A newer weft was built or installed: restart into it here.
+                if self.update_ready {
+                    let b = egui::Button::new(small("\u{21bb} new weft \u{00b7} restart".into(), theme::bg_base())).fill(theme::accent()).min_size(vec2(0.0, 18.0));
+                    if ui.add(b).on_hover_text("start the new weft with the same tabs, folders and settings (programs running in terminals stop; shells start again in their folders)").clicked() {
+                        step = Some(Cmd::Restart);
+                    }
+                    ui.add_space(12.0);
+                }
                 ui.spacing_mut().item_spacing.x = 0.0;
                 let mut btn = |ui: &mut Ui, label: String, tip: &str, cmd: Cmd, color: Color32| {
                     let b = egui::Button::new(small(label, color)).frame(false).min_size(vec2(18.0, 18.0));
@@ -3717,7 +3729,7 @@ fn group(c: Cmd) -> &'static str {
         | Cmd::Theme(_)
         | Cmd::Fonts
         | Cmd::MarkdownBreaks => GROUPS[3],
-        Cmd::Records | Cmd::Settings | Cmd::AgentLog | Cmd::Keys => GROUPS[4],
+        Cmd::Records | Cmd::Settings | Cmd::AgentLog | Cmd::Keys | Cmd::Restart => GROUPS[4],
         Cmd::Help | Cmd::Features | Cmd::Palette => GROUPS[5],
     }
 }

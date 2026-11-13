@@ -1295,6 +1295,11 @@ pub struct App {
     /// File transfers, running and finished (until cleared).
     pub transfers: Vec<crate::transfer::Transfer>,
     pub next_transfer: u64,
+    /// When this weft started, and whether a newer one has appeared since
+    /// (see restart.rs).
+    pub started_at: std::time::SystemTime,
+    pub update_ready: bool,
+    pub update_checked: Instant,
     /// A file or folder (host, path) being dragged from a Files panel.
     pub file_drag: Option<(String, String)>,
     /// Folder rows drawn this frame (rect, host, path): drop targets.
@@ -1430,6 +1435,9 @@ impl App {
             pane_drag: None,
             transfers: Vec::new(),
             next_transfer: 0,
+            started_at: std::time::SystemTime::now(),
+            update_ready: false,
+            update_checked: Instant::now(),
             file_drag: None,
             drop_dirs: Vec::new(),
             side_focus: 0,

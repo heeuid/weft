@@ -20,6 +20,7 @@ mod media;
 mod mermaid;
 mod pty;
 mod records;
+mod restart;
 mod secret;
 mod term;
 mod theme;
@@ -140,6 +141,7 @@ impl eframe::App for WeftApp {
                 .frame(egui::Frame::new().fill(theme::bg_base()).inner_margin(egui::Margin::symmetric(10, 0)))
                 .show(ctx, |ui| app.ui_status(ui));
         }
+        app.check_update();
         app.drop_dirs.clear();
         egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::bg_base())).show(ctx, |ui| app.ui_layout(ui));
         app.ui_file_drop(ctx);

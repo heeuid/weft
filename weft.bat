@@ -48,6 +48,10 @@ for %%i in (1 2 3 4 5 6 7 8 9) do (
 )
 if not defined WEFT_EXE set "WEFT_EXE=%BUILT%"
 if not defined WEFT_DATA_DIR set "WEFT_DATA_DIR=%~dp0target\release\data"
+rem For "Restart weft" (and its "new weft" button): run this file again,
+rem and watch the build output for a newer weft.
+set "WEFT_LAUNCHER=%~f0"
+set "WEFT_BUILT=%BUILT%"
 
 rem Started like a double-click in Explorer (ShellExecute): weft inherits
 rem nothing from this console, so the terminal that ran this can close.
