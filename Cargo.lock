@@ -4548,7 +4548,7 @@ checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
 
 [[package]]
 name = "weft"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64 0.22.1",
  "chacha20",
@@ -4573,8 +4573,43 @@ dependencies = [
  "ttf-parser",
  "two-face",
  "vte",
+ "weft-core",
+ "weft-draw",
  "windows-sys 0.59.0",
  "zeroize",
+]
+
+[[package]]
+name = "weft-core"
+version = "0.2.1"
+dependencies = [
+ "base64 0.22.1",
+ "chacha20",
+ "chrono",
+ "flate2",
+ "getrandom 0.2.17",
+ "libc",
+ "portable-pty",
+ "regex",
+ "serde",
+ "serde_json",
+ "serialport",
+ "sysinfo",
+ "vte",
+ "windows-sys 0.59.0",
+ "zeroize",
+]
+
+[[package]]
+name = "weft-draw"
+version = "0.2.1"
+dependencies = [
+ "egui",
+ "regex",
+ "serde",
+ "syntect",
+ "ttf-parser",
+ "two-face",
 ]
 
 [[package]]

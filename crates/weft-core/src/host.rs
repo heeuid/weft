@@ -21,10 +21,10 @@ use std::time::UNIX_EPOCH;
 
 /// Shell integrations (prompt and command marks, current directory), one per
 /// shell. They travel to a remote host as one gzipped bundle in memory.
-pub const BASH_SH: &str = include_str!("../shell/bash.sh");
-pub const ZSH_ZSH: &str = include_str!("../shell/zsh.zsh");
-pub const FISH_FISH: &str = include_str!("../shell/fish.fish");
-pub const PWSH_PS1: &str = include_str!("../shell/pwsh.ps1");
+pub const BASH_SH: &str = include_str!("../../../shell/bash.sh");
+pub const ZSH_ZSH: &str = include_str!("../../../shell/zsh.zsh");
+pub const FISH_FISH: &str = include_str!("../../../shell/fish.fish");
+pub const PWSH_PS1: &str = include_str!("../../../shell/pwsh.ps1");
 
 /// All integrations in one text: sections start with `#@<name>` lines; the
 /// bootstrap cuts out the one it needs with awk. Comment and blank lines are
@@ -47,7 +47,7 @@ fn strip_comments(src: &str) -> String {
         .map(|l| format!("{l}\n"))
         .collect()
 }
-pub const AGENT_PY: &str = include_str!("../remote/agent.py");
+pub const AGENT_PY: &str = include_str!("../../../remote/agent.py");
 
 /// Pane bootstrap (one logical line, run via `eval` by sh): pick a base64
 /// decoder from POSIX tools (or python), then start the user's login shell
@@ -118,7 +118,7 @@ pub enum HostKind {
     Serial { via: String, port: String, baud: u32 },
 }
 
-pub const SERIAL_PY: &str = include_str!("../remote/serial.py");
+pub const SERIAL_PY: &str = include_str!("../../../remote/serial.py");
 
 /// Speeds offered for serial consoles.
 pub const BAUDS: &[u32] = &[9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600, 1000000, 1500000, 3000000];
@@ -1388,7 +1388,7 @@ mod tests {
         let local = names(&local_op(&json!({"op": "tree", "path": root})));
         assert_eq!(local, ["README.md", "node_modules/", "src/", "src/main.rs", "src/ui/", "src/ui/view.rs"]);
         // The same op in the agent (its functions, without starting the loop).
-        let script = format!("import json,sys\nsrc=open(r'{}/remote/agent.py',encoding='utf-8').read().split('\\ndef main')[0]\nexec(src)\nprint(json.dumps(op_tree({{'path': sys.argv[1]}})))", env!("CARGO_MANIFEST_DIR"));
+        let script = format!("import json,sys\nsrc=open(r'{}/remote/agent.py',encoding='utf-8').read().split('\\ndef main')[0]\nexec(src)\nprint(json.dumps(op_tree({{'path': sys.argv[1]}})))", concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
         if let Ok(out) = std::process::Command::new("python").arg("-c").arg(&script).arg(&root).output() {
             if out.status.success() {
                 let v: Value = serde_json::from_slice(&out.stdout).unwrap();
@@ -1401,7 +1401,7 @@ mod tests {
     #[test]
     fn list_can_leave_out_what_git_ignores() {
         // This repository ignores target/ (where cargo builds).
-        let root = env!("CARGO_MANIFEST_DIR").replace('\\', "/");
+        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..").replace('\\', "/");
         let names = |v: &Value| v["entries"].as_array().unwrap().iter().map(|e| e["n"].as_str().unwrap().to_string()).collect::<Vec<_>>();
         let all = names(&local_op(&json!({"op": "list", "path": root, "ignored": true})));
         let kept = names(&local_op(&json!({"op": "list", "path": root, "ignored": false})));
@@ -1426,7 +1426,7 @@ mod tests {
     #[test]
     fn serial_bridge_and_command() {
         // The bridge compiles (it runs on the remote host only: no termios here).
-        let check = format!("compile(open(r'{}/remote/serial.py', encoding='utf-8').read(), 'serial.py', 'exec')", env!("CARGO_MANIFEST_DIR"));
+        let check = format!("compile(open(r'{}/remote/serial.py', encoding='utf-8').read(), 'serial.py', 'exec')", concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
         if let Ok(out) = std::process::Command::new("python").arg("-c").arg(&check).output() {
             assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
         }
@@ -1496,7 +1496,7 @@ mod tests {
              r=sys.argv[1]\nw=op_walk({{'path': r+'/src'}})\nop_mkdirs({{'root': r+'/dst2', 'dirs': [i['p'] for i in w['items'] if i['d']]}})\n\
              for i in w['items']:\n    if i['d']: continue\n    off=0\n    while True:\n        c=op_rchunk({{'path': r+'/src/'+i['p'], 'off': off, 'len': 4096}})\n        op_wchunk({{'path': r+'/dst2/'+i['p']+'.weft-part', 'off': off, 'b64': c['b64']}})\n        off+=c['n']\n        if c['eof']: break\n    op_finish({{'part': r+'/dst2/'+i['p']+'.weft-part', 'path': r+'/dst2/'+i['p']}})\n\
              print(json.dumps(w))",
-            env!("CARGO_MANIFEST_DIR")
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../..")
         );
         if let Ok(out) = std::process::Command::new("python").env("PYTHONIOENCODING", "utf-8").arg("-c").arg(&script).arg(&root).output() {
             assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
@@ -1734,7 +1734,7 @@ mod loopback {
             println!("skip: {} not installed", argv[0]);
             return;
         }
-        let mut pty = Pty::spawn(&argv, Some(env!("CARGO_MANIFEST_DIR")), &env, 100, 30, || {}).unwrap();
+        let mut pty = Pty::spawn(&argv, Some(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")), &env, 100, 30, || {}).unwrap();
         let mut t = Term::new(100, 30);
         let mut p = vte::Parser::new();
         // nushell reports the directory only from its first command on.
@@ -1870,7 +1870,7 @@ mod loopback {
             std::thread::sleep(Duration::from_millis(50));
         }
         assert_eq!(c.status, ConnStatus::Ready);
-        let id = c.request(json!({"op": "list", "path": env!("CARGO_MANIFEST_DIR")}));
+        let id = c.request(json!({"op": "list", "path": concat!(env!("CARGO_MANIFEST_DIR"), "/../..")}));
         let mut got = None;
         while got.is_none() && Instant::now() < end {
             got = c.poll().into_iter().find(|r| r["id"] == id);

@@ -111,7 +111,7 @@ mod tests {
     #[test]
     fn mono_build_gets_two_cell_hangul() {
         // The "Mono" D2Coding build, if downloaded (target/fontdl).
-        let Ok(data) = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/target/fontdl/d2/D2CodingLigatureNerdFontMono-Regular.ttf")) else { return };
+        let Ok(data) = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/fontdl/d2/D2CodingLigatureNerdFontMono-Regular.ttf")) else { return };
         let fixed = fit_advances_to_ink(&data).expect("Mono build should be widened");
         let face = ttf_parser::Face::parse(&fixed, 0).unwrap();
         let adv = |c| face.glyph_hor_advance(face.glyph_index(c).unwrap()).unwrap();

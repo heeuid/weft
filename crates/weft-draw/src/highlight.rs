@@ -517,7 +517,7 @@ mod tests {
     #[test]
     fn incremental_matches_full() {
         load();
-        let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/find.rs")).unwrap();
+        let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../weft-core/src/find.rs")).unwrap();
         let mut st = FileState::default();
         let full = file_spans(&text, "rs", &mut st);
         let covered: usize = full.iter().map(|s| s.1 - s.0).sum();
@@ -541,7 +541,7 @@ mod tests {
     #[ignore]
     fn highlighting_a_large_file_is_fast() {
         load();
-        let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/ui_panels.rs")).unwrap();
+        let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../src/ui_panels.rs")).unwrap();
         let mut st = FileState::default();
         let t = std::time::Instant::now();
         let spans = file_spans(&text, "rs", &mut st);

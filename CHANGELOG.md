@@ -5,6 +5,27 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.2.1
+
+Fixed
+- Console hosts no longer outlive weft. Windows' console host asks where
+  the cursor is as it starts and does nothing until it is told, not even
+  close; a terminal that was closed before weft had drawn it (a tab opened
+  and closed at once, weft closed as it started) never answered, so its
+  `OpenConsole.exe` stayed behind for good, each keeping a core busy. One
+  was left about every time weft closed; they slowed the whole PC down
+  over days. Left-over ones from before can be ended in Task Manager
+  (`OpenConsole.exe` with no weft running), or go at the next sign-out.
+- weft waits (up to 3 s, after its window is gone) for its terminals to be
+  closed before it ends.
+
+Changed
+- weft is a workspace of three crates: `weft-core` (terminal, hosts,
+  search; no GUI), `weft-draw` (theme, fonts, markdown layout) and the app.
+  A change builds only what it touches. `cargo test --workspace` runs
+  everything; without `--release` the dependencies are still optimized,
+  so tests build in about a minute and run in under one.
+
 ## 0.2.0
 
 The first numbered release; everything before it was 0.1.0.

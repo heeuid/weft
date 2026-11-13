@@ -1,10 +1,19 @@
 [package]
 name = "weft"
-version = "0.2.0"
+version.workspace = true
 edition = "2021"
 description = "weft - a terminal that weaves GUI widgets into the TUI grid; thick local client, thin ssh/POSIX/python remote"
 
+[workspace]
+members = ["crates/weft-core", "crates/weft-draw"]
+
+# One version for weft and its crates: raised here, with CHANGELOG.md.
+[workspace.package]
+version = "0.2.1"
+
 [dependencies]
+weft-core = { path = "crates/weft-core" }
+weft-draw = { path = "crates/weft-draw" }
 eframe = "0.31"
 egui = "0.31"
 vte = "0.15"
@@ -40,3 +49,13 @@ windows-sys = { version = "0.59", features = ["Win32_Security_Cryptography", "Wi
 
 [target."cfg(unix)".dependencies]
 libc = "0.2"
+
+# `cargo test` and `cargo build` without --release: the dependencies fully
+# optimized (egui, fonts and the syntax tables are far too slow otherwise),
+# weft's own crates lightly and incrementally, so a change builds in moments.
+[profile.dev]
+opt-level = 1
+debug = 0
+
+[profile.dev.package."*"]
+opt-level = 3

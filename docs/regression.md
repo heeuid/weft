@@ -1,6 +1,6 @@
 # Regression tests: what is covered
 
-`cargo test --release` runs all of these; each is a feature, or a bug that
+`cargo test --workspace` runs all of these (three crates: the app, weft-core, weft-draw); each is a feature, or a bug that
 was fixed, so a change that breaks it fails. Screen behaviour is tested
 through the real app, headless (`src/testkit.rs`: the same `App::frame` the
 window runs, fed clicks, drags and keys, checked by state and by the texts
@@ -28,6 +28,7 @@ here. "none" marks what still has no automated test.
 | Folds | `ui_term::tests::folds_collapse_rows` |
 | Pane split junctions; zoom | `ui_term::tests::junction_where_three_panes_meet`, `zoom_shows_only_active_pane_full_size` |
 | Drag a pane header to move it | `ui_term::tests::dragging_a_pane_header_moves_the_pane`, `app::node_tests::*` |
+| A closed terminal's console host goes too (it stayed for good, using a core) | `pty::tests::a_dropped_terminal_is_closed_before_the_end`, `cursor_reports_are_told_from_other_input` |
 | Serial console: bridge, command, missing port | `host::tests::serial_bridge_and_command`, `regress::serial_tab_explains_a_missing_port` |
 | X11 forwarding (-Y, DISPLAY, old settings) | `x11::tests::*` |
 | Block characters drawn, not from the font (no black band) | `ui_term::tests::blocks_fill_their_cells`, `a_full_block_hides_its_background` |

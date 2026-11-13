@@ -4,8 +4,33 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize}
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::{Duration, Instant};
+
+/// Pseudo consoles on their way out, each closed on a thread of its own
+/// (see Drop).
+static CLOSING: Mutex<Vec<thread::JoinHandle<()>>> = Mutex::new(Vec::new());
+
+/// Wait until the pseudo consoles being closed are closed, `limit` at most;
+/// says how many were not. To be called before the process ends: a console
+/// host whose pseudo console was never closed stays behind for good and
+/// keeps a core busy (weft left one per closed window; after a day of
+/// tests there were 270, using a third of the machine).
+pub fn finish_closing(limit: Duration) -> usize {
+    let end = Instant::now() + limit;
+    loop {
+        let left = {
+            let mut closing = CLOSING.lock().unwrap_or_else(|e| e.into_inner());
+            closing.retain(|h| !h.is_finished());
+            closing.len()
+        };
+        if left == 0 || Instant::now() >= end {
+            return left;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+}
 
 pub struct Pty {
     master: Option<Box<dyn MasterPty + Send>>,
@@ -16,6 +41,19 @@ pub struct Pty {
     exited: Arc<AtomicBool>,
     /// Set when dropped: a serial port's reader stops and lets the port go.
     closed: Arc<AtomicBool>,
+    /// A cursor position report went to it (see `Drop`).
+    reported: bool,
+}
+
+/// `ESC [ row ; col R` somewhere in these bytes: a cursor position report.
+fn has_cursor_report(bytes: &[u8]) -> bool {
+    let digits = |b: &[u8]| b.iter().take_while(|c| c.is_ascii_digit()).count();
+    bytes.windows(2).enumerate().filter(|(_, w)| w == b"\x1b[").any(|(i, _)| {
+        let rest = &bytes[i + 2..];
+        let row = digits(rest);
+        let col = if rest.get(row) == Some(&b';') { digits(&rest[row + 1..]) } else { 0 };
+        row > 0 && col > 0 && rest.get(row + 1 + col) == Some(&b'R')
+    })
 }
 
 impl Pty {
@@ -44,7 +82,7 @@ impl Pty {
         // As terminals name themselves to what runs in them
         // (`echo $TERM_PROGRAM_VERSION`; local shells: ssh passes neither).
         cmd.env("TERM_PROGRAM", "weft");
-        cmd.env("TERM_PROGRAM_VERSION", crate::version::VERSION);
+        cmd.env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
         for (k, v) in env {
             cmd.env(k, v);
         }
@@ -57,21 +95,31 @@ impl Pty {
         let exited2 = exited.clone();
         thread::spawn(move || {
             let mut buf = vec![0u8; 64 * 1024];
+            // Once the terminal is dropped nobody takes the output, but it
+            // is still read to its end: the console host writes a last frame
+            // as it closes and waits until that is taken. With nobody
+            // reading, closing the pseudo console never returned, and the
+            // host was left behind when weft ended.
+            let mut dropped = false;
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) | Err(_) => break,
+                    Ok(_) if dropped => {}
                     Ok(n) => {
                         if tx.send(buf[..n].to_vec()).is_err() {
-                            break;
+                            dropped = true;
+                        } else {
+                            wake();
                         }
-                        wake();
                     }
                 }
             }
             exited2.store(true, Ordering::SeqCst);
-            wake();
+            if !dropped {
+                wake();
+            }
         });
-        Ok(Pty { master: Some(pair.master), writer, rx, child: Some(child), exited, closed: Arc::new(AtomicBool::new(false)) })
+        Ok(Pty { master: Some(pair.master), writer, rx, child: Some(child), exited, closed: Arc::new(AtomicBool::new(false)), reported: false })
     }
 
     /// A serial port (COM3, /dev/ttyUSB0) as the terminal's other end, opened
@@ -121,12 +169,15 @@ impl Pty {
             exited2.store(true, Ordering::SeqCst);
             wake();
         });
-        Ok(Pty { master: None, writer: dev, rx, child: None, exited, closed })
+        Ok(Pty { master: None, writer: dev, rx, child: None, exited, closed, reported: true })
     }
 
     pub fn write(&mut self, bytes: &[u8]) {
         if bytes.is_empty() {
             return;
+        }
+        if !self.reported && has_cursor_report(bytes) {
+            self.reported = true;
         }
         let _ = self.writer.write_all(bytes);
         let _ = self.writer.flush();
@@ -193,9 +244,56 @@ impl Drop for Pty {
                 let _ = child.kill();
             }
         }
-        // Closing a pseudo console can block until its output is drained.
+        // Windows' console host asks where the cursor is as it starts
+        // (ESC[6n; portable-pty opens it with "inherit cursor") and does
+        // nothing until it is told, not even close. The terminal answers
+        // as it draws; one dropped before that (opened and closed at once,
+        // or weft closed as it started) is answered here. Unanswered, the
+        // close below never returned, and the host outlived weft.
+        if cfg!(windows) && self.master.is_some() && !self.reported {
+            let _ = self.writer.write_all(b"\x1b[1;1R");
+            let _ = self.writer.flush();
+        }
+        // Closing a pseudo console can block until its output is drained:
+        // on a thread, which `finish_closing` waits for before weft ends.
         if let Some(m) = self.master.take() {
-            thread::spawn(move || drop(m));
+            let closer = thread::spawn(move || drop(m));
+            let mut closing = CLOSING.lock().unwrap_or_else(|e| e.into_inner());
+            closing.retain(|h| !h.is_finished());
+            closing.push(closer);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A terminal that is dropped has its pseudo console closed by the time
+    /// `finish_closing` returns: nothing is left for the process's end to
+    /// cut short (which left a console host running for good).
+    #[test]
+    fn a_dropped_terminal_is_closed_before_the_end() {
+        let argv: Vec<String> = ["python", "-c", "import time; time.sleep(60)"].iter().map(|s| s.to_string()).collect();
+        // Dropped at once, before anything it sent was answered; dropped
+        // after a moment; and one that was answered as a terminal does.
+        let early: Vec<Pty> = (0..2).map(|_| Pty::spawn(&argv, None, &[], 80, 24, || {}).expect("python")).collect();
+        drop(early);
+        let mut later: Vec<Pty> = (0..2).map(|_| Pty::spawn(&argv, None, &[], 80, 24, || {}).expect("python")).collect();
+        thread::sleep(Duration::from_millis(700));
+        later[0].write(b"\x1b[1;1R");
+        assert!(later[0].reported && !later[1].reported);
+        drop(later);
+        assert_eq!(finish_closing(Duration::from_secs(20)), 0, "every pseudo console was closed");
+        assert_eq!(finish_closing(Duration::ZERO), 0, "and none is waiting");
+    }
+
+    #[test]
+    fn cursor_reports_are_told_from_other_input() {
+        assert!(has_cursor_report(b"\x1b[1;1R"));
+        assert!(has_cursor_report(b"ls\r\x1b[24;80Rmore"));
+        for other in [&b"\x1b[A"[..], b"\x1b[1;5R\x1b"[..0].as_ref(), b"R", b"\x1b[;1R", b"\x1b[1;R", b"\x1b[12R", b"\x1b[1;1H", b""] {
+            assert!(!has_cursor_report(other), "{other:?}");
         }
     }
 }

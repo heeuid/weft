@@ -1195,6 +1195,19 @@ pub struct ConnectState {
     pub password: String,
 }
 
+/// Before weft is gone its terminals are closed for real: a pseudo console
+/// still being closed when the process ends leaves its console host
+/// running for good (pty::finish_closing).
+impl Drop for App {
+    fn drop(&mut self) {
+        self.panes.clear();
+        let left = crate::pty::finish_closing(std::time::Duration::from_secs(3));
+        if left > 0 {
+            self.data.log(&format!("exit: {left} pseudo console(s) were still closing"));
+        }
+    }
+}
+
 pub enum Pending {
     List { path: String },
     Open { path: String, line: usize },

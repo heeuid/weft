@@ -8,36 +8,27 @@
 mod app;
 mod confirm;
 mod copymode;
-mod editfind;
 mod help;
-mod highlight;
-mod host;
 mod fileops;
-mod find;
-mod fontfix;
 mod frame;
 #[cfg(test)]
 mod testkit;
 #[cfg(test)]
 mod regress;
-mod icons;
-mod keys;
-mod md;
 mod media;
 mod mermaid;
-mod pty;
-mod records;
 mod restart;
-mod secret;
 mod serial_ui;
-mod term;
-mod theme;
 mod transfer;
 mod ui_panels;
 mod ui_term;
 mod version;
 mod widgets;
 mod x11;
+
+// The parts that live in their own crates, under the names they always had.
+use weft_core::{editfind, find, host, pty, records, secret, term};
+use weft_draw::{highlight, icons, keys, md, theme};
 
 use app::App;
 use std::sync::OnceLock;

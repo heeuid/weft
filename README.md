@@ -239,8 +239,8 @@ TUI 그리드(날실) 사이에 GUI(씨실)를 엮어 넣은 터미널. Rust (`e
 ## 테스트
 
 ```powershell
-cargo test                      # 단위 테스트 + 실제 앱을 창 없이 돌리는 화면 테스트 (docs/regression.md)
-cargo test -- --include-ignored # + Git Bash를 원격 대역으로 쓰는 E2E (인메모리 rc, OSC 133/7/7777, stdin 에이전트)
+cargo test --workspace                      # 세 크레이트 전부: 단위 테스트 + 실제 앱을 창 없이 돌리는 화면 테스트 (docs/regression.md)
+cargo test --workspace -- --include-ignored # + Git Bash를 원격 대역으로 쓰는 E2E (인메모리 rc, OSC 133/7/7777, stdin 에이전트)
 ```
 
 ## 구조
@@ -250,14 +250,18 @@ cargo test -- --include-ignored # + Git Bash를 원격 대역으로 쓰는 E2E (
 ```
 shell/            셸 통합 (bash·zsh·fish·pwsh, OSC 133/7) — 압축 묶음으로 메모리로만 전달
 remote/agent.py   python 표준 라이브러리 에이전트 (JSON lines) — stdin으로 전달
-src/term.rs       VT/xterm 그리드, 절대 줄 번호 스크롤백, 블록, OSC 이벤트
-src/host.rs       프로필, 부트스트랩 명령 조립, 에이전트 연결, 로컬 백엔드
-src/pty.rs        portable-pty 래퍼 (Windows 프로세스 트리 종료)
+crates/weft-core/ 화면 없이 도는 부분 (GUI 의존성 없음)
+  term.rs         VT/xterm 그리드, 절대 줄 번호 스크롤백, 블록, OSC 이벤트
+  host.rs         프로필, 부트스트랩 명령 조립, 에이전트 연결, 로컬 백엔드(파일·프로세스)
+  pty.rs          portable-pty 래퍼 (Windows 프로세스 트리 종료, 콘솔 호스트 닫기)
+  find.rs editfind.rs records.rs secret.rs   찾기, 기록, 메모리 속 비밀번호
+crates/weft-draw/ 그리기 공통 (egui): theme.rs fontfix.rs icons.rs highlight.rs md.rs keys.rs
+src/              앱: 상태와 화면 (아래)
 src/app.rs        상태/로직, 레이아웃, 요청/응답, 액션
 src/ui_term.rs    그리드 렌더링 + 블록 크롬 + 입력 + 컴포저/검색
 src/widgets.rs    인라인 위젯
 src/ui_panels.rs  탭/상태바/사이드 패널/에디터/팔레트/연결/토스트
-src/theme.rs      색 토큰, 폰트 체인        src/icons.rs  벡터 아이콘
-src/md.rs         마크다운 in-place 레이아웃 src/mermaid.rs 다이어그램 렌더링(내장/mmdc)/캐시
-src/find.rs       파일 필터 fuzzy/glob/regex   src/media.rs  이미지·PDF 보기
+src/mermaid.rs    다이어그램 렌더링(내장/mmdc)/캐시   src/media.rs  이미지·PDF 보기
+src/fileops.rs confirm.rs transfer.rs   파일 작업, 닫기 전에 묻기, 파일 전송
+src/frame.rs      한 프레임 (창과 테스트가 같은 것을 돌림)   src/testkit.rs regress.rs  화면 테스트
 ```

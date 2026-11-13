@@ -286,9 +286,9 @@ pub const BUILTIN_FONTS: &[(&str, &str, &[u8])] = &[
     // Not the "Mono" build: that one gives Hangul a one-cell advance while the
     // glyph is two cells wide, so it overlapped wherever text is laid out as a
     // run (editor, markdown) rather than cell by cell.
-    ("builtin:d2coding", "D2Coding Nerd Font (한글)", include_bytes!("../fonts/D2CodingLigatureNerdFont-Regular.ttf")),
-    ("builtin:jetbrains-mono", "JetBrains Mono Nerd Font", include_bytes!("../fonts/JetBrainsMonoNerdFontMono-Regular.ttf")),
-    ("builtin:hack", "Hack Nerd Font", include_bytes!("../fonts/HackNerdFontMono-Regular.ttf")),
+    ("builtin:d2coding", "D2Coding Nerd Font (한글)", include_bytes!("../../../fonts/D2CodingLigatureNerdFont-Regular.ttf")),
+    ("builtin:jetbrains-mono", "JetBrains Mono Nerd Font", include_bytes!("../../../fonts/JetBrainsMonoNerdFontMono-Regular.ttf")),
+    ("builtin:hack", "Hack Nerd Font", include_bytes!("../../../fonts/HackNerdFontMono-Regular.ttf")),
 ];
 
 /// Default terminal font (settings "term_font").
