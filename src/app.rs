@@ -478,6 +478,9 @@ pub struct Settings {
     pub layout: Layout,
     #[serde(default)]
     pub show_hidden: bool,
+    /// Files shows what git ignores (.gitignore) too.
+    #[serde(default = "d_true")]
+    pub show_ignored: bool,
     /// Who draws mermaid diagrams: built-in, mermaid-cli on PATH, or at a path.
     #[serde(default)]
     pub mermaid: crate::mermaid::Renderer,
@@ -547,7 +550,7 @@ impl Default for Settings {
                 },
             });
         }
-        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, layout: Layout::default(), show_hidden: false, find_mode: Default::default(), cursor_style: Default::default(), local_shell: Default::default(), mermaid: Default::default(), follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, term_font: d_font_file(), icon_font: d_icon_font(), records: Default::default(), passwords: Default::default(), keys: Default::default(), session: Vec::new(), side_tabs: Default::default() }
+        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, layout: Layout::default(), show_hidden: false, show_ignored: true, find_mode: Default::default(), cursor_style: Default::default(), local_shell: Default::default(), mermaid: Default::default(), follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, term_font: d_font_file(), icon_font: d_icon_font(), records: Default::default(), passwords: Default::default(), keys: Default::default(), session: Vec::new(), side_tabs: Default::default() }
     }
 }
 
@@ -1893,8 +1896,8 @@ impl App {
             return;
         }
         self.inflight.insert(key);
-        let hidden = self.settings.show_hidden;
-        self.request(host, json!({"op": "list", "path": path, "hidden": hidden}), Pending::List { path: path.into() });
+        let (hidden, ignored) = (self.settings.show_hidden, self.settings.show_ignored);
+        self.request(host, json!({"op": "list", "path": path, "hidden": hidden, "ignored": ignored}), Pending::List { path: path.into() });
     }
 
     pub fn set_root(&mut self, host: &str, dir: &str) {

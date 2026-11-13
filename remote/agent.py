@@ -70,7 +70,26 @@ def op_list(req):
             except OSError:
                 isdir, size, mtime = False, 0, 0
             out.append({"n": e.name, "d": isdir, "l": e.is_symlink(), "s": 0 if isdir else size, "m": mtime})
+    if req.get("ignored") is False:
+        drop = _git_ignored(d, [x["n"] for x in out])
+        out = [x for x in out if x["n"] not in drop]
     return {"path": d, "entries": out}
+
+
+def _git_ignored(d, names):
+    """The names in folder `d` that git ignores (.gitignore and friends);
+    none outside a repository or without git."""
+    if not names:
+        return set()
+    try:
+        p = subprocess.run(["git", "-C", d, "check-ignore", "-z", "--stdin"], input="\0".join(names).encode(),
+                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    # 0: some ignored, 1: none, 128: not a repository.
+    if p.returncode != 0:
+        return set()
+    return set(x for x in p.stdout.decode("utf-8", "replace").split("\0") if x)
 
 
 def op_stat(req):

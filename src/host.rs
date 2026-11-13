@@ -742,6 +742,11 @@ fn local_op(req: &Value) -> Value {
                 let m = md.as_ref().map(mtime_of).unwrap_or(0.0) as i64;
                 entries.push(json!({"n": name, "d": d, "l": link, "s": size, "m": m}));
             }
+            if req.get("ignored").and_then(|v| v.as_bool()) == Some(false) {
+                let names: Vec<String> = entries.iter().filter_map(|e| e["n"].as_str().map(String::from)).collect();
+                let drop = git_ignored(&dir, &names);
+                entries.retain(|e| !e["n"].as_str().is_some_and(|n| drop.contains(n)));
+            }
             Ok(json!({"path": dir, "entries": entries}))
         }
         "stat" => {
@@ -860,6 +865,32 @@ fn local_op(req: &Value) -> Value {
         }
         Err(e) => json!({"ok": false, "error": e}),
     }
+}
+
+/// The names in folder `dir` that git ignores (.gitignore and friends), as
+/// agent.py does; none outside a repository or without git.
+fn git_ignored(dir: &str, names: &[String]) -> std::collections::HashSet<String> {
+    use std::io::Write as _;
+    if names.is_empty() {
+        return Default::default();
+    }
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(["-C", dir, "check-ignore", "-z", "--stdin"]).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // no console window
+    }
+    let Ok(mut child) = cmd.spawn() else { return Default::default() };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(names.join("\0").as_bytes());
+    }
+    let Ok(out) = child.wait_with_output() else { return Default::default() };
+    // 0: some ignored, 1: none, 128: not a repository.
+    if out.status.code() != Some(0) {
+        return Default::default();
+    }
+    String::from_utf8_lossy(&out.stdout).split('\0').filter(|s| !s.is_empty()).map(String::from).collect()
 }
 
 /// Largest chunk a transfer reads at once (agent.py has the same).
@@ -1152,6 +1183,31 @@ mod tests {
             }
         }
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn list_can_leave_out_what_git_ignores() {
+        // This repository ignores target/ (where cargo builds).
+        let root = env!("CARGO_MANIFEST_DIR").replace('\\', "/");
+        let names = |v: &Value| v["entries"].as_array().unwrap().iter().map(|e| e["n"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+        let all = names(&local_op(&json!({"op": "list", "path": root, "ignored": true})));
+        let kept = names(&local_op(&json!({"op": "list", "path": root, "ignored": false})));
+        assert!(all.contains(&"target".to_string()) && all.contains(&"src".to_string()), "{all:?}");
+        if all.len() == kept.len() {
+            return; // no git here
+        }
+        assert!(!kept.contains(&"target".to_string()) && kept.contains(&"src".to_string()), "{kept:?}");
+        // The agent the same.
+        let script = format!("import json,sys\nsrc=open(r'{root}/remote/agent.py',encoding='utf-8').read().split('\\ndef main')[0]\nexec(src)\nprint(json.dumps(sorted(e['n'] for e in op_list({{'path': sys.argv[1], 'ignored': False}})['entries'])))");
+        if let Ok(out) = std::process::Command::new("python").arg("-c").arg(&script).arg(&root).output() {
+            if out.status.success() {
+                let mut want = kept.clone();
+                want.retain(|n| !n.starts_with('.'));
+                want.sort();
+                let got: Vec<String> = serde_json::from_slice(&out.stdout).unwrap();
+                assert_eq!(got, want, "agent.py list without ignored");
+            }
+        }
     }
 
     #[test]

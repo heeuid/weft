@@ -1002,6 +1002,22 @@ impl App {
                         self.on_active_changed();
                     }
                 }
+                // What to show: hidden files, what git ignores.
+                let lit = self.settings.show_hidden || !self.settings.show_ignored;
+                ui.menu_button(RichText::new("\u{f06e}").size(13.0).color(if lit { theme::accent() } else { theme::text_dim() }), |ui| {
+                    let mut changed = ui.checkbox(&mut self.settings.show_hidden, "Hidden files (.name, hidden attribute)").changed();
+                    changed |= ui.checkbox(&mut self.settings.show_ignored, "Git-ignored files (.gitignore)").changed();
+                    if changed {
+                        self.dir_cache.clear();
+                        self.save_settings();
+                    }
+                })
+                .response
+                .on_hover_text(format!(
+                    "show: hidden files {}, git-ignored files {}",
+                    if self.settings.show_hidden { "on" } else { "off" },
+                    if self.settings.show_ignored { "on" } else { "off" }
+                ));
                 ui.add_space(4.0);
                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                     // Browse another host here (each side panel can show its
