@@ -5,6 +5,29 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.2.2
+
+Found by a review of everything changed since 0.1.0.
+
+Fixed
+- "Save and close" no longer closes over a file that was changed while
+  the save was on its way: weft asks about that one. Cancel also cancels
+  a close that was waiting for files to be saved.
+- Deleting on this PC: something that can't go to the Recycle Bin (a
+  network share, a drive without one, too big) is no longer deleted for
+  good silently; Windows says so and asks.
+- A table selection in read mode no longer takes Ctrl+C from the terminal
+  or another field, and gives way to text selected in the document.
+- A process list arriving late from the host shown before is dropped
+  (Kill could have ended a process here with a pid from there).
+- A file renamed while it was being saved no longer stays "saving".
+- New names Windows would read as something else (`a:b`, `what?`, a dot
+  at the end) are refused on this PC. A remote rename that only changes
+  the letters' case works on case-insensitive disks.
+- Linux, macOS: a closed terminal lets go of what ran in it at once, as
+  before 0.2.1.
+- `cargo clippy --workspace --all-targets` is clean.
+
 ## 0.2.1
 
 Fixed

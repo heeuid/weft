@@ -999,18 +999,23 @@ fn local_kill(pid: u32, sig: &str) -> Result<(), String> {
 /// none to ask for, and the caller doesn't).
 #[cfg(windows)]
 fn to_trash(path: &str) -> Result<(), String> {
-    use windows_sys::Win32::UI::Shell::{SHFileOperationW, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT, FO_DELETE, SHFILEOPSTRUCTW};
+    use windows_sys::Win32::UI::Shell::{SHFileOperationW, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT, FOF_WANTNUKEWARNING, FO_DELETE, SHFILEOPSTRUCTW};
     // The shell wants backslashes and a list ending in two NULs.
     let from: Vec<u16> = path.replace('/', "\\").encode_utf16().chain([0, 0]).collect();
     let mut op: SHFILEOPSTRUCTW = unsafe { std::mem::zeroed() };
     op.wFunc = FO_DELETE as _;
     op.pFrom = from.as_ptr();
-    op.fFlags = (FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT) as _;
+    // What can't go to the bin (a network share, a drive without one,
+    // something too big for it) would be deleted for good, silently:
+    // WANTNUKEWARNING has Windows say so and ask, whatever NOCONFIRMATION.
+    op.fFlags = (FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT | FOF_WANTNUKEWARNING) as _;
     let rc = unsafe { SHFileOperationW(&mut op) };
-    if rc == 0 && op.fAnyOperationsAborted == 0 {
-        Ok(())
-    } else {
+    if rc != 0 {
         Err(format!("could not move it to the Recycle Bin (error {rc})"))
+    } else if op.fAnyOperationsAborted != 0 {
+        Err("not deleted".into())
+    } else {
+        Ok(())
     }
 }
 

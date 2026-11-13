@@ -2718,6 +2718,11 @@ impl App {
                 }
             }
             Pending::Procs => {
+                // A late answer from the host shown before: its pids are
+                // not this host's (Kill would end the wrong process).
+                if host != self.side.procs_host {
+                    return;
+                }
                 self.side.procs_at = Some(Instant::now());
                 self.side.procs = Some(if ok { Ok(r["procs"].as_array().cloned().unwrap_or_default()) } else { Err(err) });
             }
@@ -2991,6 +2996,44 @@ fn parse_widget(v: &Value) -> Option<WidgetKind> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A process list that arrives late from the host shown before is not
+    /// taken for this host's: Kill would end a process here with a pid from
+    /// there.
+    #[test]
+    fn a_process_list_from_another_host_is_dropped() {
+        let mut h = crate::testkit::Harness::new(json!({}));
+        let row = json!([4242, 1, "root", 0.0, 0.1, "00:01", "sshd"]);
+        h.app.side.procs_host = "local".into();
+        h.app.side.procs = None;
+        h.app.pending.insert(("elsewhere".into(), 7), Pending::Procs);
+        h.app.handle_response("elsewhere", json!({"id": 7, "ok": true, "procs": [row.clone()]}));
+        assert!(h.app.side.procs.is_none(), "another host's list is not shown");
+        h.app.pending.insert(("local".into(), 8), Pending::Procs);
+        h.app.handle_response("local", json!({"id": 8, "ok": true, "procs": [row]}));
+        assert_eq!(h.app.side.procs.as_ref().and_then(|p| p.as_ref().ok()).map(|p| p.len()), Some(1));
+    }
+
+    /// A file renamed while its save is on its way: the answer still finds
+    /// it (it stayed "saving" for good, and a later "Save and close" waited
+    /// on it for ever).
+    #[test]
+    fn a_save_finds_its_file_after_a_rename() {
+        let mut h = crate::testkit::Harness::new(json!({}));
+        h.app.open_scratch("x", "text".into());
+        let f = h.app.editor.files.last_mut().unwrap();
+        (f.host, f.path, f.scratch, f.saving, f.dirty) = ("local".into(), "/d/old.txt".into(), false, true, true);
+        h.app.pending.insert(("local".into(), 9), Pending::Save { path: "/d/old.txt".into() });
+        h.app.file_renamed("local", "/d/old.txt", "/d/new.txt");
+        h.app.handle_response("local", json!({"id": 9, "ok": true, "mtime": 5.0}));
+        let f = h.app.editor.files.last().unwrap();
+        assert_eq!((f.path.as_str(), f.saving, f.dirty), ("/d/new.txt", false, false));
+        // A folder renamed: what is under it follows too.
+        h.app.pending.insert(("local".into(), 10), Pending::Save { path: "/d/new.txt".into() });
+        h.app.file_renamed("local", "/d", "/e");
+        assert_eq!(h.app.editor.files.last().unwrap().path, "/e/new.txt");
+        assert!(matches!(h.app.pending.get(&("local".to_string(), 10)), Some(Pending::Save { path }) if path == "/e/new.txt"));
+    }
 
     #[test]
     fn memo_list_newest_first_with_titles() {

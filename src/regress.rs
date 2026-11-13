@@ -250,6 +250,11 @@ fn table_cells_select_and_copy() {
     // The mark is drawn by the toolbar, above: from the next frame.
     h.frames(1);
     assert!(h.shows("\u{2713} copied"), "the copied mark");
+    // With the keyboard elsewhere (the terminal, another field), Ctrl+C is
+    // not the table's.
+    h.ctx.memory_mut(|m| m.request_focus(egui::Id::new("some other field")));
+    h.frame(vec![Event::Copy]);
+    assert_eq!(h.copied.take(), None, "Ctrl+C elsewhere copies no cells");
     // One cell, by a double click.
     let c = cell(&h, "12 MB").center();
     h.double_click(c);
@@ -287,7 +292,7 @@ fn files_new_folder_rename_delete() {
     h.key(Key::A, Modifiers::COMMAND);
     h.type_text("b.txt");
     h.key(Key::Enter, Modifiers::NONE);
-    assert!(h.wait_for(20.0, |h| root.join("b.txt").exists() && h.shows("b.txt")), "renamed, and listed again");
+    assert!(h.wait_for(20.0, |h| root.join("b.txt").exists() && h.has("b.txt") && !h.has("a.txt")), "renamed, and listed again (its row, not the message)");
     assert!(!root.join("a.txt").exists());
     assert_eq!(std::fs::read_to_string(root.join("b.txt")).unwrap(), "hello");
 
@@ -297,7 +302,7 @@ fn files_new_folder_rename_delete() {
     h.click_text("New folder\u{2026}");
     h.type_text("made");
     h.key(Key::Enter, Modifiers::NONE);
-    assert!(h.wait_for(20.0, |h| root.join("sub/made").is_dir() && h.shows("made")), "made, and shown in the opened folder");
+    assert!(h.wait_for(20.0, |h| root.join("sub/made").is_dir() && h.has("made")), "made, and its row shown in the opened folder");
 
     // Delete, cancelled by Esc: nothing happens.
     let row = h.at("b.txt");
@@ -313,7 +318,7 @@ fn files_new_folder_rename_delete() {
     h.right_click(row);
     h.click_text("Delete\u{2026}");
     h.click_text("Delete for good");
-    assert!(h.wait_for(20.0, |h| !root.join("b.txt").exists() && !h.shows("b.txt")), "deleted, and gone from the list");
+    assert!(h.wait_for(20.0, |h| !root.join("b.txt").exists() && !h.has("b.txt")), "deleted, and its row gone from the list");
 }
 
 /// The palette matches fuzzily by default (letters in order), runs the best
@@ -438,7 +443,6 @@ fn closing_an_unsaved_file_asks() {
 /// the answer closes it. With nothing to lose it closes at once.
 #[test]
 fn closing_weft_with_unsaved_files_asks() {
-    let closes = |h: &Harness| h.window.iter().any(|c| matches!(c, egui::ViewportCommand::Close));
     let cancels = |h: &Harness| h.window.iter().any(|c| matches!(c, egui::ViewportCommand::CancelClose));
     let mut h = Harness::new(json!({}));
     h.close_window();
@@ -454,7 +458,10 @@ fn closing_weft_with_unsaved_files_asks() {
     h.close_window();
     h.frames(2);
     h.click_text("Save and close");
-    assert!(h.wait_for(20.0, |h| closes(h) || h.app.quit_confirmed), "weft closes itself once saved");
+    h.window_log.clear();
+    assert!(h.wait_for(20.0, |h| h.app.quit_confirmed), "saved");
+    h.frames(2);
+    assert!(h.window_log.iter().any(|c| matches!(c, egui::ViewportCommand::Close)), "weft asks its window to close once saved");
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "new\n");
     h.close_window();
     assert!(!cancels(&h), "and the close goes through");
@@ -505,4 +512,31 @@ fn the_version_is_shown() {
     h.app.help = None;
     h.command("about");
     assert!(h.shows(&line), "About says it");
+}
+
+/// "Save and close", and while the save is on its way another file is
+/// changed: weft asks about that one instead of closing over it. Cancel
+/// then closes nothing, also not later.
+#[test]
+fn saving_then_closing_asks_about_what_changed_meanwhile() {
+    use crate::confirm::{AfterSave, Ask};
+    let mut h = Harness::new(json!({}));
+    let (a, _) = dirty_file(&mut h, "a.txt");
+    let (b, _) = dirty_file(&mut h, "b.txt");
+    let key = |f: &std::path::Path| ("local".to_string(), f.display().to_string().replace('\\', "/"));
+    // As after "Save and close" with only a.txt unsaved: a.txt is saved by
+    // now, b.txt was changed since.
+    h.app.editor.files[0].dirty = false;
+    h.app.after_save = Some(AfterSave { ask: Ask::Quit { restart: false }, files: vec![key(&a)] });
+    h.window_log.clear();
+    h.frames(3);
+    assert!(!h.window_log.iter().any(|c| matches!(c, egui::ViewportCommand::Close)), "not closed over b.txt");
+    assert!(h.shows("Close weft?") && h.shows("b.txt"), "asked about b.txt");
+    assert!(!h.app.quit_confirmed);
+    h.click_text("Cancel");
+    h.frames(5);
+    assert!(h.app.after_save.is_none() && h.app.confirm.is_none() && !h.app.quit_confirmed, "Cancel: nothing waits to close");
+    assert!(!h.window_log.iter().any(|c| matches!(c, egui::ViewportCommand::Close)));
+    assert_eq!(std::fs::read_to_string(&b).unwrap(), "old\n");
+    assert_eq!(h.app.editor.files.len(), 2);
 }

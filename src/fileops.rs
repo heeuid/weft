@@ -45,7 +45,9 @@ pub fn join(dir: &str, name: &str) -> String {
 }
 
 /// Why this can't be a file's name (one path component), if it can't.
-pub fn name_problem(name: &str) -> Option<&'static str> {
+/// `windows`: the file is on a Windows disk, which reads some names as
+/// something else (`a:b` is a stream of `a`, `name.` is `name`).
+pub fn name_problem(name: &str, windows: bool) -> Option<&'static str> {
     let n = name.trim();
     if n.is_empty() {
         Some("type a name")
@@ -53,6 +55,10 @@ pub fn name_problem(name: &str) -> Option<&'static str> {
         Some("that is not a name")
     } else if n.contains(['/', '\\']) {
         Some("a name, not a path: no / or \\")
+    } else if windows && n.contains(['<', '>', ':', '"', '|', '?', '*']) {
+        Some("Windows takes none of < > : \" | ? * in a name")
+    } else if windows && n.ends_with('.') {
+        Some("Windows drops a dot at the end of a name")
     } else {
         None
     }
@@ -115,6 +121,14 @@ impl App {
                 p.strip_prefix(from).filter(|rest| rest.starts_with('/')).map(|rest| format!("{to}{rest}"))
             }
         };
+        // A save or a read on its way finds the file by its path.
+        for ((h, _), pending) in self.pending.iter_mut() {
+            if let (true, Pending::Save { path } | Pending::Open { path, .. }) = (h == host, pending) {
+                if let Some(p) = moved(path) {
+                    *path = p;
+                }
+            }
+        }
         for f in self.editor.files.iter_mut().filter(|f| f.host == host) {
             if let Some(p) = moved(&f.path) {
                 f.path = p;
@@ -144,6 +158,7 @@ impl App {
             FileOpKind::Delete => "Delete",
         };
         let trash = self.deletes_to_trash(&op.host);
+        let on_windows = cfg!(windows) && self.profile(&op.host).is_local();
         crate::widgets::dialog(ctx, title, vec2(400.0, 130.0)).open(&mut open).resizable(false).show(ctx, |ui| {
             let small = |s: String| RichText::new(s).size(11.5).color(theme::text_faint());
             if op.kind == FileOpKind::Delete {
@@ -173,7 +188,7 @@ impl App {
                 r.request_focus();
                 op.focus = false;
             }
-            let problem = name_problem(&op.name);
+            let problem = name_problem(&op.name, on_windows);
             if let Some(p) = problem.filter(|_| !op.name.trim().is_empty()) {
                 ui.label(RichText::new(p).size(11.5).color(theme::warn()));
             }
@@ -219,10 +234,18 @@ mod tests {
         assert_eq!(join("/home/me", "b"), "/home/me/b");
         assert_eq!(join("C:/", "b"), "C:/b");
         assert_eq!(join("/", "b"), "/b");
-        assert_eq!(name_problem("notes.md"), None);
-        assert_eq!(name_problem("  with space  "), None);
-        assert!(name_problem("").is_some() && name_problem("   ").is_some());
-        assert!(name_problem("..").is_some() && name_problem(".").is_some());
-        assert!(name_problem("a/b").is_some() && name_problem("a\\b").is_some());
+        for windows in [false, true] {
+            assert_eq!(name_problem("notes.md", windows), None);
+            assert_eq!(name_problem("  with space  ", windows), None);
+            assert_eq!(name_problem(".gitignore", windows), None);
+            assert!(name_problem("", windows).is_some() && name_problem("   ", windows).is_some());
+            assert!(name_problem("..", windows).is_some() && name_problem(".", windows).is_some());
+            assert!(name_problem("a/b", windows).is_some() && name_problem("a\\b", windows).is_some());
+        }
+        // Names a Windows disk reads as something else; fine elsewhere.
+        for name in ["a:b", "what?", "x*y", "a|b", "<tag>", "say \"hi\"", "ends."] {
+            assert!(name_problem(name, true).is_some(), "{name}");
+            assert_eq!(name_problem(name, false), None, "{name}");
+        }
     }
 }

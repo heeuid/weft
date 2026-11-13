@@ -107,6 +107,12 @@ impl Pty {
                     Ok(_) if dropped => {}
                     Ok(n) => {
                         if tx.send(buf[..n].to_vec()).is_err() {
+                            // Elsewhere the reader lets go at once: the
+                            // master closing is what ends whatever still
+                            // runs in the terminal (SIGHUP).
+                            if !cfg!(windows) {
+                                break;
+                            }
                             dropped = true;
                         } else {
                             wake();

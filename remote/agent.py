@@ -213,8 +213,9 @@ def op_create(req):
 
 def op_rename(req):
     src, dst = _path(req.get("from")), _path(req.get("to"))
-    # rename() replaces silently: never onto something else.
-    if os.path.lexists(dst):
+    # rename() replaces silently: never onto something else. (The same
+    # file under another spelling: only its letters' case changes.)
+    if os.path.lexists(dst) and not (os.path.exists(src) and os.path.samefile(src, dst)):
         raise OSError("%s already exists" % os.path.basename(dst))
     os.rename(src, dst)
     return {"path": dst}

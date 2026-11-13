@@ -4213,9 +4213,11 @@ fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size:
             let sel_id = edit_id.with("table-sel");
             let mut sel: Option<TableSel> = ctx.memory(|m| m.data.get_temp::<Option<TableSel>>(sel_id)).flatten();
             let (press, at_now, down, pressed, copy) = ctx.input(|i| (i.pointer.press_origin(), i.pointer.interact_pos(), i.pointer.primary_down(), i.pointer.primary_pressed(), i.events.iter().any(|e| matches!(e, egui::Event::Copy))));
-            if pressed {
+            // Text selected in the document (by keyboard, say) takes its place.
+            if pressed || selection.is_some() {
                 sel = None;
             }
+            let has_keyboard = ctx.memory(|m| m.has_focus(edit_id));
             let double = ctx.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary) || i.pointer.button_triple_clicked(egui::PointerButton::Primary));
             for (k, t) in tables.iter().enumerate() {
                 let (Some(&(first, _)), Some(&(_, last))) = (t.rows.first(), t.rows.last()) else { continue };
@@ -4233,6 +4235,8 @@ fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size:
                 if let (true, Some(p)) = (double && hit.contains_pointer(), at_now) {
                     let c = t.cell_at(p);
                     sel = Some(TableSel { table: k, from: c, to: c, whole: true });
+                    // Ctrl+C is the editor's from here (the click went to the table).
+                    ctx.memory_mut(|m| m.request_focus(edit_id));
                 }
                 let texts = t.texts();
                 let mine = sel.filter(|s| s.table == k);
@@ -4261,7 +4265,9 @@ fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size:
                     for r in t.sel_rects(&s) {
                         back.push(egui::Shape::rect_filled(r, CornerRadius::ZERO, fill));
                     }
-                    if copy {
+                    // Only while the editor has the keyboard: Ctrl+C in the
+                    // terminal or another field is theirs.
+                    if copy && has_keyboard {
                         ctx.copy_text(table_sel_text(&texts, &s));
                         copied = true;
                     }

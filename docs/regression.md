@@ -77,6 +77,7 @@ here. "none" marks what still has no automated test.
 | The same from a row's menu; Esc cancels a delete | `regress::files_new_folder_rename_delete` |
 | The hint beside a dragged file leaves its row readable | `transfer::tests::the_drop_hint_leaves_its_row_readable` |
 | Procs on this PC: list and kill | `host::tests::local_processes_list_and_kill` |
+| A process list from another host is dropped | `app::tests::a_process_list_from_another_host_is_dropped` |
 
 ## Editor and markdown
 
@@ -93,6 +94,8 @@ here. "none" marks what still has no automated test.
 | Mermaid | `mermaid::tests::*` |
 | Table cells: letters, a cell, a block; Ctrl+C; the menu | `ui_panels::tests::a_table_selection_copies_letters_a_cell_or_a_block`, `regress::table_cells_select_and_copy` |
 | Closing an unsaved file asks: save, drop, cancel, off | `regress::closing_an_unsaved_file_asks` |
+| Saving then closing asks about what changed meanwhile; Cancel closes nothing later | `regress::saving_then_closing_asks_about_what_changed_meanwhile` |
+| A save finds its file after a rename | `app::tests::a_save_finds_its_file_after_a_rename` |
 | Esc closes the find bar | `regress::escape_closes_composer_search_and_find` |
 | Table resize settles after 150 ms | none |
 
@@ -109,7 +112,9 @@ here. "none" marks what still has no automated test.
 
 - install.bat / uninstall.bat (cmd can't run from the test sandbox): run them by hand after changing them.
 - `weft --version` printed to a shell (the test binary isn't weft.exe): run it after a release build.
-- Delete to the Recycle Bin (tests delete for good: the bin is the user's).
+- Delete to the Recycle Bin, and Windows' warning when something can't go there (tests delete for good: the bin is the user's).
+- Linux / macOS: a closed terminal ends what ran in it (the reader lets go of the master).
+- The loopback tests (`-- --ignored`) time a PowerShell command under 50 ms: run them with `--test-threads=1`, or the shells starting together make the first one slow.
 - File operations and Procs on a remote host (agent.py): the loopback tests don't reach them yet.
 - Dropping files from Explorer (the system gives no position; the cursor is asked).
 - The app icon in Explorer (checked: the exe carries one).

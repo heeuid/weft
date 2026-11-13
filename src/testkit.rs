@@ -19,8 +19,10 @@ pub struct Harness {
     pub texts: Vec<(String, Rect)>,
     /// The last text weft put on the clipboard.
     pub copied: Option<String>,
-    /// What weft asked of its window in the last frame (Close, CancelClose…).
+    /// What weft asked of its window in the last frame (Close, CancelClose…),
+    /// and in every frame so far.
     pub window: Vec<egui::ViewportCommand>,
+    pub window_log: Vec<egui::ViewportCommand>,
     close_window: bool,
     pointer: Pos2,
     /// The clock the app is shown: a frame is 1/60 s, and a hand pauses
@@ -56,7 +58,7 @@ impl Harness {
         let ctx = egui::Context::default();
         crate::theme::install_fonts(&ctx, crate::theme::DEFAULT_FONT, crate::theme::DEFAULT_ICON_FONT);
         let app = App::new(ctx.clone());
-        let mut h = Harness { app, ctx, dir, size: vec2(1200.0, 800.0), texts: Vec::new(), copied: None, window: Vec::new(), close_window: false, now: 0.0, pointer: pos2(600.0, 400.0), _guard: guard };
+        let mut h = Harness { app, ctx, dir, size: vec2(1200.0, 800.0), texts: Vec::new(), copied: None, window: Vec::new(), window_log: Vec::new(), close_window: false, now: 0.0, pointer: pos2(600.0, 400.0), _guard: guard };
         h.frames(3);
         h
     }
@@ -70,8 +72,9 @@ impl Harness {
     /// Close weft and start it again on the same data folder, as a restart
     /// does: what it saved is what the new one starts from.
     pub fn restart(&mut self) {
-        self.app.flush_memos();
-        self.app.save_settings();
+        // As the window's × does: weft saves on its way out, by itself.
+        self.close_window();
+        assert!(!self.window.iter().any(|c| matches!(c, egui::ViewportCommand::CancelClose)), "weft closes without a question");
         self.app = App::new(self.ctx.clone());
         self.frames(3);
     }
@@ -93,6 +96,7 @@ impl Harness {
         let app = &mut self.app;
         let out = self.ctx.run(input, |ctx| app.frame(ctx));
         self.window = out.viewport_output.get(&egui::ViewportId::ROOT).map(|v| v.commands.clone()).unwrap_or_default();
+        self.window_log.extend(self.window.iter().cloned());
         for c in &out.platform_output.commands {
             if let egui::OutputCommand::CopyText(t) = c {
                 self.copied = Some(t.clone());
@@ -121,6 +125,12 @@ impl Harness {
     /// Is this text on screen (a drawn text containing it)?
     pub fn shows(&self, needle: &str) -> bool {
         self.texts.iter().any(|(t, _)| t.contains(needle))
+    }
+
+    /// Is a text drawn that is exactly this (a row's name, say: not a
+    /// message that mentions it)?
+    pub fn has(&self, text: &str) -> bool {
+        self.texts.iter().any(|(t, _)| t == text)
     }
 
     /// Where a drawn text containing `needle` is.

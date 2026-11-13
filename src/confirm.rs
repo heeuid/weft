@@ -153,9 +153,34 @@ impl App {
         }
         let failed = files.iter().find(|f| f.dirty).map(|f| f.path.rsplit('/').next().unwrap_or(&f.path).to_string());
         let Some(wait) = self.after_save.take() else { return };
-        match failed {
-            Some(name) => self.toast(format!("{name} could not be saved: nothing was closed"), ToastKind::Error),
-            None => self.carry_out(wait.ask),
+        if let Some(name) = failed {
+            self.toast(format!("{name} could not be saved: nothing was closed"), ToastKind::Error);
+            return;
+        }
+        // The saves took a while and something else was changed meanwhile:
+        // that is asked about, not closed with the rest. (What was running
+        // was shown and accepted with the first question.)
+        let unsaved = self.unsaved_for(&wait.ask);
+        if unsaved.is_empty() {
+            self.carry_out(wait.ask);
+        } else {
+            self.confirm = Some(Confirm { ask: wait.ask, unsaved, running: Vec::new() });
+            self.focus_term = false;
+        }
+    }
+
+    /// The files with unsaved changes that this would close, now.
+    fn unsaved_for(&self, ask: &Ask) -> Vec<(String, String)> {
+        if !self.settings.confirm_unsaved {
+            return Vec::new();
+        }
+        match ask {
+            Ask::Files { target, which } => match self.editor.files.iter().position(|f| f.host == target.0 && f.path == target.1) {
+                Some(at) => self.unsaved_among(at, *which),
+                None => Vec::new(),
+            },
+            Ask::Panes(_) => Vec::new(),
+            Ask::Quit { .. } => self.editor.files.iter().filter(|f| self.unsaved(f)).map(|f| (f.host.clone(), f.path.clone())).collect(),
         }
     }
 
@@ -234,7 +259,12 @@ impl App {
         }
         match answer {
             None => self.confirm = Some(c),
-            Some(Answer::Cancel) => self.focus_term = true,
+            Some(Answer::Cancel) => {
+                // Also what was waiting for files to be saved: nothing is
+                // closed behind a Cancel.
+                self.after_save = None;
+                self.focus_term = true;
+            }
             Some(Answer::Go) => self.carry_out(c.ask),
             Some(Answer::Save) => {
                 for (host, path) in &c.unsaved {
