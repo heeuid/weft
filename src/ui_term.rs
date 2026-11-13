@@ -139,12 +139,43 @@ fn paint_row(p: &Painter, row: &Row, x0: f32, y: f32, cw: f32, ch: f32, font: &F
             }
             let px = x0 + start as f32 * cw;
             if !s.trim().is_empty() {
-                p.text(pos2(px, y), Align2::LEFT_TOP, &s, font.clone(), fg);
-                if flags & term::F_BOLD != 0 {
-                    p.text(pos2(px + 0.6, y), Align2::LEFT_TOP, &s, font.clone(), fg);
+                let bold = flags & term::F_BOLD != 0;
+                let galley = p.layout_no_wrap(s.clone(), font.clone(), fg);
+                if (galley.size().x - (x - start) as f32 * cw).abs() <= 0.5 {
+                    if bold {
+                        p.galley(pos2(px + 0.6, y), galley.clone(), fg);
+                    }
+                    p.galley(pos2(px, y), galley, fg);
+                } else {
+                    // A font that isn't fixed-width (or joins letters): the
+                    // run would leave the grid, so each letter goes in its
+                    // own cell, centred.
+                    for (k, c) in s.chars().enumerate().filter(|(_, c)| *c != ' ') {
+                        let g = p.layout_no_wrap(c.to_string(), font.clone(), fg);
+                        let gx = px + k as f32 * cw + ((cw - g.size().x) / 2.0).max(0.0);
+                        if bold {
+                            p.galley(pos2(gx + 0.6, y), g.clone(), fg);
+                        }
+                        p.galley(pos2(gx, y), g, fg);
+                    }
                 }
             }
             decorate(p, flags, px, (x - start) as f32 * cw, y, ch, fg);
+        } else if let Some((rects, count, alpha)) = block_rects(cell.ch) {
+            // Block elements are drawn, not set in type: a font's blocks
+            // rarely fill the row, and the cell's background showed through
+            // (a black band across a logo built of them). Edges go to whole
+            // pixels, the same ones for neighbours, so blocks join.
+            let ppp = p.ctx().pixels_per_point();
+            let snap = |v: f32| (v * ppp).round() / ppp;
+            let px = x0 + x as f32 * cw;
+            let color = if alpha < 1.0 { fg.gamma_multiply(alpha) } else { fg };
+            for r in &rects[..count] {
+                let r = Rect::from_min_max(pos2(snap(px + r[0] * cw), snap(y + r[1] * ch)), pos2(snap(px + r[2] * cw), snap(y + r[3] * ch)));
+                p.rect_filled(r, CornerRadius::ZERO, color);
+            }
+            decorate(p, flags, px, cw, y, ch, fg);
+            x += 1;
         } else {
             let w = if cell.wide == WIDE_LEAD { 2.0 } else { 1.0 };
             let px = x0 + x as f32 * cw;
@@ -155,6 +186,40 @@ fn paint_row(p: &Painter, row: &Row, x0: f32, y: f32, cw: f32, ch: f32, font: &F
             decorate(p, flags, px, w * cw, y, ch, fg);
             x += 1;
         }
+    }
+}
+
+/// A block element (U+2580–259F) as parts of its cell: up to four rects
+/// `[left, top, right, bottom]` in cell units, how many, and how solid
+/// (the shades ░▒▓ are the whole cell, lighter).
+fn block_rects(c: char) -> Option<([[f32; 4]; 4], usize, f32)> {
+    let cp = c as u32;
+    let one = |r: [f32; 4], alpha: f32| Some(([r, [0.0; 4], [0.0; 4], [0.0; 4]], 1, alpha));
+    match cp {
+        0x2580 => one([0.0, 0.0, 1.0, 0.5], 1.0),
+        // ▁ … █: the lower eighths.
+        0x2581..=0x2588 => one([0.0, 1.0 - (cp - 0x2580) as f32 / 8.0, 1.0, 1.0], 1.0),
+        // ▉ … ▏: the left seven eighths down to one.
+        0x2589..=0x258F => one([0.0, 0.0, (0x2590 - cp) as f32 / 8.0, 1.0], 1.0),
+        0x2590 => one([0.5, 0.0, 1.0, 1.0], 1.0),
+        0x2591..=0x2593 => one([0.0, 0.0, 1.0, 1.0], (cp - 0x2590) as f32 * 0.25),
+        0x2594 => one([0.0, 0.0, 1.0, 0.125], 1.0),
+        0x2595 => one([0.875, 0.0, 1.0, 1.0], 1.0),
+        0x2596..=0x259F => {
+            // Quadrants: upper left 1, upper right 2, lower left 4, lower right 8.
+            const QUADS: [u8; 10] = [4, 8, 1, 1 | 4 | 8, 1 | 8, 1 | 2 | 4, 1 | 2 | 8, 2, 2 | 4, 2 | 4 | 8];
+            let bits = QUADS[(cp - 0x2596) as usize];
+            let mut rects = [[0.0; 4]; 4];
+            let mut n = 0;
+            for (bit, r) in [(1, [0.0, 0.0, 0.5, 0.5]), (2, [0.5, 0.0, 1.0, 0.5]), (4, [0.0, 0.5, 0.5, 1.0]), (8, [0.5, 0.5, 1.0, 1.0])] {
+                if bits & bit != 0 {
+                    rects[n] = r;
+                    n += 1;
+                }
+            }
+            Some((rects, n, 1.0))
+        }
+        _ => None,
     }
 }
 
@@ -1452,12 +1517,14 @@ impl App {
         };
         let mut submit = false;
         let mut close = false;
+        // egui takes the focus away on Esc before the frame starts: with it
+        // gone to nobody, the key is still this field's.
+        if (has_focus || ui.memory(|m| m.focused().is_none())) && take_key(ui, Key::Escape, |_| true) {
+            close = true;
+        }
         if has_focus {
             if take_key(ui, Key::Enter, |m| !m.shift) {
                 submit = true;
-            }
-            if take_key(ui, Key::Escape, |_| true) {
-                close = true;
             }
             if take_key(ui, Key::Tab, |m| !m.shift) {
                 acts.push(Action::Complete(id));
@@ -1594,9 +1661,11 @@ impl App {
             if take_key(ui, Key::Enter, |m| m.shift) {
                 jump = Some(-1);
             }
-            if take_key(ui, Key::Escape, |_| true) {
-                close = true;
-            }
+        }
+        // Esc already took the focus (egui, before the frame): with nobody
+        // else holding it, the key is still ours.
+        if (ui.memory(|m| m.has_focus(sid)) || ui.memory(|m| m.focused().is_none())) && take_key(ui, Key::Escape, |_| true) {
+            close = true;
         }
         let mut child = ui.new_child(UiBuilder::new().max_rect(rect.shrink2(vec2(8.0, 5.0))).id_salt(("search-ui", id)));
         child.horizontal(|ui| {
@@ -1740,6 +1809,116 @@ mod tests {
         assert!(app.settings.layout.contains(first_editor), "the first editor stays");
         drop(app);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn blocks_fill_their_cells() {
+        // Which quarters of its cell a block covers.
+        let covers = |c: char, x: f32, y: f32| {
+            let (rects, n, _) = block_rects(c).unwrap();
+            rects[..n].iter().any(|r| x >= r[0] && x < r[2] && y >= r[1] && y < r[3])
+        };
+        let (ul, ur, ll, lr) = ((0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75));
+        for (c, want) in [
+            ('\u{2588}', [true, true, true, true]),
+            ('\u{2580}', [true, true, false, false]),
+            ('\u{2584}', [false, false, true, true]),
+            ('\u{258c}', [true, false, true, false]),
+            ('\u{2590}', [false, true, false, true]),
+            ('\u{259b}', [true, true, true, false]),
+            ('\u{259c}', [true, true, false, true]),
+            ('\u{2598}', [true, false, false, false]),
+            ('\u{259d}', [false, true, false, false]),
+            ('\u{2596}', [false, false, true, false]),
+            ('\u{2597}', [false, false, false, true]),
+            ('\u{259a}', [true, false, false, true]),
+            ('\u{259e}', [false, true, true, false]),
+            ('\u{2599}', [true, false, true, true]),
+            ('\u{259f}', [false, true, true, true]),
+        ] {
+            let got = [ul, ur, ll, lr].map(|(x, y)| covers(c, x, y));
+            assert_eq!(got, want, "{c}");
+        }
+        // Eighths: ▁ is the bottom eighth, ▏ the left one; shades are lighter.
+        assert!(covers('\u{2581}', 0.5, 0.95) && !covers('\u{2581}', 0.5, 0.8));
+        assert!(covers('\u{258f}', 0.05, 0.5) && !covers('\u{258f}', 0.2, 0.5));
+        assert!(covers('\u{2589}', 0.8, 0.5) && !covers('\u{2589}', 0.9, 0.5));
+        assert_eq!(block_rects('\u{2592}').unwrap().2, 0.5);
+        assert!(block_rects('a').is_none() && block_rects('\u{2500}').is_none());
+    }
+
+    fn painted(row: &Row, cw: f32, ch: f32, font: &FontId) -> Vec<egui::Shape> {
+        let ctx = egui::Context::default();
+        theme::install_fonts(&ctx, theme::DEFAULT_FONT, theme::DEFAULT_ICON_FONT);
+        let out = ctx.run(egui::RawInput::default(), |ctx| {
+            let p = ctx.layer_painter(egui::LayerId::background());
+            paint_row(&p, row, 10.0, 20.0, cw, ch, font, row.cells.len());
+        });
+        out.shapes.into_iter().map(|c| c.shape).collect()
+    }
+
+    /// A full block on a black background is one rect over the whole cell,
+    /// in the foreground colour, and no glyph: the background can't show
+    /// through whatever the font (Claude Code's logo had a black band).
+    #[test]
+    fn a_full_block_hides_its_background() {
+        let orange = Color::Rgb(215, 119, 87);
+        let cell = |ch| term::Cell { ch, attr: term::Attr { fg: orange, bg: Color::Rgb(0, 0, 0), flags: 0 }, wide: 0 };
+        let row = Row { cells: vec![cell('\u{2588}'), cell('\u{259b}')], wrapped: false };
+        let (cw, ch) = (9.0, 19.0);
+        let fg = Color32::from_rgb(215, 119, 87);
+        let mut rects = Vec::new();
+        for s in painted(&row, cw, ch, &theme::term_font(14.0)) {
+            match s {
+                egui::Shape::Rect(r) if r.fill == fg => rects.push(r.rect),
+                egui::Shape::Text(t) => panic!("a block drawn as a glyph: {:?}", t.galley.text()),
+                _ => {}
+            }
+        }
+        assert_eq!(rects[0], Rect::from_min_size(pos2(10.0, 20.0), vec2(cw, ch)), "the whole first cell");
+        // ▛: the lower right quarter of the second cell stays the background.
+        let eye = pos2(10.0 + cw * 1.75, 20.0 + ch * 0.75);
+        assert!(!rects.iter().any(|r| r.contains(eye)), "the eye");
+        assert_eq!(rects.len(), 4);
+    }
+
+    /// Text stays on the grid whatever the font: a fixed-width one is laid
+    /// out as a run, any other letter by letter, each inside its own cell
+    /// (a proportional font drew "v2.1.312" columns away from its place).
+    #[test]
+    fn letters_keep_their_cells_in_any_font() {
+        let cell = |ch| term::Cell { ch, attr: term::Attr::default(), wide: 0 };
+        let row = Row { cells: "illi.,;:il".chars().map(cell).collect(), wrapped: false };
+        let texts = |font: &FontId, cw: f32| -> Vec<(String, Rect)> {
+            painted(&row, cw, 19.0, font)
+                .into_iter()
+                .filter_map(|s| match s {
+                    egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.galley.rect.translate(t.pos.to_vec2()))),
+                    _ => None,
+                })
+                .collect()
+        };
+        let widths = |font: &FontId| {
+            let ctx = egui::Context::default();
+            theme::install_fonts(&ctx, theme::DEFAULT_FONT, theme::DEFAULT_ICON_FONT);
+            let mut cw = 0.0;
+            let _ = ctx.run(egui::RawInput::default(), |ctx| cw = ctx.fonts(|f| theme::cell_width(f, font)));
+            cw
+        };
+        // Fixed width: one run.
+        let mono = theme::term_font(14.0);
+        let got = texts(&mono, widths(&mono));
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got[0].0, "illi.,;:il");
+        // Proportional: ten letters, the k-th within the k-th cell.
+        let prop = FontId::proportional(14.0);
+        let cw = widths(&prop);
+        let got = texts(&prop, cw);
+        assert_eq!(got.len(), 10, "{got:?}");
+        for (k, (t, r)) in got.iter().enumerate() {
+            let left = 10.0 + k as f32 * cw;
+            assert!(r.left() >= left - 0.01 && r.right() <= left + cw + 0.01, "{t:?} (cell {k}) at {r:?}, its cell starts at {left}, {cw} wide");
+        }
     }
 
     #[test]

@@ -188,3 +188,34 @@ fn hidden_images_leave_the_gpu() {
     let img = h.app.editor.files.iter().find(|f| f.path == png).unwrap();
     assert!(!img.image.has_texture(), "behind another tab: unloaded");
 }
+
+/// Esc closes the composer, the scrollback search and the editor's find bar.
+/// (egui takes the focus away on Esc before the frame; they waited for a
+/// focus they no longer had, and stayed open.)
+#[test]
+fn escape_closes_composer_search_and_find() {
+    let mut h = Harness::new(json!({}));
+    let pane = h.app.active_pane_id().unwrap();
+    h.command("composer");
+    h.type_text("ls");
+    assert_eq!(h.app.panes[&pane].composer.as_ref().map(|c| c.text.as_str()), Some("ls"), "typed into the composer");
+    h.key(Key::Escape, Modifiers::NONE);
+    assert!(h.app.panes[&pane].composer.is_none(), "the composer closed");
+
+    h.command("find");
+    h.type_text("x");
+    assert_eq!(h.app.panes[&pane].search.as_ref().map(|s| s.query.as_str()), Some("x"), "typed into the search");
+    h.key(Key::Escape, Modifiers::NONE);
+    assert!(h.app.panes[&pane].search.is_none(), "the search closed");
+
+    let file = h.dir.join("a.txt");
+    std::fs::write(&file, "one two\n").unwrap();
+    let path = file.display().to_string().replace('\\', "/");
+    h.app.open_file("local", &path, 1);
+    assert!(h.wait_for(5.0, |h| h.shows("Find")), "opened");
+    h.click_text("Find");
+    h.type_text("two");
+    assert_eq!(h.app.editor.find.as_ref().map(|f| f.query.as_str()), Some("two"), "typed into find");
+    h.key(Key::Escape, Modifiers::NONE);
+    assert!(h.app.editor.find.is_none(), "the find bar closed");
+}

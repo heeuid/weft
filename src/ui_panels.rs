@@ -2983,7 +2983,8 @@ impl App {
                     nav = if shift { -1 } else { 1 };
                     q.request_focus();
                 }
-                if q.has_focus() && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+                // Esc takes the focus first (egui, before the frame).
+                if (q.has_focus() || q.lost_focus()) && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
                     close = true;
                 }
                 if ui.selectable_label(bar.case, RichText::new("Aa").size(12.0)).on_hover_text("match case").clicked() {
