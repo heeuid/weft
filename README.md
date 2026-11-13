@@ -23,6 +23,22 @@ TUI 그리드(날실) 사이에 GUI(씨실)를 엮어 넣은 터미널. Rust (`e
 
 개발 중에는 그냥 `cargo run --release`도 됩니다.
 
+### Windows에 설치 / 제거
+
+관리자 권한 없이 이 사용자에게만 설치합니다. weft는 실행 파일 하나(셸 스크립트와 원격 에이전트가 들어 있음)라 그 파일만 복사합니다.
+
+| | 명령 |
+|---|---|
+| 설치 (`%LOCALAPPDATA%\Programs\weft`) | `install.bat` |
+| 다른 위치에 | `install.bat D:\Apps\weft` |
+| 바탕화면 바로가기도 / PATH에도 | `install.bat desktop path` |
+| 제거 (데이터는 물어봄) | `uninstall.bat`, 또는 설정 > 앱에서 weft 제거 |
+| 데이터까지 / 데이터는 남기고 | `uninstall.bat purge` / `uninstall.bat keep` |
+
+- 설치: `cargo`가 있으면 먼저 빌드합니다. 시작 메뉴에 바로가기를 만들고 설정 > 앱 목록에 올립니다. 다시 실행하면 업데이트입니다. weft가 켜져 있어도 되고, 다음에 켤 때 새 버전으로 뜹니다.
+- 데이터는 설치 폴더의 `data\`입니다. `weft.bat`으로 쓰던 `target\release\data`가 있으면 처음 설치할 때 복사해 옵니다.
+- 제거: 바로가기, 앱 목록 항목, PATH 항목, 실행 파일을 지웁니다. 켜져 있는 weft가 있으면 닫을 때까지 기다립니다. 데이터는 지울지 묻고, 남기면 다시 설치할 때 그대로 이어 씁니다.
+
 설정·로그·히스토리는 실행 파일 옆 `data/`에 저장됩니다 (`WEFT_DATA_DIR`로 변경 가능).
 
 | 경로 | 내용 |
