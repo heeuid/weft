@@ -3397,7 +3397,10 @@ fn secs_input(ui: &mut Ui, id: &str, secs: &mut u64, zero: &str) -> bool {
             (v, u) = (*secs / UNITS[saved].1, saved);
         }
     }
-    let zero = zero.to_string();
+    // "never" while shown, but a plain 0 once clicked to type a number (the
+    // DragValue's id is the next auto id; it has focus while being typed in).
+    let editing = ui.memory(|m| m.has_focus(ui.next_auto_id()));
+    let zero = if editing { "0".to_string() } else { zero.to_string() };
     let mut changed = ui.add(egui::DragValue::new(&mut v).range(0..=100_000).speed(0.25).custom_formatter(move |x, _| if x == 0.0 { zero.clone() } else { format!("{x}") })).changed();
     egui::ComboBox::from_id_salt(("secs-combo", id)).width(76.0).selected_text(UNITS[u].0).show_ui(ui, |ui| {
         for (i, (name, _)) in UNITS.iter().enumerate() {
@@ -3664,5 +3667,48 @@ mod tests {
         assert_eq!(memo_title("- [ ] buy milk"), "[ ] buy milk");
         assert_eq!(memo_title("> quoted"), "quoted");
         assert_eq!(memo_title(&"가".repeat(30)), format!("{}…", "가".repeat(24)));
+    }
+
+    /// One frame of a seconds field; the texts drawn and where.
+    fn secs_frame(ctx: &egui::Context, secs: &mut u64, events: Vec<egui::Event>) -> Vec<(String, egui::Pos2)> {
+        let input = egui::RawInput { events, screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 300.0))), ..Default::default() };
+        let out = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    super::secs_input(ui, "t", secs, "never");
+                });
+            });
+        });
+        out.shapes
+            .into_iter()
+            .filter_map(|s| match s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.rect.center().to_vec2())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn never_reads_zero_once_clicked() {
+        let ctx = egui::Context::default();
+        let mut secs = 0;
+        secs_frame(&ctx, &mut secs, vec![]);
+        let shown = secs_frame(&ctx, &mut secs, vec![]);
+        let at = shown.iter().find(|t| t.0 == "never").expect("never shown").1;
+        let click = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        secs_frame(&ctx, &mut secs, vec![egui::Event::PointerMoved(at)]);
+        secs_frame(&ctx, &mut secs, vec![click(true)]);
+        secs_frame(&ctx, &mut secs, vec![click(false)]);
+        let editing = secs_frame(&ctx, &mut secs, vec![]);
+        let texts: Vec<&str> = editing.iter().map(|t| t.0.as_str()).collect();
+        assert!(texts.contains(&"0") && !texts.contains(&"never"), "while typing: {texts:?}");
+        assert_eq!(secs, 0);
+        // Clicking away shows "never" again.
+        let away = egui::pos2(500.0, 250.0);
+        secs_frame(&ctx, &mut secs, vec![egui::Event::PointerMoved(away)]);
+        secs_frame(&ctx, &mut secs, vec![egui::Event::PointerButton { pos: away, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() }]);
+        secs_frame(&ctx, &mut secs, vec![egui::Event::PointerButton { pos: away, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() }]);
+        let after = secs_frame(&ctx, &mut secs, vec![]);
+        assert!(after.iter().any(|t| t.0 == "never"), "after: {:?}", after.iter().map(|t| &t.0).collect::<Vec<_>>());
     }
 }
