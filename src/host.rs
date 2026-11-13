@@ -767,6 +767,45 @@ fn local_op(req: &Value) -> Value {
             local_grep(&s("path"), &s("pattern"), flag("icase"), flag("regex"), flag("hidden"))
         }
         "tree" => Ok(local_tree(&s("path"), req.get("hidden").and_then(|v| v.as_bool()).unwrap_or(false), req.get("max").and_then(|v| v.as_u64()).unwrap_or(20000) as usize)),
+        // File transfer: the same ops as agent.py (see there).
+        "walk" => local_walk(&s("path")),
+        "rchunk" => {
+            use std::io::{Read, Seek};
+            let off = req.get("off").and_then(|v| v.as_u64()).unwrap_or(0);
+            let n = req.get("len").and_then(|v| v.as_u64()).unwrap_or(MAX_CHUNK).min(MAX_CHUNK);
+            let mut f = File::open(s("path")).map_err(|e| e.to_string())?;
+            let size = f.metadata().map_err(|e| e.to_string())?.len();
+            f.seek(std::io::SeekFrom::Start(off)).map_err(|e| e.to_string())?;
+            let mut raw = Vec::with_capacity(n as usize);
+            f.take(n).read_to_end(&mut raw).map_err(|e| e.to_string())?;
+            let got = raw.len() as u64;
+            Ok(json!({"b64": base64::engine::general_purpose::STANDARD.encode(raw), "n": got, "eof": off + got >= size, "size": size}))
+        }
+        "wchunk" => {
+            use std::io::{Seek, Write};
+            let off = req.get("off").and_then(|v| v.as_u64()).unwrap_or(0);
+            let data = base64::engine::general_purpose::STANDARD.decode(s("b64")).map_err(|e| e.to_string())?;
+            let mut f = if off > 0 { OpenOptions::new().write(true).open(s("path")) } else { File::create(s("path")) }.map_err(|e| e.to_string())?;
+            f.seek(std::io::SeekFrom::Start(off)).map_err(|e| e.to_string())?;
+            f.write_all(&data).map_err(|e| e.to_string())?;
+            Ok(json!({"n": data.len()}))
+        }
+        "finish" => {
+            if req.get("abort").and_then(|v| v.as_bool()).unwrap_or(false) {
+                let _ = std::fs::remove_file(s("part"));
+            } else {
+                std::fs::rename(s("part"), s("path")).map_err(|e| e.to_string())?;
+            }
+            Ok(json!({}))
+        }
+        "mkdirs" => {
+            let root = s("root");
+            std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+            for d in req.get("dirs").and_then(|v| v.as_array()).into_iter().flatten().filter_map(|d| d.as_str()) {
+                std::fs::create_dir_all(format!("{root}/{d}")).map_err(|e| e.to_string())?;
+            }
+            Ok(json!({}))
+        }
         op => Err(format!("'{op}' is only available on remote hosts")),
     })();
     match result {
@@ -776,6 +815,38 @@ fn local_op(req: &Value) -> Value {
         }
         Err(e) => json!({"ok": false, "error": e}),
     }
+}
+
+/// Largest chunk a transfer reads at once (agent.py has the same).
+pub const MAX_CHUNK: u64 = 4 * 1024 * 1024;
+
+/// What a transfer source holds: one file, or a folder's subfolders and
+/// files (paths relative to it, '/'-separated, sorted).
+fn local_walk(path: &str) -> Result<Value, String> {
+    let md = std::fs::metadata(path).map_err(|e| e.to_string())?;
+    if !md.is_dir() {
+        return Ok(json!({"dir": false, "items": [{"p": "", "s": md.len(), "d": false}]}));
+    }
+    let mut items = Vec::new();
+    fn walk(dir: &std::path::Path, rel: &str, items: &mut Vec<Value>) -> Result<(), String> {
+        let mut entries: Vec<_> = std::fs::read_dir(dir).map_err(|e| e.to_string())?.flatten().collect();
+        entries.sort_by_key(|e| e.file_name());
+        let (dirs, files): (Vec<_>, Vec<_>) = entries.into_iter().partition(|e| e.metadata().map(|m| m.is_dir()).unwrap_or(false));
+        for f in files {
+            let Ok(md) = f.metadata() else { continue };
+            let name = f.file_name().to_string_lossy().into_owned();
+            items.push(json!({"p": if rel.is_empty() { name } else { format!("{rel}/{name}") }, "s": md.len(), "d": false}));
+        }
+        for d in dirs {
+            let name = d.file_name().to_string_lossy().into_owned();
+            let sub = if rel.is_empty() { name } else { format!("{rel}/{name}") };
+            items.push(json!({"p": sub, "s": 0, "d": true}));
+            walk(&d.path(), &sub, items)?;
+        }
+        Ok(())
+    }
+    walk(std::path::Path::new(path), "", &mut items)?;
+    Ok(json!({"dir": true, "items": items}))
 }
 
 /// Folders listed but not descended into by "tree" (same set as agent.py).
@@ -1034,6 +1105,72 @@ mod tests {
                 let v: Value = serde_json::from_slice(&out.stdout).unwrap();
                 assert_eq!(names(&v), local, "agent.py op_tree");
             }
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn transfer_ops_copy_a_folder_in_chunks() {
+        let dir = std::env::temp_dir().join(format!("weft-xfer-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src/sub")).unwrap();
+        std::fs::create_dir_all(dir.join("src/empty")).unwrap();
+        let big: Vec<u8> = (0..10_000u32).map(|i| (i * 7 % 251) as u8).collect();
+        std::fs::write(dir.join("src/big.bin"), &big).unwrap();
+        std::fs::write(dir.join("src/sub/한글.txt"), "안녕").unwrap();
+        std::fs::write(dir.join("src/zero"), "").unwrap();
+        let root = dir.display().to_string().replace('\\', "/");
+        let op = |v: Value| {
+            let r = local_op(&v);
+            assert_eq!(r["ok"], true, "{v} -> {r}");
+            r
+        };
+        let walk = op(json!({"op": "walk", "path": format!("{root}/src")}));
+        assert_eq!(walk["dir"], true);
+        let items: Vec<(String, u64, bool)> = walk["items"].as_array().unwrap().iter().map(|i| (i["p"].as_str().unwrap().to_string(), i["s"].as_u64().unwrap(), i["d"].as_bool().unwrap())).collect();
+        let files: Vec<&str> = items.iter().filter(|i| !i.2).map(|i| i.0.as_str()).collect();
+        assert_eq!(files, ["big.bin", "zero", "sub/한글.txt"]);
+        let dirs: Vec<String> = items.iter().filter(|i| i.2).map(|i| i.0.clone()).collect();
+        op(json!({"op": "mkdirs", "root": format!("{root}/dst"), "dirs": dirs}));
+        // Every file in 4 KB chunks, into a .weft-part renamed at the end.
+        for (rel, size, _) in items.iter().filter(|i| !i.2) {
+            let part = format!("{root}/dst/{rel}.weft-part");
+            let mut off = 0;
+            loop {
+                let c = op(json!({"op": "rchunk", "path": format!("{root}/src/{rel}"), "off": off, "len": 4096}));
+                op(json!({"op": "wchunk", "path": part, "off": off, "b64": c["b64"]}));
+                off += c["n"].as_u64().unwrap();
+                if c["eof"] == true {
+                    break;
+                }
+            }
+            assert_eq!(off, *size);
+            op(json!({"op": "finish", "part": part, "path": format!("{root}/dst/{rel}")}));
+        }
+        assert_eq!(std::fs::read(dir.join("dst/big.bin")).unwrap(), big);
+        assert_eq!(std::fs::read_to_string(dir.join("dst/sub/한글.txt")).unwrap(), "안녕");
+        assert_eq!(std::fs::read(dir.join("dst/zero")).unwrap(), b"");
+        assert!(dir.join("dst/empty").is_dir());
+        assert!(!dir.join("dst/big.bin.weft-part").exists());
+        // An aborted part goes away.
+        std::fs::write(dir.join("x.weft-part"), "half").unwrap();
+        op(json!({"op": "finish", "part": format!("{root}/x.weft-part"), "abort": true}));
+        assert!(!dir.join("x.weft-part").exists());
+        // The agent walks the same and copies the same, through its functions.
+        let script = format!(
+            "import json,sys\nsrc=open(r'{}/remote/agent.py',encoding='utf-8').read().split('\\ndef main')[0]\nexec(src)\n\
+             r=sys.argv[1]\nw=op_walk({{'path': r+'/src'}})\nop_mkdirs({{'root': r+'/dst2', 'dirs': [i['p'] for i in w['items'] if i['d']]}})\n\
+             for i in w['items']:\n    if i['d']: continue\n    off=0\n    while True:\n        c=op_rchunk({{'path': r+'/src/'+i['p'], 'off': off, 'len': 4096}})\n        op_wchunk({{'path': r+'/dst2/'+i['p']+'.weft-part', 'off': off, 'b64': c['b64']}})\n        off+=c['n']\n        if c['eof']: break\n    op_finish({{'part': r+'/dst2/'+i['p']+'.weft-part', 'path': r+'/dst2/'+i['p']}})\n\
+             print(json.dumps(w))",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        if let Ok(out) = std::process::Command::new("python").env("PYTHONIOENCODING", "utf-8").arg("-c").arg(&script).arg(&root).output() {
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+            let w: Value = serde_json::from_slice(&out.stdout).unwrap();
+            assert_eq!(w["items"], walk["items"], "agent.py op_walk");
+            assert_eq!(std::fs::read(dir.join("dst2/big.bin")).unwrap(), big);
+            assert_eq!(std::fs::read_to_string(dir.join("dst2/sub/한글.txt")).unwrap(), "안녕");
+            assert!(dir.join("dst2/empty").is_dir() && dir.join("dst2/zero").is_file());
         }
         std::fs::remove_dir_all(&dir).unwrap();
     }

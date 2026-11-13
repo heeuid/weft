@@ -977,7 +977,29 @@ impl App {
                 }
                 ui.add_space(4.0);
                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                    ui.add(egui::Label::new(RichText::new(&host).size(12.0).color(theme::text())).truncate()).on_hover_text(&host);
+                    // Browse another host here (each side panel can show its
+                    // own: two hosts side by side, drag files across to copy).
+                    let mut pick: Option<String> = None;
+                    let hosts: Vec<String> = self.settings.profiles.iter().map(|p| p.name.clone()).collect();
+                    ui.menu_button(RichText::new(format!("{host} \u{25be}")).size(12.0).color(theme::text()), |ui| {
+                        for h in &hosts {
+                            if ui.selectable_label(*h == host, h).clicked() {
+                                pick = Some(h.clone());
+                                ui.close_menu();
+                            }
+                        }
+                    })
+                    .response
+                    .on_hover_text(format!("{host} — browse another host in this panel"));
+                    if let Some(h) = pick.filter(|h| *h != host) {
+                        let home = match self.conns.get(&h).and_then(|c| c.home()) {
+                            Some(d) => d,
+                            None if h == "local" => std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or_else(|_| "/".into()).replace('\\', "/"),
+                            None => "~".into(),
+                        };
+                        self.side.follow = false;
+                        self.set_root(&h, &home);
+                    }
                 });
             });
         });
@@ -1099,10 +1121,21 @@ impl App {
             } else if rows.is_empty() && !loading {
                 ui.label(RichText::new("empty").color(theme::text_faint()));
             }
+            let send_to = self.send_targets(&host);
             for r in &rows {
-                let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
+                let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click_and_drag());
                 if !ui.is_rect_visible(rect) {
                     continue;
+                }
+                // Dragged onto another Files panel, a folder or a terminal: copied there.
+                if resp.drag_started() {
+                    self.file_drag = Some((host.clone(), r.path.clone()));
+                }
+                if r.dir {
+                    self.drop_dirs.push((rect.intersect(ui.clip_rect()), host.clone(), r.path.clone()));
+                }
+                if self.file_drag.as_ref().is_some_and(|d| d.0 == host && d.1 == r.path) {
+                    ui.painter().rect_stroke(rect, CornerRadius::same(4), Stroke::new(1.0_f32, theme::accent()), egui::StrokeKind::Inside);
                 }
                 let p = ui.painter();
                 let selected = self.side.selected.as_deref() == Some(r.path.as_str());
@@ -1179,6 +1212,23 @@ impl App {
                         self.actions.push(Action::Copy(path.clone()));
                         ui.close_menu();
                     }
+                    // Copies to another host or folder (also by dragging the row).
+                    ui.separator();
+                    if host != "local" && ui.button("Download").on_hover_text(format!("to {}", crate::transfer::downloads_dir())).clicked() {
+                        self.start_transfer(&host, &path, "local", &crate::transfer::downloads_dir());
+                        ui.close_menu();
+                    }
+                    ui.menu_button("Send to", |ui| {
+                        if send_to.is_empty() {
+                            ui.label(RichText::new("open another host's Files panel or terminal first").size(12.0).color(theme::text_faint()));
+                        }
+                        for (h, dir, why) in &send_to {
+                            if ui.button(format!("{h}:{dir}")).on_hover_text(why).clicked() {
+                                self.start_transfer(&host, &path, h, dir);
+                                ui.close_menu();
+                            }
+                        }
+                    });
                 });
             }
         });
@@ -2220,6 +2270,12 @@ impl App {
                 let tab = self.settings.side_tabs.get(&panel.n).copied().unwrap_or(self.side.tab);
                 let other = if tab == SideTab::Files { SideTab::Search } else { SideTab::Files };
                 self.settings.side_tabs.insert(new.n, other);
+                // The new one starts where this one is, but stays put when the
+                // terminal moves (pick another host in its header: two hosts
+                // side by side, drag files across to copy them).
+                let mut view = self.side_views.get(&panel.n).cloned().unwrap_or_else(|| self.side_view());
+                view.follow = false;
+                self.side_views.insert(new.n, view);
                 self.settings.sidebar = true;
             }
             Region::Editor => {
@@ -2280,6 +2336,8 @@ impl App {
             self.editor_focus = editors.first().map_or(0, |p| p.n);
         }
         self.settings.side_tabs.insert(self.side_focus, self.side.tab);
+        let view = self.side_view();
+        self.side_views.insert(self.side_focus, view);
         if let Some(f) = self.editor.files.get(self.editor.active) {
             self.editor_shows.insert(self.editor_focus, (f.host.clone(), f.path.clone()));
         }
@@ -2288,8 +2346,23 @@ impl App {
     /// Side panel `n`: the shared side state, showing its own tab.
     fn side_panel(&mut self, ui: &mut Ui, n: u32) {
         self.side.tab = self.settings.side_tabs.get(&n).copied().unwrap_or(self.side.tab);
+        if let Some(v) = self.side_views.get(&n).cloned() {
+            self.set_side_view(v);
+        }
         self.ui_sidebar(ui);
         self.settings.side_tabs.insert(n, self.side.tab);
+        let view = self.side_view();
+        self.side_views.insert(n, view);
+    }
+
+    fn side_view(&self) -> SideView {
+        SideView { root: self.side.root.clone(), follow: self.side.follow, selected: self.side.selected.clone() }
+    }
+
+    fn set_side_view(&mut self, v: SideView) {
+        self.side.root = v.root;
+        self.side.follow = v.follow;
+        self.side.selected = v.selected;
     }
 
     /// Editor `n`: the open files (shared), showing its own one. The find
@@ -2390,6 +2463,9 @@ impl App {
         // Back to the focused side panel's tab and editor's file, for commands.
         if let Some(&tab) = self.settings.side_tabs.get(&self.side_focus) {
             self.side.tab = tab;
+        }
+        if let Some(v) = self.side_views.get(&self.side_focus).cloned() {
+            self.set_side_view(v);
         }
         let focused_file = self.editor_shows.get(&self.editor_focus).and_then(|(h, p)| self.editor.files.iter().position(|f| &f.host == h && &f.path == p));
         if let Some(i) = focused_file {

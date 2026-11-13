@@ -23,6 +23,7 @@ mod records;
 mod secret;
 mod term;
 mod theme;
+mod transfer;
 mod ui_panels;
 mod ui_term;
 mod widgets;
@@ -139,7 +140,10 @@ impl eframe::App for WeftApp {
                 .frame(egui::Frame::new().fill(theme::bg_base()).inner_margin(egui::Margin::symmetric(10, 0)))
                 .show(ctx, |ui| app.ui_status(ui));
         }
+        app.drop_dirs.clear();
         egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::bg_base())).show(ctx, |ui| app.ui_layout(ui));
+        app.ui_file_drop(ctx);
+        app.ui_transfers(ctx);
 
         app.ui_palette(ctx);
         app.ui_connect(ctx);

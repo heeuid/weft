@@ -111,6 +111,74 @@ def op_write(req):
     return {"path": p, "size": len(data), "mtime": os.stat(p).st_mtime}
 
 
+# File transfer (weft relays chunks between any two hosts, this one being
+# either end): what a path holds, then chunks read from or written at an
+# offset. Writes go to a ".weft-part" file renamed into place at the end,
+# so a transfer cut short never leaves a half file under the real name.
+MAX_CHUNK = 4 * 1024 * 1024
+
+
+def op_walk(req):
+    p = _path(req.get("path"))
+    if not os.path.isdir(p):
+        return {"dir": False, "items": [{"p": "", "s": os.path.getsize(p), "d": False}]}
+    items = []
+    for root, dirs, files in os.walk(p):
+        dirs.sort()
+        rel = os.path.relpath(root, p)
+        rel = "" if rel == "." else rel.replace(os.sep, "/")
+        if rel:
+            items.append({"p": rel, "s": 0, "d": True})
+        for name in sorted(files):
+            try:
+                size = os.path.getsize(os.path.join(root, name))
+            except OSError:
+                continue  # a broken link
+            items.append({"p": rel + "/" + name if rel else name, "s": size, "d": False})
+    return {"dir": True, "items": items}
+
+
+def op_rchunk(req):
+    p = _path(req.get("path"))
+    off = int(req.get("off", 0))
+    n = min(int(req.get("len", MAX_CHUNK)), MAX_CHUNK)
+    with open(p, "rb") as f:
+        size = os.fstat(f.fileno()).st_size
+        f.seek(off)
+        raw = f.read(n)
+    return {"b64": base64.b64encode(raw).decode(), "n": len(raw), "eof": off + len(raw) >= size, "size": size}
+
+
+def op_wchunk(req):
+    p = _path(req.get("path"))
+    off = int(req.get("off", 0))
+    data = base64.b64decode(req.get("b64", ""))
+    with open(p, "r+b" if off > 0 else "wb") as f:
+        f.seek(off)
+        f.write(data)
+    return {"n": len(data)}
+
+
+def op_finish(req):
+    part = _path(req.get("part"))
+    if req.get("abort"):
+        try:
+            os.remove(part)
+        except OSError:
+            pass
+        return {}
+    os.replace(part, _path(req.get("path")))
+    return {}
+
+
+def op_mkdirs(req):
+    root = _path(req.get("root"))
+    os.makedirs(root, exist_ok=True)
+    for d in req.get("dirs", []):
+        os.makedirs(os.path.join(root, d), exist_ok=True)
+    return {}
+
+
 def op_complete(req):
     d = _path(req.get("dir"))
     prefix = req.get("prefix", "")
@@ -288,7 +356,8 @@ def op_cwd(req):
 OPS = {
     "hello": op_hello, "list": op_list, "stat": op_stat, "read": op_read, "write": op_write,
     "complete": op_complete, "procs": op_procs, "kill": op_kill, "sys": op_sys, "grep": op_grep,
-    "tree": op_tree, "cwd": op_cwd,
+    "tree": op_tree, "cwd": op_cwd, "walk": op_walk, "rchunk": op_rchunk, "wchunk": op_wchunk,
+    "finish": op_finish, "mkdirs": op_mkdirs,
 }
 
 

@@ -1674,7 +1674,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("weft-pane-drag-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        // Only this test builds an App, the one thing reading WEFT_DATA_DIR.
+        // Tests building an App (the one thing reading WEFT_DATA_DIR) take turns.
+        let _guard = crate::app::TEST_APP.lock().unwrap_or_else(|e| e.into_inner());
         std::env::set_var("WEFT_DATA_DIR", &dir);
         let ctx = egui::Context::default();
         crate::theme::install_fonts(&ctx, crate::theme::DEFAULT_FONT, crate::theme::DEFAULT_ICON_FONT);

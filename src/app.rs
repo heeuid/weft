@@ -306,6 +306,10 @@ impl Layout {
     }
 }
 
+/// Tests that build an App (it reads WEFT_DATA_DIR) take turns.
+#[cfg(test)]
+pub static TEST_APP: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod node_tests {
     use super::*;
@@ -910,6 +914,14 @@ pub enum SideTab {
     Procs,
 }
 
+/// The part of the side state each side panel has of its own.
+#[derive(Clone, Default)]
+pub struct SideView {
+    pub root: Option<(String, String)>,
+    pub follow: bool,
+    pub selected: Option<String>,
+}
+
 pub struct SideState {
     pub tab: SideTab,
     pub root: Option<(String, String)>,
@@ -1129,6 +1141,8 @@ pub enum Pending {
     Kill,
     Tree { root: String },
     Cwd { pane: usize },
+    /// A file transfer's request (see transfer.rs).
+    Xfer { t: u64, step: crate::transfer::Step },
 }
 
 /// Which tabs a tab's context menu closes, relative to that tab.
@@ -1278,6 +1292,13 @@ pub struct App {
     pub dock_drag: Option<PanelId>,
     /// A terminal pane being dragged by its header to another place in its tab.
     pub pane_drag: Option<usize>,
+    /// File transfers, running and finished (until cleared).
+    pub transfers: Vec<crate::transfer::Transfer>,
+    pub next_transfer: u64,
+    /// A file or folder (host, path) being dragged from a Files panel.
+    pub file_drag: Option<(String, String)>,
+    /// Folder rows drawn this frame (rect, host, path): drop targets.
+    pub drop_dirs: Vec<(egui::Rect, String, String)>,
     /// Where each panel was drawn this frame (drop targets).
     pub panel_rects: HashMap<PanelId, egui::Rect>,
     /// The panel being drawn (its grip, split and close buttons act on it).
@@ -1288,6 +1309,9 @@ pub struct App {
     pub editor_focus: u32,
     /// The file each editor panel shows (host, path), by panel number.
     pub editor_shows: HashMap<u32, (String, String)>,
+    /// What each side panel's Files tab browses, by panel number: two side
+    /// panels can show two hosts, and files dragged between them are copied.
+    pub side_views: HashMap<u32, SideView>,
     /// The area the panels share (window minus the status bar).
     pub layout_rect: egui::Rect,
     /// ssh passwords for this session only; never written to disk or logs.
@@ -1404,9 +1428,14 @@ impl App {
             panel_rects: HashMap::new(),
             drawing: PanelId::TERMS,
             pane_drag: None,
+            transfers: Vec::new(),
+            next_transfer: 0,
+            file_drag: None,
+            drop_dirs: Vec::new(),
             side_focus: 0,
             editor_focus: 0,
             editor_shows: HashMap::new(),
+            side_views: HashMap::new(),
             layout_rect: egui::Rect::NOTHING,
             secrets: crate::secret::Vault::new(settings_passwords),
             auth_prompted: HashSet::new(),
@@ -2335,6 +2364,7 @@ impl App {
         let ok = r.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
         let err = r.get("error").and_then(|v| v.as_str()).unwrap_or("error").to_string();
         match pending {
+            Pending::Xfer { t, step } => self.on_transfer(t, step, ok, &r, err),
             Pending::List { path } => {
                 self.inflight.remove(&(host.to_string(), path.clone()));
                 if !ok {
