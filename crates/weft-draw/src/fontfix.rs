@@ -87,7 +87,7 @@ fn rebuild(data: &[u8], replace: &[([u8; 4], Vec<u8>)]) -> Option<Vec<u8>> {
             Some((_, b)) => b.as_slice(),
             None => data.get(*off..off + len)?,
         };
-        while out.len() % 4 != 0 {
+        while !out.len().is_multiple_of(4) {
             out.push(0);
         }
         let at = out.len();

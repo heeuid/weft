@@ -152,6 +152,10 @@ impl Vault {
         self.items.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
     /// New settings: held passwords are re-sealed to match (encrypted or not).
     pub fn configure(&mut self, cfg: VaultSettings) {
         if cfg == self.cfg {
@@ -347,7 +351,7 @@ pub const UNITS: [(&str, u64); 3] = [("seconds", 1), ("minutes", 60), ("hours", 
 
 pub fn split_secs(secs: u64) -> (u64, usize) {
     for (i, (_, n)) in UNITS.iter().enumerate().rev() {
-        if secs > 0 && secs % n == 0 {
+        if secs > 0 && secs.is_multiple_of(*n) {
             return (secs / n, i);
         }
     }

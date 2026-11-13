@@ -119,8 +119,8 @@ impl Ctx<'_> {
         while i < b.len() {
             let rest = &s[i..];
             let mut handled: Option<usize> = None; // bytes consumed by a span
-            if rest.starts_with('`') {
-                if let Some(e) = rest[1..].find('`') {
+            if let Some(after) = rest.strip_prefix('`') {
+                if let Some(e) = after.find('`') {
                     self.text(&s[plain_start..i], st);
                     self.marker("`", st);
                     let code = Style { family: Fam::Mono, size: st.size * 0.92, background: theme::tint(theme::text_faint(), 45), ..st };

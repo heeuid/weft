@@ -370,9 +370,10 @@ fn is_regular_face(file: &str) -> bool {
         return false;
     }
     let stem = n.rsplit_once('.').map(|s| s.0).unwrap_or(&n);
-    !["bold", "italic", "light", "thin", "medium", "semibold", "black", "heavy", "oblique", "condensed"].iter().any(|w| stem.contains(w))
-        // Windows' short names for those faces: arialbd, consolai, seguisb, …
-        && !(stem.ends_with("bd") || stem.ends_with("bi") || stem.ends_with("z") && stem.len() > 4 || stem.ends_with("sb") || stem.ends_with("sl"))
+    let named = ["bold", "italic", "light", "thin", "medium", "semibold", "black", "heavy", "oblique", "condensed"].iter().any(|w| stem.contains(w));
+    // Windows' short names for those faces: arialbd, consolai, seguisb, …
+    let short = stem.ends_with("bd") || stem.ends_with("bi") || stem.ends_with("z") && stem.len() > 4 || stem.ends_with("sb") || stem.ends_with("sl");
+    !named && !short
 }
 
 /// Font chain with explicit fallbacks so no glyph renders as tofu:

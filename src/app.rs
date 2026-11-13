@@ -2085,7 +2085,7 @@ impl App {
             error: None,
         });
         self.editor.active = self.editor.files.len() - 1;
-        self.request(host, json!({"op": "read", "path": path, "max": crate::media::read_limit(&path)}), Pending::Open { path: path.into(), line });
+        self.request(host, json!({"op": "read", "path": path, "max": crate::media::read_limit(path)}), Pending::Open { path: path.into(), line });
     }
 
     pub fn open_scratch(&mut self, title: &str, text: String) {

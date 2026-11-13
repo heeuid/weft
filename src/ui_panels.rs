@@ -1418,7 +1418,9 @@ impl App {
             h.finish()
         };
         let cache_id = Id::new("history-hits");
-        let cached: Option<(u64, Arc<Result<Vec<usize>, String>>)> = ui.data(|d| d.get_temp(cache_id));
+        // The query's key, and the records it found (or why it can't be read).
+        type Hits = (u64, Arc<Result<Vec<usize>, String>>);
+        let cached: Option<Hits> = ui.data(|d| d.get_temp(cache_id));
         let hits = match cached {
             Some((k, hits)) if k == key => hits,
             _ => {
@@ -2923,11 +2925,10 @@ impl App {
                         }
                     });
                 }
-                if !f.binary && !crate::media::is_image(&f.path) && !crate::media::is_pdf(&f.path) {
-                    if ui.button(RichText::new("Find").size(12.5)).on_hover_text("find (Ctrl+F) and replace (Ctrl+H)").clicked() {
+                if !f.binary && !crate::media::is_image(&f.path) && !crate::media::is_pdf(&f.path)
+                    && ui.button(RichText::new("Find").size(12.5)).on_hover_text("find (Ctrl+F) and replace (Ctrl+H)").clicked() {
                         open_find = true;
                     }
-                }
                 if f.loading {
                     ui.spinner();
                     ui.label(RichText::new("reading…").size(11.5).color(theme::text_faint()));
@@ -3967,7 +3968,7 @@ fn secs_input(ui: &mut Ui, id: &str, secs: &mut u64, zero: &str) -> bool {
     let (mut v, mut u) = split_secs(*secs);
     // Keep the unit last chosen while it still fits the value.
     if let Some(saved) = ui.data(|d| d.get_temp::<usize>(unit_id)) {
-        if *secs % UNITS[saved].1 == 0 {
+        if (*secs).is_multiple_of(UNITS[saved].1) {
             (v, u) = (*secs / UNITS[saved].1, saved);
         }
     }
@@ -4012,6 +4013,8 @@ fn settled_width(ctx: &egui::Context, id: Id, now: f32) -> f32 {
     state.0
 }
 
+// One call site, the editor, which has each of these at hand.
+#[allow(clippy::too_many_arguments)]
 fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size: f32, breaks: bool, renderer: &crate::mermaid::Renderer, readonly: bool, goto: Option<usize>, cache_dir: &std::path::Path) -> bool {
     let ctx = ui.ctx().clone();
     let focused = ui.memory(|m| m.has_focus(edit_id));

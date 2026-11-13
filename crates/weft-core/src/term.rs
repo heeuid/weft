@@ -1509,12 +1509,11 @@ impl Perform for Term {
             // then yanks "+ into this computer's clipboard on its own.
             ('c', []) => self.replies.extend_from_slice(b"\x1b[?62;22;52c"),
             ('c', [b'>']) => self.replies.extend_from_slice(b"\x1b[>0;10;1c"),
-            ('t', []) => {
-                if ps.first() == Some(&18) {
+            ('t', [])
+                if ps.first() == Some(&18) => {
                     let r = format!("\x1b[8;{};{}t", self.rows, self.cols);
                     self.replies.extend_from_slice(r.as_bytes());
                 }
-            }
             _ => {}
         }
     }
@@ -1613,12 +1612,11 @@ impl Perform for Term {
                 "4" => {}
                 _ => self.events.push(TermEvent::Notify(rest())),
             },
-            b"777" => {
-                if arg(1) == "notify" {
+            b"777"
+                if arg(1) == "notify" => {
                     let msg = params[2..].iter().map(|p| String::from_utf8_lossy(p)).collect::<Vec<_>>().join(": ");
                     self.events.push(TermEvent::Notify(msg));
                 }
-            }
             _ => {}
         }
     }

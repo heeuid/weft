@@ -100,6 +100,9 @@ fn cell_colors(a: term::Attr) -> (Color32, Option<Color32>) {
     (fg, bg)
 }
 
+// Where and how big a row is, eight plain numbers and references: a struct
+// for them would only be filled in at the two calls.
+#[allow(clippy::too_many_arguments)]
 fn paint_row(p: &Painter, row: &Row, x0: f32, y: f32, cw: f32, ch: f32, font: &FontId, cols: usize) {
     let n = row.cells.len().min(cols);
     // Backgrounds, merged into runs.
@@ -344,6 +347,7 @@ pub fn key_bytes(key: Key, m: Modifiers, app_cursor: bool) -> Option<Vec<u8>> {
 /// * Enter, Tab, arrows... make the IME commit the syllable and then deliver
 ///   the key again; passing the first copy on sent Enter before the syllable
 ///   ("거" submitted, then "야" submitted separately).
+///
 /// So keys pressed while composing are dropped (as egui's TextEdit does), and
 /// the rare text event that arrives mid-composition is held until the commit.
 pub fn typed_bytes(events: &[Event], preedit: &mut String, mods: Modifiers, app_cursor: bool) -> Vec<u8> {
@@ -1494,6 +1498,8 @@ impl App {
         self.actions.extend(acts);
     }
 
+    // The pane's layout as the caller has just worked it out.
+    #[allow(clippy::too_many_arguments)]
     fn ui_composer(&mut self, ui: &mut Ui, id: usize, inner: Rect, cursor: Option<Rect>, ch: f32, font: &FontId, acts: &mut Vec<Action>) {
         let p = self.panes.get_mut(&id).unwrap();
         let Some(c) = p.composer.as_mut() else { return };

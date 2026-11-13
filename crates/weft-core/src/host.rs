@@ -3,6 +3,7 @@
 //! weft is a thick local client.  For a remote host it opens
 //!   * one `ssh -tt` PTY per pane running bash with weft's integration rc, and
 //!   * one shared `ssh -T` side channel running a tiny python agent,
+//!
 //! and nothing is ever copied to the remote disk: the rc file arrives through
 //! bash process substitution, the agent source through python's stdin.
 //! The local host (Windows here) needs no agent; the same JSON operations are
@@ -42,7 +43,9 @@ fn strip_comments(src: &str) -> String {
     src.lines()
         .filter(|l| {
             let t = l.trim_start();
-            !t.is_empty() && !(t.starts_with('#') && !t.starts_with("#!"))
+            // Comments go, the #! line stays.
+            let comment = t.starts_with('#') && !t.starts_with("#!");
+            !t.is_empty() && !comment
         })
         .map(|l| format!("{l}\n"))
         .collect()

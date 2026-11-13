@@ -18,70 +18,6 @@ pub fn word_break(c: char) -> bool {
     c.is_whitespace() || "\"'`<>()[]{}|;,".contains(c)
 }
 
-#[cfg(test)]
-mod word_tests {
-    use super::word_at;
-
-    fn word(text: &str, needle: &str, off: usize) -> String {
-        let at = text[..text.find(needle).unwrap()].chars().count() + off;
-        let (s, e) = word_at(text, at);
-        text.chars().skip(s).take(e - s).collect()
-    }
-
-    #[test]
-    fn double_click_words() {
-        // Hangul is a word, and the line end stops it (egui's rule ran on).
-        let t = "설정 파일 없음\n기본값 사용";
-        assert_eq!(word(t, "없음", 1), "없음");
-        assert_eq!(word(t, "기본값", 0), "기본값");
-        // Paths and addresses whole; brackets and quotes stop them.
-        let t = "see (src/main.rs) or \"user@host:~/x\", ok";
-        assert_eq!(word(t, "main", 0), "src/main.rs");
-        assert_eq!(word(t, "host", 0), "user@host:~/x");
-        // A one-letter word at a line end: not the newline with it.
-        assert_eq!(word("a\nfoo", "a", 0), "a");
-        // Past the line end: the word before it.
-        assert_eq!(word("abc\ndef", "\n", 0), "abc");
-        // On a space: the space alone.
-        assert_eq!(word("a b", " ", 0), " ");
-    }
-
-    /// Two clicks in two frames on a Hangul word of a real egui text field,
-    /// the text moving between them (as rendered markdown does when the
-    /// first click shows the paragraph's markup): that word, nothing more.
-    #[test]
-    fn double_click_in_a_text_field() {
-        let ctx = egui::Context::default();
-        crate::theme::install_fonts(&ctx, crate::theme::DEFAULT_FONT, crate::theme::DEFAULT_ICON_FONT);
-        let mut text = String::from("설정 파일 없음\n기본값 사용 text");
-        let id = egui::Id::new("field");
-        let mut indent = 0.0;
-        let mut target = egui::Pos2::ZERO;
-        let mut frame = |events: Vec<egui::Event>, indent: f32, target: &mut egui::Pos2| {
-            let mut range = None;
-            let _ = ctx.run(egui::RawInput { events, ..Default::default() }, |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    ui.add_space(indent);
-                    let before = super::cursor_before(ui, id);
-                    let out = egui::TextEdit::multiline(&mut text).id(id).show(ui);
-                    super::select_word_on_double_click(ui, &out, out.galley.job.text.as_str(), before);
-                    *target = out.galley.pos_from_ccursor(egui::text::CCursor::new(7)).center() + out.galley_pos.to_vec2();
-                    range = egui::TextEdit::load_state(ctx, id).and_then(|s| s.cursor.char_range()).map(|r| (r.primary.index.min(r.secondary.index), r.primary.index.max(r.secondary.index)));
-                });
-            });
-            range
-        };
-        frame(vec![], indent, &mut target);
-        let at = target;
-        let click = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
-        frame(vec![egui::Event::PointerMoved(at), click(true), click(false)], indent, &mut target);
-        // The text moves down a line before the second click lands.
-        indent = 20.0;
-        let r = frame(vec![click(true), click(false)], indent, &mut target);
-        assert_eq!(r, Some((6, 8)), "\"없음\" only (egui alone took more)");
-    }
-}
-
 /// The word around char index `at` of `text` (char indices, end exclusive);
 /// on a break character, that character alone.
 pub fn word_at(text: &str, at: usize) -> (usize, usize) {
@@ -479,5 +415,69 @@ pub fn ui_widget(
                 });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod word_tests {
+    use super::word_at;
+
+    fn word(text: &str, needle: &str, off: usize) -> String {
+        let at = text[..text.find(needle).unwrap()].chars().count() + off;
+        let (s, e) = word_at(text, at);
+        text.chars().skip(s).take(e - s).collect()
+    }
+
+    #[test]
+    fn double_click_words() {
+        // Hangul is a word, and the line end stops it (egui's rule ran on).
+        let t = "설정 파일 없음\n기본값 사용";
+        assert_eq!(word(t, "없음", 1), "없음");
+        assert_eq!(word(t, "기본값", 0), "기본값");
+        // Paths and addresses whole; brackets and quotes stop them.
+        let t = "see (src/main.rs) or \"user@host:~/x\", ok";
+        assert_eq!(word(t, "main", 0), "src/main.rs");
+        assert_eq!(word(t, "host", 0), "user@host:~/x");
+        // A one-letter word at a line end: not the newline with it.
+        assert_eq!(word("a\nfoo", "a", 0), "a");
+        // Past the line end: the word before it.
+        assert_eq!(word("abc\ndef", "\n", 0), "abc");
+        // On a space: the space alone.
+        assert_eq!(word("a b", " ", 0), " ");
+    }
+
+    /// Two clicks in two frames on a Hangul word of a real egui text field,
+    /// the text moving between them (as rendered markdown does when the
+    /// first click shows the paragraph's markup): that word, nothing more.
+    #[test]
+    fn double_click_in_a_text_field() {
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx, crate::theme::DEFAULT_FONT, crate::theme::DEFAULT_ICON_FONT);
+        let mut text = String::from("설정 파일 없음\n기본값 사용 text");
+        let id = egui::Id::new("field");
+        let mut indent = 0.0;
+        let mut target = egui::Pos2::ZERO;
+        let mut frame = |events: Vec<egui::Event>, indent: f32, target: &mut egui::Pos2| {
+            let mut range = None;
+            let _ = ctx.run(egui::RawInput { events, ..Default::default() }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.add_space(indent);
+                    let before = super::cursor_before(ui, id);
+                    let out = egui::TextEdit::multiline(&mut text).id(id).show(ui);
+                    super::select_word_on_double_click(ui, &out, out.galley.job.text.as_str(), before);
+                    *target = out.galley.pos_from_ccursor(egui::text::CCursor::new(7)).center() + out.galley_pos.to_vec2();
+                    range = egui::TextEdit::load_state(ctx, id).and_then(|s| s.cursor.char_range()).map(|r| (r.primary.index.min(r.secondary.index), r.primary.index.max(r.secondary.index)));
+                });
+            });
+            range
+        };
+        frame(vec![], indent, &mut target);
+        let at = target;
+        let click = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        frame(vec![egui::Event::PointerMoved(at), click(true), click(false)], indent, &mut target);
+        // The text moves down a line before the second click lands.
+        indent = 20.0;
+        let r = frame(vec![click(true), click(false)], indent, &mut target);
+        assert_eq!(r, Some((6, 8)), "\"없음\" only (egui alone took more)");
     }
 }

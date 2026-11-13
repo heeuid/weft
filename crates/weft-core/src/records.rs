@@ -343,8 +343,7 @@ mod tests {
         }
         std::fs::write(root.join(format!("logs/weft-{}.log", day(50))), "old").unwrap();
         std::fs::write(root.join(format!("logs/agent-h-{}.log", day(1))), "new").unwrap();
-        let mut r = Records::default();
-        r.commands = Rule { on: true, keep_days: 30, max_mb: 1 };
+        let mut r = Records { commands: Rule { on: true, keep_days: 30, max_mb: 1 }, ..Default::default() };
         r.app_log.keep_days = 30;
         prune(&root, &r);
         let mut left: Vec<String> = Item::Commands.files(&root).iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
