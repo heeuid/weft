@@ -29,10 +29,10 @@ pub enum Deco {
     /// ```mermaid block over chars [start, end]. `collapsed`: the code is hidden
     /// and the block's height reserved for the rendered diagram.
     Diagram { start: usize, end: usize, source: String, collapsed: bool },
-    /// Rendered table: char index of each row start (header first, separator
-    /// row excluded), char index of its end, and the x of each column border
-    /// relative to the text's left edge.
-    Table { rows: Vec<usize>, end: usize, cols: Vec<f32> },
+    /// Rendered table, drawn over the room its first line reserves (char
+    /// `at`): every cell wrapped in its column (see `Grid`; x and y from the
+    /// text's left edge and the table's top).
+    Table { at: usize, grid: Grid },
 }
 
 pub struct MdLayout {
@@ -215,15 +215,42 @@ enum Align {
     Right,
 }
 
-/// A table being laid out (cursor outside it): where its columns start.
+/// A table being laid out (cursor outside it): the lines it spans, the
+/// height it takes, and its cells (taken into the Deco at its last line).
 struct Table {
     header: usize,
     end: usize,
-    aligns: Vec<Align>,
-    widths: Vec<f32>,
-    col_x: Vec<f32>,
-    cols: Vec<f32>,
-    rows: Vec<usize>,
+    height: f32,
+    grid: Option<Grid>,
+}
+
+/// Cells by row (each laid out to wrap in its column, and its x), column
+/// borders' x, rows' top y (and the bottom), the padding above a row's text.
+pub type Grid = (Vec<Vec<(LayoutJob, f32)>>, Vec<f32>, Vec<f32>, f32);
+
+/// Column widths that fit `room`: as wide as their content when all fit;
+/// otherwise the columns narrower than an even share keep their width and
+/// the rest share what is left (never under `min`).
+fn fit_columns(natural: &[f32], room: f32, min: f32) -> Vec<f32> {
+    if natural.iter().sum::<f32>() <= room || natural.is_empty() {
+        return natural.to_vec();
+    }
+    let mut order: Vec<usize> = (0..natural.len()).collect();
+    order.sort_by(|a, b| natural[*a].total_cmp(&natural[*b]));
+    let mut out = natural.to_vec();
+    let mut left = room;
+    for (k, &c) in order.iter().enumerate() {
+        let share = left / (order.len() - k) as f32;
+        if natural[c] <= share {
+            left -= natural[c];
+        } else {
+            for &rest in &order[k..] {
+                out[rest] = share.max(min);
+            }
+            break;
+        }
+    }
+    out
 }
 
 /// Cells of a `| a | b |` row (outer pipes optional).
@@ -523,8 +550,20 @@ struct Fence {
 ///
 /// `breaks`: every newline is a line break, as in GitHub PR descriptions and
 /// comments; otherwise a single newline inside a paragraph is a space (CommonMark).
-/// `measure` gives the unwrapped width of a text in a font (aligns table columns).
-pub fn layout(text: &str, cursor_line: Option<usize>, size: f32, breaks: bool, diagram: &mut dyn FnMut(&str) -> Option<f32>, measure: &mut dyn FnMut(&str, &FontId) -> f32) -> MdLayout {
+/// `measure` gives the unwrapped width of a text in a font (aligns table
+/// columns), `fit` the size of a laid-out job (table cells wrapped to their
+/// column), `wrap` the width the text is wrapped to.
+#[allow(clippy::too_many_arguments)]
+pub fn layout(
+    text: &str,
+    cursor_line: Option<usize>,
+    size: f32,
+    breaks: bool,
+    wrap: f32,
+    diagram: &mut dyn FnMut(&str) -> Option<f32>,
+    measure: &mut dyn FnMut(&str, &FontId) -> f32,
+    fit: &mut dyn FnMut(LayoutJob) -> egui::Vec2,
+) -> MdLayout {
     let mut job = LayoutJob::default();
     let mut decos = Vec::new();
     let mut char_pos = 0usize; // char index of the current line start
@@ -565,26 +604,53 @@ pub fn layout(text: &str, cursor_line: Option<usize>, size: f32, breaks: bool, d
                         }
                     })
                     .collect();
-                let mut widths = vec![0.0_f32; aligns.len()];
-                for (i, l) in lines[ln..end].iter().enumerate() {
-                    if i == 1 {
-                        continue;
-                    }
-                    let st = if i == 0 { Style { family: Fam::Bold, ..body } } else { body };
-                    for (c, cell) in table_cells(l).iter().enumerate().take(widths.len()) {
-                        let mut scratch = LayoutJob::default();
-                        Ctx { job: &mut scratch, cursor_line: false }.inline(cell.trim(), st);
-                        widths[c] = widths[c].max(sections_width(&scratch, 0, measure));
+                // Each cell is laid out on its own, wrapped to its column, and
+                // drawn over the room the table's (hidden) source reserves: in
+                // one text layout, a row wider than the editor wrapped back to
+                // the left edge, over the other columns.
+                let row_lines: Vec<&str> = lines[ln..end].iter().enumerate().filter(|(i, _)| *i != 1).map(|(_, l)| *l).collect();
+                let cell_job = |cell: &str, header: bool| {
+                    let st = if header { Style { family: Fam::Bold, ..body } } else { body };
+                    let mut j = LayoutJob::default();
+                    Ctx { job: &mut j, cursor_line: false }.inline(cell.trim(), st);
+                    j
+                };
+                let mut natural = vec![0.0_f32; aligns.len()];
+                for (i, l) in row_lines.iter().enumerate() {
+                    for (c, cell) in table_cells(l).iter().enumerate().take(natural.len()) {
+                        natural[c] = natural[c].max(sections_width(&cell_job(cell, i == 0), 0, measure));
                     }
                 }
                 let pad = size * 0.6;
-                let (mut cols, mut col_x) = (vec![0.0_f32], Vec::new());
+                let widths = fit_columns(&natural, (wrap - 2.0 * pad * natural.len() as f32 - 2.0).max(0.0), size * 3.0);
+                let mut cols = vec![0.0_f32];
                 for w in &widths {
-                    let left = *cols.last().unwrap();
-                    col_x.push(left + pad);
-                    cols.push(left + w + 2.0 * pad);
+                    cols.push(cols.last().unwrap() + w + 2.0 * pad);
                 }
-                table = Some(Table { header: ln, end, aligns, widths, col_x, cols, rows: Vec::new() });
+                let vpad = size * 0.35;
+                let mut cells = Vec::new();
+                let mut rows_y = vec![0.0_f32];
+                for (i, l) in row_lines.iter().enumerate() {
+                    let texts = table_cells(l);
+                    let mut row = Vec::new();
+                    let mut h = size * 1.3;
+                    for (c, w) in widths.iter().enumerate() {
+                        let mut j = cell_job(texts.get(c).copied().unwrap_or(""), i == 0);
+                        j.wrap.max_width = *w;
+                        let s = fit(j.clone());
+                        h = h.max(s.y);
+                        let slack = (w - s.x).max(0.0);
+                        let x = cols[c] + pad + match aligns[c] {
+                            Align::Left => 0.0,
+                            Align::Center => slack / 2.0,
+                            Align::Right => slack,
+                        };
+                        row.push((j, x));
+                    }
+                    cells.push(row);
+                    rows_y.push(rows_y.last().unwrap() + h + 2.0 * vpad);
+                }
+                table = Some(Table { header: ln, end, height: *rows_y.last().unwrap(), grid: Some((cells, cols, rows_y, vpad)) });
             }
         }
 
@@ -709,57 +775,21 @@ pub fn layout(text: &str, cursor_line: Option<usize>, size: f32, breaks: bool, d
                 cx.inline(item, body);
             }
         } else if let Some(t) = table.as_mut() {
-            if ln == t.header + 1 {
-                // The separator row: hidden and (almost) no height.
-                cx.marker(line, body);
-                tiny_newline = true;
+            // The source is hidden: its first character, invisible and as tall
+            // as the table, reserves the room the cells are drawn over (as a
+            // rendered diagram does); every other line takes (almost) none.
+            if ln == t.header {
+                let first = line.chars().next().map(|c| c.len_utf8()).unwrap_or(0);
+                let tall = TextFormat { font_id: FontId::new((t.height / 1.3).max(1.0), FontFamily::Proportional), color: Color32::TRANSPARENT, ..Default::default() };
+                cx.job.append(&line[..first], 0.0, tall);
+                cx.marker(&line[first..], body);
+                decos.push(Deco::Table { at: char_pos, grid: t.grid.take().unwrap_or_default() });
             } else {
-                t.rows.push(char_pos);
-                let st = if ln == t.header { Style { family: Fam::Bold, ..body } } else { body };
-                let row_first = cx.job.sections.len();
-                let lead = line.len() - line.trim_start().len();
-                let inner = line.trim();
-                let has_open = inner.starts_with('|');
-                cx.marker(&line[..lead], body);
-                let mut rest = inner;
-                if has_open {
-                    cx.marker("|", body);
-                    rest = &rest[1..];
-                }
-                let has_close = rest.ends_with('|');
-                if has_close {
-                    rest = &rest[..rest.len() - 1];
-                }
-                let cells = table_cells(line).len();
-                for (c, part) in rest.splitn(cells, '|').enumerate() {
-                    if c > 0 {
-                        cx.marker("|", body);
-                    }
-                    let content = part.trim();
-                    let before = part.len() - part.trim_start().len();
-                    cx.marker(&part[..before], body);
-                    let x_now = sections_width(cx.job, row_first, measure);
-                    let s0 = cx.job.sections.len();
-                    cx.inline(content, st);
-                    if c < t.col_x.len() && cx.job.sections.len() > s0 {
-                        let slack = (t.widths[c] - sections_width(cx.job, s0, measure)).max(0.0);
-                        let off = match t.aligns[c] {
-                            Align::Left => 0.0,
-                            Align::Center => slack / 2.0,
-                            Align::Right => slack,
-                        };
-                        cx.job.sections[s0].leading_space = (t.col_x[c] + off - x_now).max(0.0);
-                    }
-                    cx.marker(&part[before + content.len()..], body);
-                }
-                if has_close {
-                    cx.marker("|", body);
-                }
-                cx.marker(&line[lead + inner.len()..], body);
+                cx.marker(line, body);
             }
+            tiny_newline = true;
             if ln + 1 == t.end {
-                let t = table.take().unwrap();
-                decos.push(Deco::Table { rows: t.rows, end: char_pos + line_chars, cols: t.cols });
+                table = None;
             }
         } else if trimmed.starts_with('|') {
             // Tables: monospace so columns line up; pipes and the separator row faint.
@@ -910,43 +940,77 @@ mod tests {
     #[test]
     fn layout_keeps_every_byte_of_the_source() {
         let src = "# 제목\n\n**굵게** 와 *기울임*, `code`, [링크](http://x)\n- [ ] 할 일\n- [x] 끝\n> 인용\n```rs\nfn main() {}\n```\n---\n| a | b |\n";
-        let l = layout(src, None, 14.0, false, &mut |_| None, &mut mono);
+        let l = layout(src, None, 14.0, false, 1000.0, &mut |_| None, &mut mono, &mut fit_mono);
         assert_eq!(l.job.text, src, "the editor needs the exact source text");
-        assert_eq!(layout("a\nb", None, 14.0, false, &mut |_| None, &mut mono).job.text, "a b");
+        assert_eq!(layout("a\nb", None, 14.0, false, 1000.0, &mut |_| None, &mut mono, &mut fit_mono).job.text, "a b");
         let covered: usize = l.job.sections.iter().map(|s| s.byte_range.len()).sum();
         assert_eq!(covered, src.len());
+    }
+
+    /// Size of a job laid out at its wrap width, monospace (6 per char at size
+    /// 10), wrapping at spaces like egui: enough for the table tests.
+    fn fit_mono(j: LayoutJob) -> egui::Vec2 {
+        let text: String = j.sections.iter().map(|s| &j.text[s.byte_range.clone()]).collect();
+        let size = j.sections.first().map(|s| s.format.font_id.size).unwrap_or(10.0);
+        let (cw, w) = (size * 0.6, j.wrap.max_width);
+        let (mut lines, mut cur, mut widest) = (1, 0.0_f32, 0.0_f32);
+        for word in text.split(' ') {
+            let ww = word.chars().count() as f32 * cw;
+            let add = if cur > 0.0 { cw + ww } else { ww };
+            if cur > 0.0 && cur + add > w {
+                lines += 1;
+                cur = ww;
+            } else {
+                cur += add;
+            }
+            widest = widest.max(cur);
+        }
+        egui::vec2(widest, lines as f32 * size * 1.3)
+    }
+
+    fn lay(src: &str, cursor: Option<usize>, size: f32, wrap: f32) -> MdLayout {
+        layout(src, cursor, size, false, wrap, &mut |_| None, &mut mono, &mut fit_mono)
     }
 
     #[test]
     fn tables_hide_pipes_and_align_columns() {
         let src = "| name | n |\n|:--|--:|\n| a | 10 |\n| longer | 2 |\n";
-        let l = layout(src, None, 10.0, false, &mut |_| None, &mut mono);
+        let l = lay(src, None, 10.0, 1000.0);
         assert_eq!(l.job.text, src);
-        let Some(Deco::Table { rows, cols, .. }) = l.decos.iter().find(|d| matches!(d, Deco::Table { .. })) else { panic!("no table") };
-        assert_eq!(rows.len(), 3, "header + 2 rows, separator excluded");
-        assert_eq!(cols.len(), 3);
-        // Cell text starts at the same x in every row of a left-aligned column.
-        let x_of = |needle: &str| {
-            let at = src.find(needle).unwrap();
-            let row = src[..at].rfind('\n').map(|i| i + 1).unwrap_or(0);
-            let first = l.job.sections.iter().position(|s| s.byte_range.start >= row).unwrap();
-            let me = l.job.sections.iter().position(|s| s.byte_range.start == at).unwrap();
-            sections_width(&l.job, first, &mut mono) - sections_width(&l.job, me, &mut mono)
-        };
-        assert!((x_of("a ") - x_of("longer")).abs() < 0.01);
-        assert!((x_of("a ") - x_of("name")).abs() < 0.01);
-        // Visible text has no pipes.
-        let shown: String = l.job.sections.iter().filter(|s| s.format.color != Color32::TRANSPARENT).map(|s| &l.job.text[s.byte_range.clone()]).collect();
-        assert!(!shown.contains('|'), "{shown}");
+        let Some(Deco::Table { grid: (cells, cols, rows_y, _), .. }) = l.decos.iter().find(|d| matches!(d, Deco::Table { .. })) else { panic!("no table") };
+        assert_eq!(cells.len(), 3, "header + 2 rows, separator excluded");
+        assert_eq!(cols.len(), 3, "a border left of each column and one at the end");
+        assert_eq!(rows_y.len(), 4);
+        // Left-aligned cells start at the same x; the right-aligned ones end
+        // at the column's right side.
+        assert_eq!(cells[0][0].1, cells[2][0].1);
+        assert!(cells[1][1].1 < cells[2][1].1, "10 starts left of 2 (right-aligned)");
+        // The source is all invisible: the cells are drawn over it.
+        assert_eq!(visible(&l), "");
         // With the cursor inside, the table is raw.
-        let raw = layout(src, Some(2), 10.0, false, &mut |_| None, &mut mono);
+        let raw = lay(src, Some(2), 10.0, 1000.0);
         assert!(!raw.decos.iter().any(|d| matches!(d, Deco::Table { .. })));
+    }
+
+    #[test]
+    fn a_wide_table_wraps_inside_its_columns() {
+        let long = "one two three four five six seven eight nine ten eleven twelve";
+        let src = format!("| key | value |\n|---|---|\n| a | {long} |\n");
+        let l = lay(&src, None, 10.0, 200.0);
+        let Some(Deco::Table { grid: (cells, cols, rows_y, _), .. }) = l.decos.iter().find(|d| matches!(d, Deco::Table { .. })) else { panic!("no table") };
+        assert!(*cols.last().unwrap() <= 200.0 + 0.5, "fits the editor: {cols:?}");
+        let short_row = rows_y[1] - rows_y[0];
+        let long_row = rows_y[2] - rows_y[1];
+        assert!(long_row > short_row * 2.0, "the long cell wraps onto several lines: {rows_y:?}");
+        // The narrow column keeps its width.
+        assert!(cols[1] - cols[0] < 40.0, "{cols:?}");
+        assert_eq!(cells[1][1].0.wrap.max_width, cols[2] - cols[1] - 12.0);
     }
 
     #[test]
     fn inline_html_renders() {
         let src = "a <b>bold</b> &amp; <kbd>K</kbd><!-- note --> x<br>y\n<div align=\"center\">\n<img src=\"p.png\" alt=\"pic\">\n</div>\n<hr>\nVec<T> &nope; a < b\n";
-        let l = layout(src, None, 14.0, false, &mut |_| None, &mut mono);
+        let l = layout(src, None, 14.0, false, 1000.0, &mut |_| None, &mut mono, &mut fit_mono);
         assert_eq!(l.job.text.chars().count(), src.chars().count());
         let v = visible(&l);
         assert!(v.contains("a bold & K x"), "{v}");
@@ -958,14 +1022,14 @@ mod tests {
         assert!(l.decos.iter().any(|d| matches!(d, Deco::Rule { .. })));
         assert!(l.job.sections.iter().any(|s| s.format.font_id.family == FontFamily::Name(BOLD_FONT.into()) && &l.job.text[s.byte_range.clone()] == "bold"));
         // On the cursor line the source is shown as written.
-        let raw = layout(src, Some(0), 14.0, false, &mut |_| None, &mut mono);
+        let raw = layout(src, Some(0), 14.0, false, 1000.0, &mut |_| None, &mut mono, &mut fit_mono);
         assert!(raw.job.text.starts_with("a <b>bold</b> &amp;"));
     }
 
     #[test]
     fn code_blocks_are_highlighted_by_language() {
         let src = "```c\nint main() { return 0; } // hi\n```\n```\nint plain\n```\n";
-        let l = layout(src, None, 14.0, false, &mut |_| None, &mut mono);
+        let l = layout(src, None, 14.0, false, 1000.0, &mut |_| None, &mut mono, &mut fit_mono);
         assert_eq!(l.job.text.chars().count(), src.chars().count());
         let color_of = |needle: &str, nth: usize| {
             let at = src.match_indices(needle).nth(nth).unwrap().0;
@@ -1002,7 +1066,7 @@ mod tests {
     #[test]
     fn both_fences_show_while_editing_the_block() {
         let src = "```\n```\nafter";
-        let shown = |cursor| visible(&layout(src, cursor, 14.0, false, &mut |_| None, &mut mono));
+        let shown = |cursor| visible(&layout(src, cursor, 14.0, false, 1000.0, &mut |_| None, &mut mono, &mut fit_mono));
         assert_eq!(shown(Some(0)).matches("```").count(), 2, "{}", shown(Some(0)));
         assert_eq!(shown(Some(1)).matches("```").count(), 2);
         assert_eq!(shown(Some(2)).matches("```").count(), 0, "cursor outside: fences hidden");
@@ -1011,12 +1075,12 @@ mod tests {
     #[test]
     fn unclosed_fence_is_plain_text() {
         let src = "```\n**bold** after\n";
-        let l = layout(src, None, 14.0, false, &mut |_| None, &mut mono);
+        let l = layout(src, None, 14.0, false, 1000.0, &mut |_| None, &mut mono, &mut fit_mono);
         assert!(!l.decos.iter().any(|d| matches!(d, Deco::Code { .. })));
         assert!(l.job.sections.iter().any(|s| s.format.font_id.family == FontFamily::Name(BOLD_FONT.into())));
         // ```rust inside a block does not close it.
         let src = "```\n```rust\nx\n```\n";
-        let l = layout(src, None, 14.0, false, &mut |_| None, &mut mono);
+        let l = layout(src, None, 14.0, false, 1000.0, &mut |_| None, &mut mono, &mut fit_mono);
         let codes: Vec<_> = l.decos.iter().filter(|d| matches!(d, Deco::Code { .. })).collect();
         assert_eq!(codes, [&Deco::Code { start: 0, end: src.chars().count() - 1 }]);
     }
@@ -1024,7 +1088,7 @@ mod tests {
     #[test]
     fn quotes_join_lines_and_split_on_bare_marker() {
         let src = "> a\n> b\n>\n> c\n";
-        let l = layout(src, None, 14.0, false, &mut |_| None, &mut mono);
+        let l = layout(src, None, 14.0, false, 1000.0, &mut |_| None, &mut mono, &mut fit_mono);
         assert_eq!(l.job.text, "> a > b\n>\n> c\n");
         // The joined line's second "> " takes no room.
         let b = l.job.sections.iter().find(|s| s.byte_range.start == 4).unwrap();
@@ -1034,37 +1098,37 @@ mod tests {
     #[test]
     fn breaks_mode_keeps_every_newline() {
         let src = "> 678\n> 1234\none\ntwo\n";
-        let l = layout(src, None, 14.0, true, &mut |_| None, &mut mono);
+        let l = layout(src, None, 14.0, true, 1000.0, &mut |_| None, &mut mono, &mut fit_mono);
         assert_eq!(l.job.text, src);
     }
 
     #[test]
     fn single_newlines_join_a_paragraph() {
         let src = "one\ntwo  \nthree\n\nfour\n- item\nmore\n# h\nx\n```\na\nb\n```\n";
-        let l = layout(src, None, 14.0, false, &mut |_| None, &mut mono);
+        let l = layout(src, None, 14.0, false, 1000.0, &mut |_| None, &mut mono, &mut fit_mono);
         assert_eq!(l.job.text.chars().count(), src.chars().count(), "cursor positions must match the source");
         let lines: Vec<&str> = l.job.text.split('\n').collect();
         assert_eq!(&lines[..6], ["one two  ", "three", "", "four", "- item more", "# h"]);
         assert_eq!(&lines[6..10], ["x", "```", "a", "b"]);
         // The paragraph holding the cursor keeps its lines.
-        let l = layout(src, Some(1), 14.0, false, &mut |_| None, &mut mono);
+        let l = layout(src, Some(1), 14.0, false, 1000.0, &mut |_| None, &mut mono, &mut fit_mono);
         assert!(l.job.text.starts_with("one\ntwo  \nthree\n"));
     }
 
     #[test]
     fn markup_hidden_except_on_cursor_line() {
         let src = "## Title **bold**\nnext";
-        let away = visible(&layout(src, Some(1), 14.0, false, &mut |_| None, &mut mono));
+        let away = visible(&layout(src, Some(1), 14.0, false, 1000.0, &mut |_| None, &mut mono, &mut fit_mono));
         assert!(!away.contains('#') && !away.contains("**"), "{away}");
         assert!(away.contains("Title") && away.contains("bold"));
-        let here = visible(&layout(src, Some(0), 14.0, false, &mut |_| None, &mut mono));
+        let here = visible(&layout(src, Some(0), 14.0, false, 1000.0, &mut |_| None, &mut mono, &mut fit_mono));
         assert!(here.contains("## ") && here.contains("**bold**"), "{here}");
     }
 
     #[test]
     fn decorations_for_blocks() {
         let src = "- a\n- [x] done\n> q\n```\ncode\n```\n---\n# H\n";
-        let l = layout(src, None, 14.0, false, &mut |_| None, &mut mono);
+        let l = layout(src, None, 14.0, false, 1000.0, &mut |_| None, &mut mono, &mut fit_mono);
         assert!(l.decos.contains(&Deco::Bullet { at: 0 }));
         let check = l.decos.iter().find_map(|d| match d {
             Deco::Check { byte, checked, .. } => Some((*byte, *checked)),
@@ -1082,10 +1146,10 @@ mod tests {
     fn mermaid_block_collapses_into_reserved_space() {
         let src = "text\n```mermaid\ngraph TD; A-->B\n```\nafter\n";
         let mut asked = Vec::new();
-        let l = layout(src, Some(0), 14.0, false, &mut |s: &str| {
+        let l = layout(src, Some(0), 14.0, false, 1000.0, &mut |s: &str| {
             asked.push(s.to_string());
             Some(120.0)
-        }, &mut mono);
+        }, &mut mono, &mut fit_mono);
         assert_eq!(asked, vec!["graph TD; A-->B\n".to_string()]);
         assert_eq!(l.job.text, src);
         assert!(!visible(&l).contains("graph"), "code hidden when the diagram is shown");
@@ -1093,10 +1157,10 @@ mod tests {
         assert!(l.decos.iter().any(|d| matches!(d, Deco::Diagram { collapsed: true, .. })));
         // Cursor inside the block: edit the source, no diagram requested.
         let mut asked = 0;
-        let l = layout(src, Some(2), 14.0, false, &mut |_| {
+        let l = layout(src, Some(2), 14.0, false, 1000.0, &mut |_| {
             asked += 1;
             Some(120.0)
-        }, &mut mono);
+        }, &mut mono, &mut fit_mono);
         assert_eq!(asked, 0);
         assert!(visible(&l).contains("graph"));
         assert!(l.decos.iter().any(|d| matches!(d, Deco::Diagram { collapsed: false, .. })));
@@ -1104,7 +1168,7 @@ mod tests {
 
     #[test]
     fn snake_case_is_not_italic() {
-        let l = layout("call my_func_name now", None, 14.0, false, &mut |_| None, &mut mono);
+        let l = layout("call my_func_name now", None, 14.0, false, 1000.0, &mut |_| None, &mut mono, &mut fit_mono);
         assert!(l.job.sections.iter().all(|s| !s.format.italics));
     }
 }

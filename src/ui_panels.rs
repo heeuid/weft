@@ -3801,13 +3801,15 @@ fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size:
         let bg = ui.painter().add(egui::Shape::Noop);
         let width = ui.available_width();
         let mut layouter = |ui: &Ui, text: &str, wrap: f32| {
-            let key = hash_str(text, &style_key);
+            // The width too: table columns are fitted to it.
+            let key = hash_str(text, &format!("{style_key}|{}", wrap.round()));
             let cached: MdCache = ui.ctx().memory_mut(|m| m.data.get_temp_mut_or_default::<MdCache>(cache_id).clone());
             let job = match cached.job {
                 Some(j) if cached.key == key => j,
                 _ => {
                     let mut measure = |t: &str, font: &FontId| ui.fonts(|f| f.layout_no_wrap(t.to_owned(), font.clone(), Color32::WHITE).size().x);
-                    let mut l = md::layout(text, cursor_line, size, breaks, &mut |src: &str| diagram_size(ui.ctx(), src, wrap).map(|(_, s)| s.y), &mut measure);
+                    let mut fit = |j: egui::text::LayoutJob| ui.fonts(|f| f.layout_job(j).size());
+                    let mut l = md::layout(text, cursor_line, size, breaks, wrap, &mut |src: &str| diagram_size(ui.ctx(), src, wrap).map(|(_, s)| s.y), &mut measure, &mut fit);
                     crate::highlight::mark_job(&mut l.job, &marks, mark_cur);
                     let j = Arc::new(l.job);
                     ui.ctx().memory_mut(|m| m.data.insert_temp(cache_id, MdCache { key, job: Some(j.clone()), decos: Arc::new(l.decos) }));
@@ -3873,21 +3875,26 @@ fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size:
                     let y = at(i).bottom() + 3.0;
                     painter.hline(origin.x..=right, y, Stroke::new(1.0_f32, theme::border()));
                 }
-                md::Deco::Table { ref rows, end, ref cols } => {
-                    let (Some(&first), Some(&last_x)) = (rows.first(), cols.last()) else { continue };
-                    let (top, bottom) = (at(first).top(), at(end).bottom());
+                md::Deco::Table { at: i, grid: (ref cells, ref cols, ref rows_y, vpad) } => {
+                    let (Some(&last_x), Some(&height)) = (cols.last(), rows_y.last()) else { continue };
+                    let top = at(i).top();
                     let x = |c: f32| origin.x + c;
                     let stroke = Stroke::new(1.0_f32, theme::border());
-                    if let Some(&body) = rows.get(1) {
-                        let header = egui::Rect::from_min_max(pos2(x(0.0), top), pos2(x(last_x), at(body).top()));
+                    if let Some(&header_bottom) = rows_y.get(1) {
+                        let header = egui::Rect::from_min_max(pos2(x(0.0), top), pos2(x(last_x), top + header_bottom));
                         back.push(egui::Shape::rect_filled(header, CornerRadius::ZERO, theme::tint(theme::text_faint(), 30)));
                     }
-                    for &r in rows.iter() {
-                        painter.hline(x(0.0)..=x(last_x), at(r).top(), stroke);
+                    for &y in rows_y.iter() {
+                        painter.hline(x(0.0)..=x(last_x), top + y, stroke);
                     }
-                    painter.hline(x(0.0)..=x(last_x), bottom, stroke);
                     for &c in cols.iter() {
-                        painter.vline(x(c), top..=bottom, stroke);
+                        painter.vline(x(c), top..=top + height, stroke);
+                    }
+                    for (row, &y) in cells.iter().zip(rows_y.iter()) {
+                        for (job, cx) in row {
+                            let g = painter.layout_job(job.clone());
+                            painter.galley(pos2(x(*cx), top + y + vpad), g, theme::text());
+                        }
                     }
                 }
                 md::Deco::Diagram { start, end, ref source, collapsed } => {
