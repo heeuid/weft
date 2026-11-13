@@ -966,6 +966,9 @@ pub struct EditorFile {
     /// Read mode: selectable and copyable, not editable (markdown fully
     /// rendered, its markup never shown at the cursor).
     pub read: bool,
+    /// When it was last saved / copied with the Copy button (a moment of "✓").
+    pub saved_at: Option<Instant>,
+    pub copied_at: Option<Instant>,
     pub error: Option<String>,
     /// Raw bytes of a non-text file (images are shown, not edited).
     pub bytes: Option<std::sync::Arc<Vec<u8>>>,
@@ -1856,6 +1859,8 @@ impl App {
             mark_cur: None,
             rich: crate::md::is_markdown(path),
             read: false,
+            saved_at: None,
+            copied_at: None,
             error: None,
         });
         self.editor.active = self.editor.files.len() - 1;
@@ -1882,6 +1887,8 @@ impl App {
             mark_cur: None,
             rich: false,
             read: false,
+            saved_at: None,
+            copied_at: None,
             error: None,
         });
         self.editor.active = self.editor.files.len() - 1;
@@ -1982,6 +1989,8 @@ impl App {
             mark_cur: None,
             rich: true,
             read: false,
+            saved_at: None,
+            copied_at: None,
             error: None,
         });
         self.editor.active = self.editor.files.len() - 1;
@@ -2000,6 +2009,7 @@ impl App {
             match std::fs::write(&f.path, &f.text) {
                 Ok(()) => {
                     f.dirty = false;
+                    f.saved_at = Some(Instant::now());
                     // Remember the time of this write: with the old one, a later
                     // save took the memo for changed elsewhere and asked to overwrite.
                     if let Ok(md) = std::fs::metadata(&f.path) {
@@ -2457,8 +2467,8 @@ impl App {
                 } else {
                     f.dirty = false;
                     f.mtime = r["mtime"].as_f64();
-                    let name = path.rsplit('/').next().unwrap_or(&path).to_string();
-                    self.toast(format!("saved {name} on {host}"), ToastKind::Ok);
+                    // Said quietly in the editor's toolbar ("✓ saved"), not a toast.
+                    f.saved_at = Some(Instant::now());
                 }
             }
             Pending::Complete { pane } => {

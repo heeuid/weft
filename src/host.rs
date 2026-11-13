@@ -111,6 +111,24 @@ pub enum HostKind {
     /// Any command that behaves like `ssh HOST CMD` (receives the remote
     /// command string as its last argument), e.g. `["wsl", "-e", "sh", "-c"]`.
     Custom { pty: Vec<String>, agent: Vec<String> },
+    /// A serial console (UART): `port` on the host named `via` ("local": a
+    /// COM port opened by weft; a remote host: remote/serial.py run there).
+    Serial { via: String, port: String, baud: u32 },
+}
+
+pub const SERIAL_PY: &str = include_str!("../remote/serial.py");
+
+/// Speeds offered for serial consoles.
+pub const BAUDS: &[u32] = &[9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600, 1000000, 1500000, 3000000];
+
+/// The remote command for a serial console: the bridge, sent in the command
+/// itself (base64) so nothing is written on the host.
+pub fn serial_command(port: &str, baud: u32) -> String {
+    let src = base64::engine::general_purpose::STANDARD.encode(SERIAL_PY);
+    format!(
+        "P=$(command -v python3 || command -v python); exec \"$P\" -c 'import base64;exec(base64.b64decode(\"{src}\"))' {} {baud}",
+        sh_quote(port)
+    )
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -155,6 +173,32 @@ impl Profile {
                 v.push(remote_shell_command(cwd));
                 v
             }
+            // Built from the host it is reached through (App::start_pty).
+            HostKind::Serial { .. } => Vec::new(),
+        }
+    }
+
+    /// argv for a serial console on a remote host: this host's terminal
+    /// command with the bridge instead of a shell.
+    pub fn serial_argv(&self, port: &str, baud: u32, password: bool) -> Vec<String> {
+        let cmd = serial_command(port, baud);
+        match &self.kind {
+            HostKind::Ssh { target, args } => {
+                let mut v = vec!["ssh".to_string(), "-tt".to_string()];
+                if password {
+                    v.extend(["-o".to_string(), "NumberOfPasswordPrompts=1".to_string()]);
+                }
+                v.extend(args.iter().cloned());
+                v.push(target.clone());
+                v.push(cmd);
+                v
+            }
+            HostKind::Custom { pty, .. } => {
+                let mut v = pty.clone();
+                v.push(cmd);
+                v
+            }
+            HostKind::Local | HostKind::Serial { .. } => Vec::new(),
         }
     }
 
@@ -163,7 +207,8 @@ impl Profile {
     /// password is answered by weft's askpass.
     pub fn agent_argv(&self, password: bool) -> Option<Vec<String>> {
         match &self.kind {
-            HostKind::Local => None,
+            // A serial console has no file system of its own: served locally.
+            HostKind::Local | HostKind::Serial { .. } => None,
             HostKind::Ssh { target, args } => {
                 let auth = if password { "NumberOfPasswordPrompts=1" } else { "BatchMode=yes" };
                 let mut v: Vec<String> = ["ssh", "-T", "-o", auth, "-o", "ConnectTimeout=10"].iter().map(|s| s.to_string()).collect();

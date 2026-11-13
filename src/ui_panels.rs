@@ -2706,6 +2706,7 @@ impl App {
         let mut settings_changed = false;
         let mut delete = false;
         let mut open_find = false;
+        let mut copy = false;
         let memo = self.is_memo(&self.editor.files[idx]);
         {
             let f = &mut self.editor.files[idx];
@@ -2718,16 +2719,56 @@ impl App {
             // Wraps onto a second line in a narrow editor instead of losing its end.
             ui.horizontal_wrapped(|ui| {
                 let can_save = f.dirty && !f.scratch && !f.binary && !f.loading;
+                // A just-saved file says so for a moment, quietly (no toast).
+                let just_saved = f.saved_at.is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(1600));
+                if just_saved {
+                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(200));
+                }
                 if memo {
-                    ui.label(RichText::new("memo · saved automatically").size(11.5).color(theme::text_faint()));
+                    // Saved by itself; the button saves right now, for peace of mind.
+                    if ui.button(RichText::new("Save").size(12.5)).on_hover_text("memos save themselves within a second; this saves now (Ctrl+S)").clicked() {
+                        save = true;
+                    }
+                    let (state, color) = if f.dirty {
+                        ("memo · editing…", theme::text_faint())
+                    } else if just_saved {
+                        ("memo · \u{2713} saved", theme::success())
+                    } else {
+                        ("memo · saved automatically", theme::text_faint())
+                    };
+                    ui.label(RichText::new(state).size(11.5).color(color));
                     ui.menu_button(RichText::new("Delete…").size(12.5), |ui| {
                         if ui.button(RichText::new("Delete this memo").color(theme::error())).clicked() {
                             delete = true;
                             ui.close_menu();
                         }
                     });
-                } else if ui.add_enabled(can_save, egui::Button::new(RichText::new("Save").size(12.5))).on_hover_text("Ctrl+S — writes through the agent").clicked() {
-                    save = true;
+                } else {
+                    // Unsaved changes: Save stands out, with a word next to it.
+                    let save_btn = if can_save {
+                        egui::Button::new(RichText::new("Save").size(12.5).color(theme::bg_base())).fill(theme::accent())
+                    } else {
+                        egui::Button::new(RichText::new("Save").size(12.5))
+                    };
+                    if ui.add_enabled(can_save, save_btn).on_hover_text("Ctrl+S — writes through the agent").clicked() {
+                        save = true;
+                    }
+                    if f.saving {
+                        ui.label(RichText::new("saving…").size(11.5).color(theme::text_faint()));
+                    } else if f.dirty && !f.scratch {
+                        ui.label(RichText::new("\u{25cf} unsaved").size(11.5).color(theme::warn())).on_hover_text("changed since it was opened or saved");
+                    } else if just_saved {
+                        ui.label(RichText::new("\u{2713} saved").size(11.5).color(theme::success()));
+                    }
+                }
+                // Copy: the selection, or the whole file; says so for a moment.
+                let just_copied = f.copied_at.is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(1200));
+                if just_copied {
+                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(200));
+                }
+                let copy_label = if just_copied { RichText::new("\u{2713} copied").size(12.5).color(theme::success()) } else { RichText::new("Copy").size(12.5) };
+                if !f.binary && ui.add(egui::Button::new(copy_label)).on_hover_text("copy the selection, or the whole file when nothing is selected").clicked() {
+                    copy = true;
                 }
                 if !f.scratch && !memo && ui.add_enabled(!f.loading, egui::Button::new(RichText::new("Reload").size(12.5))).clicked() {
                     reload = true;
@@ -2736,11 +2777,10 @@ impl App {
                     f.read = !f.read;
                 }
                 if md::is_markdown(&f.path) {
-                    if ui.selectable_label(f.rich, RichText::new("Rich").size(12.5)).on_hover_text("edit the rendered document").clicked() {
-                        f.rich = true;
-                    }
-                    if ui.selectable_label(!f.rich, RichText::new("Source").size(12.5)).on_hover_text("plain markdown source").clicked() {
-                        f.rich = false;
+                    // One button: the view shown, a click for the other.
+                    let (label, tip) = if f.rich { ("Rich \u{21c4}", "rendered document · click: plain markdown source") } else { ("Source \u{21c4}", "plain markdown source · click: rendered document") };
+                    if ui.button(RichText::new(label).size(12.5)).on_hover_text(tip).clicked() {
+                        f.rich = !f.rich;
                     }
                     // Who draws ```mermaid blocks. The menu stays open while choosing.
                     let m = &mut self.settings.mermaid;
@@ -2807,6 +2847,16 @@ impl App {
         }
         ui.separator();
         let edit_id = Id::new(("editor", idx, self.editor.files[idx].path.clone()));
+        if copy {
+            let f = &mut self.editor.files[idx];
+            let range = TextEdit::load_state(ui.ctx(), edit_id).and_then(|s| s.cursor.char_range()).map(|r| (r.primary.index.min(r.secondary.index), r.primary.index.max(r.secondary.index)));
+            let text = match range.filter(|(a, b)| a != b) {
+                Some((a, b)) => f.text.chars().skip(a).take(b - a).collect(),
+                None => f.text.clone(),
+            };
+            f.copied_at = Some(std::time::Instant::now());
+            self.actions.push(Action::Copy(text));
+        }
         if ui.memory(|m| m.has_focus(edit_id)) && ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::S)) {
             save = true;
         }
@@ -3006,6 +3056,11 @@ impl App {
             if changed && !f.scratch {
                 f.dirty = true;
             }
+            // Typing again: the "✓ saved" / "✓ copied" of before no longer holds.
+            if changed {
+                f.saved_at = None;
+                f.copied_at = None;
+            }
         // A match picked in the find bar: select it.
         if let Some((a, b)) = self.editor.select.take() {
             let mut st = TextEdit::load_state(ui.ctx(), edit_id).unwrap_or_default();
@@ -3091,6 +3146,11 @@ impl App {
         });
         if changed && !f.scratch {
             f.dirty = true;
+        }
+        // Typing again: the "✓ saved" / "✓ copied" of before no longer holds.
+        if changed {
+            f.saved_at = None;
+            f.copied_at = None;
         }
         // A match picked in the find bar: select it.
         if let Some((a, b)) = self.editor.select.take() {
@@ -3274,7 +3334,7 @@ impl App {
                     .settings
                     .profiles
                     .iter()
-                    .map(|p| (p.name.clone(), match p.kind { HostKind::Local => "local shell", HostKind::Ssh { .. } => "ssh profile", HostKind::Custom { .. } => "custom transport" }))
+                    .map(|p| (p.name.clone(), match p.kind { HostKind::Local => "local shell", HostKind::Ssh { .. } => "ssh profile", HostKind::Custom { .. } => "custom transport", HostKind::Serial { .. } => "serial console" }))
                     .collect();
                 for h in &self.ssh_hosts {
                     if !names.iter().any(|(n, _)| n == h) {
@@ -3802,6 +3862,30 @@ fn secs_input(ui: &mut Ui, id: &str, secs: &mut u64, zero: &str) -> bool {
     changed
 }
 
+/// The width to fit tables to: `now` once it has stayed the same for a
+/// moment, until then the one before (resizing reuses the last layout).
+fn settled_width(ctx: &egui::Context, id: Id, now: f32) -> f32 {
+    const SETTLE: std::time::Duration = std::time::Duration::from_millis(150);
+    let (settled, pending) = ctx.memory(|m| m.data.get_temp::<(f32, Option<(f32, std::time::Instant)>)>(id)).unwrap_or((now, None));
+    let state = if (now - settled).abs() < 1.0 {
+        (settled, None)
+    } else {
+        match pending {
+            Some((w, at)) if (w - now).abs() < 1.0 && at.elapsed() >= SETTLE => (now, None),
+            Some((w, at)) if (w - now).abs() < 1.0 => {
+                ctx.request_repaint_after(SETTLE.saturating_sub(at.elapsed()));
+                (settled, Some((w, at)))
+            }
+            _ => {
+                ctx.request_repaint_after(SETTLE);
+                (settled, Some((now, std::time::Instant::now())))
+            }
+        }
+    };
+    ctx.memory_mut(|m| m.data.insert_temp(id, state));
+    state.0
+}
+
 fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size: f32, breaks: bool, renderer: &crate::mermaid::Renderer, readonly: bool, goto: Option<usize>, cache_dir: &std::path::Path) -> bool {
     let ctx = ui.ctx().clone();
     let focused = ui.memory(|m| m.has_focus(edit_id));
@@ -3833,15 +3917,19 @@ fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size:
         let bg = ui.painter().add(egui::Shape::Noop);
         let width = ui.available_width();
         let mut layouter = |ui: &Ui, text: &str, wrap: f32| {
-            // The width too: table columns are fitted to it.
-            let key = hash_str(text, &format!("{style_key}|{}", wrap.round()));
+            // The width too: table columns are fitted to it. While the editor
+            // is being resized the last layout stays (laying out the document
+            // and every table cell again at each pixel made resizing crawl);
+            // once the width holds still for a moment it is redone.
+            let fit_w = settled_width(ui.ctx(), cache_id.with("width"), wrap);
+            let key = hash_str(text, &format!("{style_key}|{}", fit_w.round()));
             let cached: MdCache = ui.ctx().memory_mut(|m| m.data.get_temp_mut_or_default::<MdCache>(cache_id).clone());
             let job = match cached.job {
                 Some(j) if cached.key == key => j,
                 _ => {
                     let mut measure = |t: &str, font: &FontId| ui.fonts(|f| f.layout_no_wrap(t.to_owned(), font.clone(), Color32::WHITE).size().x);
                     let mut fit = |j: egui::text::LayoutJob| ui.fonts(|f| f.layout_job(j).size());
-                    let mut l = md::layout(text, cursor_line, size, breaks, wrap, &mut |src: &str| diagram_size(ui.ctx(), src, wrap).map(|(_, s)| s.y), &mut measure, &mut fit);
+                    let mut l = md::layout(text, cursor_line, size, breaks, fit_w, &mut |src: &str| diagram_size(ui.ctx(), src, fit_w).map(|(_, s)| s.y), &mut measure, &mut fit);
                     crate::highlight::mark_job(&mut l.job, &marks, mark_cur);
                     let j = Arc::new(l.job);
                     ui.ctx().memory_mut(|m| m.data.insert_temp(cache_id, MdCache { key, job: Some(j.clone()), decos: Arc::new(l.decos) }));
@@ -3878,6 +3966,10 @@ fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size:
         let origin = out.galley_pos;
         let at = |i: usize| galley.pos_from_ccursor(egui::text::CCursor::new(i)).translate(origin.to_vec2());
         let decos = ctx.memory_mut(|m| m.data.get_temp_mut_or_default::<MdCache>(cache_id).decos.clone());
+        let selection = out.cursor_range.map(|r| {
+            let (a, b) = (r.primary.ccursor.index, r.secondary.ccursor.index);
+            (a.min(b), a.max(b))
+        }).filter(|(a, b)| a != b);
         let right = origin.x + width;
         let mut back = Vec::new();
         let painter = ui.painter().clone();
@@ -3918,7 +4010,20 @@ fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size:
                     let y = at(i).bottom() + 3.0;
                     painter.hline(origin.x..=right, y, Stroke::new(1.0_f32, theme::border()));
                 }
-                md::Deco::Table { at: i, grid: (ref cells, ref cols, ref rows_y, vpad) } => {
+                md::Deco::Table { at: i, grid: (ref cells, ref cols, ref rows_y, vpad), ref rows } => {
+                    // A selection over the table: the rows it takes, whole (it
+                    // copies their markdown source).
+                    if let (Some(&last_x), Some((lo, hi))) = (cols.last(), selection) {
+                        let top = at(i).top();
+                        for (r, &(s, e)) in rows.iter().enumerate() {
+                            if s < hi && e > lo {
+                                if let (Some(&y0), Some(&y1)) = (rows_y.get(r), rows_y.get(r + 1)) {
+                                    let band = egui::Rect::from_min_max(pos2(origin.x, top + y0), pos2(origin.x + last_x, top + y1));
+                                    painter.rect_filled(band, CornerRadius::ZERO, theme::tint(ui.visuals().selection.bg_fill, 90));
+                                }
+                            }
+                        }
+                    }
                     let (Some(&last_x), Some(&height)) = (cols.last(), rows_y.last()) else { continue };
                     let top = at(i).top();
                     let x = |c: f32| origin.x + c;

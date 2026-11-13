@@ -179,6 +179,65 @@ def op_mkdirs(req):
     return {}
 
 
+def _port_holders(dev):
+    """Other processes with a serial port open (pid, user, command), and
+    the pid in a lock file (minicom, screen…). Other users' processes show
+    only to root."""
+    import glob
+    real = os.path.realpath(dev)
+    found = {}
+    for fd in glob.glob("/proc/[0-9]*/fd/*"):
+        try:
+            if os.path.realpath(fd) != real:
+                continue
+            pid = fd.split("/")[2]
+            with open("/proc/%s/cmdline" % pid, "rb") as f:
+                cmd = f.read().replace(b"\0", b" ").decode("utf-8", "replace").strip()
+            uid = os.stat("/proc/%s" % pid).st_uid
+            try:
+                import pwd
+                user = pwd.getpwuid(uid).pw_name
+            except Exception:
+                user = str(uid)
+            found[pid] = {"pid": int(pid), "user": user, "cmd": cmd[:200]}
+        except (OSError, ValueError):
+            pass
+    for lock in ("/var/lock/LCK..", "/run/lock/LCK.."):
+        try:
+            with open(lock + os.path.basename(real)) as f:
+                pid = f.read().strip().split()[0]
+            if pid not in found and os.path.exists("/proc/%s" % pid):
+                found[pid] = {"pid": int(pid), "user": "?", "cmd": "(lock file)"}
+        except (OSError, IndexError):
+            pass
+    return list(found.values())
+
+
+def op_serial_ports(req):
+    """Serial ports (USB adapters, on-board UARTs) with who has them open."""
+    import glob
+    by_id = {}
+    for link in glob.glob("/dev/serial/by-id/*"):
+        by_id[os.path.realpath(link)] = os.path.basename(link)
+    ports = []
+    for pattern in ("/dev/ttyUSB*", "/dev/ttyACM*", "/dev/ttyAMA*", "/dev/ttyTHS*", "/dev/ttymxc*", "/dev/rfcomm*", "/dev/ttyS*"):
+        for dev in sorted(glob.glob(pattern)):
+            name = os.path.basename(dev)
+            if name.startswith("ttyS"):
+                # Most PCs list ttyS0-31 with no UART behind them.
+                try:
+                    with open("/sys/class/tty/%s/port" % name) as f:
+                        if int(f.read().strip(), 16) == 0:
+                            continue
+                    with open("/sys/class/tty/%s/type" % name) as f:
+                        if f.read().strip() == "0":
+                            continue
+                except (OSError, ValueError):
+                    continue
+            ports.append({"port": dev, "desc": by_id.get(os.path.realpath(dev), ""), "holders": _port_holders(dev)})
+    return {"ports": ports}
+
+
 def op_complete(req):
     d = _path(req.get("dir"))
     prefix = req.get("prefix", "")
@@ -357,7 +416,7 @@ OPS = {
     "hello": op_hello, "list": op_list, "stat": op_stat, "read": op_read, "write": op_write,
     "complete": op_complete, "procs": op_procs, "kill": op_kill, "sys": op_sys, "grep": op_grep,
     "tree": op_tree, "cwd": op_cwd, "walk": op_walk, "rchunk": op_rchunk, "wchunk": op_wchunk,
-    "finish": op_finish, "mkdirs": op_mkdirs,
+    "finish": op_finish, "mkdirs": op_mkdirs, "serial_ports": op_serial_ports,
 }
 
 

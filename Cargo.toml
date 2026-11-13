@@ -25,6 +25,7 @@ chacha20 = "0.9"
 zeroize = "1"
 getrandom = "0.2"
 ttf-parser = "0.25"
+serialport = { version = "4", default-features = false }
 
 [build-dependencies]
 embed-resource = "3"

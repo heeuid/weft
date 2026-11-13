@@ -31,8 +31,8 @@ pub enum Deco {
     Diagram { start: usize, end: usize, source: String, collapsed: bool },
     /// Rendered table, drawn over the room its first line reserves (char
     /// `at`): every cell wrapped in its column (see `Grid`; x and y from the
-    /// text's left edge and the table's top).
-    Table { at: usize, grid: Grid },
+    /// text's left edge and the table's top), and each row's source chars.
+    Table { at: usize, grid: Grid, rows: Vec<(usize, usize)> },
 }
 
 pub struct MdLayout {
@@ -222,6 +222,9 @@ struct Table {
     end: usize,
     height: f32,
     grid: Option<Grid>,
+    /// Char index of the table's first character, and each row's source.
+    at: usize,
+    row_chars: Vec<(usize, usize)>,
 }
 
 /// Cells by row (each laid out to wrap in its column, and its x), column
@@ -650,7 +653,7 @@ pub fn layout(
                     cells.push(row);
                     rows_y.push(rows_y.last().unwrap() + h + 2.0 * vpad);
                 }
-                table = Some(Table { header: ln, end, height: *rows_y.last().unwrap(), grid: Some((cells, cols, rows_y, vpad)) });
+                table = Some(Table { header: ln, end, height: *rows_y.last().unwrap(), grid: Some((cells, cols, rows_y, vpad)), at: 0, row_chars: Vec::new() });
             }
         }
 
@@ -778,18 +781,28 @@ pub fn layout(
             // The source is hidden: its first character, invisible and as tall
             // as the table, reserves the room the cells are drawn over (as a
             // rendered diagram does); every other line takes (almost) none.
+            // The room is the line height of a 1 px character: a glyph that
+            // tall (as before) drew a huge block when a selection crossed it.
             if ln == t.header {
                 let first = line.chars().next().map(|c| c.len_utf8()).unwrap_or(0);
-                let tall = TextFormat { font_id: FontId::new((t.height / 1.3).max(1.0), FontFamily::Proportional), color: Color32::TRANSPARENT, ..Default::default() };
+                let tall = TextFormat { font_id: FontId::new(1.0, FontFamily::Proportional), color: Color32::TRANSPARENT, line_height: Some(t.height.max(1.0)), ..Default::default() };
                 cx.job.append(&line[..first], 0.0, tall);
                 cx.marker(&line[first..], body);
-                decos.push(Deco::Table { at: char_pos, grid: t.grid.take().unwrap_or_default() });
+                t.at = char_pos;
             } else {
                 cx.marker(line, body);
             }
+            // Each row's source (the separator row goes with the header), so a
+            // selection over the table can be shown row by row.
+            if ln != t.header + 1 {
+                t.row_chars.push((char_pos, char_pos + line_chars));
+            } else if let Some(last) = t.row_chars.last_mut() {
+                last.1 = char_pos + line_chars;
+            }
             tiny_newline = true;
             if ln + 1 == t.end {
-                table = None;
+                let t = table.take().unwrap();
+                decos.push(Deco::Table { at: t.at, grid: t.grid.unwrap_or_default(), rows: t.row_chars });
             }
         } else if trimmed.starts_with('|') {
             // Tables: monospace so columns line up; pipes and the separator row faint.
@@ -977,10 +990,19 @@ mod tests {
         let src = "| name | n |\n|:--|--:|\n| a | 10 |\n| longer | 2 |\n";
         let l = lay(src, None, 10.0, 1000.0);
         assert_eq!(l.job.text, src);
-        let Some(Deco::Table { grid: (cells, cols, rows_y, _), .. }) = l.decos.iter().find(|d| matches!(d, Deco::Table { .. })) else { panic!("no table") };
+        let Some(Deco::Table { grid: (cells, cols, rows_y, _), rows, .. }) = l.decos.iter().find(|d| matches!(d, Deco::Table { .. })) else { panic!("no table") };
         assert_eq!(cells.len(), 3, "header + 2 rows, separator excluded");
         assert_eq!(cols.len(), 3, "a border left of each column and one at the end");
         assert_eq!(rows_y.len(), 4);
+        // Each drawn row knows its source (the separator row with the header):
+        // a selection over the table is shown, and copied, row by row.
+        let text = |(a, b): (usize, usize)| src.chars().skip(a).take(b - a).collect::<String>();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(text(rows[0]), "| name | n |\n|:--|--:|");
+        assert_eq!(text(rows[2]), "| longer | 2 |");
+        // The room is a line height, not a giant glyph a selection would show.
+        assert!(l.job.sections.iter().all(|s| s.format.font_id.size < 30.0));
+        assert!(l.job.sections.iter().any(|s| s.format.line_height.is_some_and(|h| (h - rows_y[3]).abs() < 0.5)));
         // Left-aligned cells start at the same x; the right-aligned ones end
         // at the column's right side.
         assert_eq!(cells[0][0].1, cells[2][0].1);
