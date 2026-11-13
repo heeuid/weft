@@ -78,6 +78,8 @@ pub(crate) enum Cmd {
     PanelSplit(Region, bool),
     /// Start the newest weft (a new build or install) with the same tabs and settings.
     Restart,
+    /// Open a serial port (UART) of this PC or a remote host in a tab.
+    Serial,
     FocusLeft,
     FocusRight,
     FocusUp,
@@ -90,6 +92,7 @@ pub(crate) enum Cmd {
 const COMMANDS: &[(Cmd, &str, &str, &[&str])] = &[
     (Cmd::NewTab, "new_tab", "New tab (same host)", &["Ctrl+Shift+T"]),
     (Cmd::Connect, "connect", "Connect to host…", &["Ctrl+Shift+N"]),
+    (Cmd::Serial, "serial", "Serial console… (UART: a COM port here or a /dev/tty port on a remote host)", &[]),
     (Cmd::SplitRight, "split_right", "Split right", &["Ctrl+Shift+D"]),
     (Cmd::SplitDown, "split_down", "Split down", &["Ctrl+Shift+E"]),
     (Cmd::ClosePane, "close_pane", "Close pane", &["Ctrl+Shift+W"]),
@@ -201,6 +204,7 @@ impl App {
             Cmd::Zoom => self.toggle_zoom(),
             Cmd::Sidebar => self.settings.sidebar = !self.settings.sidebar,
             Cmd::Restart => self.restart(),
+            Cmd::Serial => self.open_serial_dialog(),
             Cmd::PanelSplit(region, right) => {
                 let focus = if region == Region::Side { self.side_focus } else { self.editor_focus };
                 let all = self.panels_of(region);
@@ -800,7 +804,12 @@ impl App {
             ui.spacing_mut().item_spacing.x = 10.0;
             let (rect, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
             let status = self.conns.get(&host).map(|c| c.status.clone()).unwrap_or(ConnStatus::Connecting);
+            let serial = match self.profile(&host).kind {
+                HostKind::Serial { via, port, baud } => Some(if via == "local" { format!("serial {port} \u{00b7} {baud}") } else { format!("serial {port} on {via} \u{00b7} {baud}") }),
+                _ => None,
+            };
             let (dot, label) = match &status {
+                _ if serial.is_some() => (theme::success(), serial.clone().unwrap_or_default()),
                 ConnStatus::Ready => (theme::success(), if host == "local" { "native fs".to_string() } else { "agent ready".to_string() }),
                 ConnStatus::Connecting => (theme::warn(), "agent connecting…".to_string()),
                 ConnStatus::Failed(e) => (theme::error(), format!("agent offline: {}", e.chars().take(80).collect::<String>())),
@@ -3767,6 +3776,7 @@ fn group(c: Cmd) -> &'static str {
     match c {
         Cmd::NewTab
         | Cmd::Connect
+        | Cmd::Serial
         | Cmd::SplitRight
         | Cmd::SplitDown
         | Cmd::ClosePane
@@ -4218,6 +4228,44 @@ mod tests {
             assert!(!f.conflict && !f.dirty, "write {k}: conflict {} dirty {}", f.conflict, f.dirty);
             assert_eq!(std::fs::read_to_string(&f.path).unwrap(), *text);
         }
+        drop(app);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Two side panels: the first follows the terminal, the one split off
+    /// stays put. With the second clicked last, the first still follows.
+    #[test]
+    fn side_panels_that_follow_the_terminal_follow_it() {
+        use crate::app::{PanelId, Region};
+        let dir = std::env::temp_dir().join(format!("weft-follow-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let _guard = crate::app::TEST_APP.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("WEFT_DATA_DIR", &dir);
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx, crate::theme::DEFAULT_FONT, crate::theme::DEFAULT_ICON_FONT);
+        let mut app = crate::app::App::new(ctx.clone());
+        app.settings.sidebar = true;
+        app.side.follow = true;
+        app.set_root("local", "C:/start");
+        app.split_panel(PanelId::first(Region::Side), crate::app::Dock::Bottom);
+        let frame = |app: &mut crate::app::App| {
+            let _ = ctx.run(Default::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| app.ui_layout(ui));
+            });
+        };
+        frame(&mut app);
+        // The second one clicked last: it becomes the focus, with its own view
+        // (as a click in it does while the panels are drawn).
+        app.side_focus = 1;
+        let v = app.side_views[&1].clone();
+        app.set_side_view(v);
+        frame(&mut app);
+        app.follow_terminal("local", "C:/moved");
+        frame(&mut app);
+        let root = |app: &crate::app::App, n: u32| app.side_views.get(&n).and_then(|v| v.root.clone()).map(|r| r.1);
+        assert_eq!(root(&app, 0).as_deref(), Some("C:/moved"), "the first follows the terminal");
+        assert_eq!(root(&app, 1).as_deref(), Some("C:/start"), "the split-off one stays");
         drop(app);
         let _ = std::fs::remove_dir_all(&dir);
     }

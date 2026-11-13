@@ -1155,6 +1155,26 @@ mod tests {
     }
 
     #[test]
+    fn serial_bridge_and_command() {
+        // The bridge compiles (it runs on the remote host only: no termios here).
+        let check = format!("compile(open(r'{}/remote/serial.py', encoding='utf-8').read(), 'serial.py', 'exec')", env!("CARGO_MANIFEST_DIR"));
+        if let Ok(out) = std::process::Command::new("python").arg("-c").arg(&check).output() {
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        }
+        // The command carries it whole, the port quoted.
+        let cmd = serial_command("/dev/tty USB0", 115200);
+        assert!(cmd.contains("'/dev/tty USB0' 115200"), "{cmd}");
+        let b64 = cmd.split("b64decode(\"").nth(1).and_then(|s| s.split('"').next()).unwrap();
+        assert_eq!(base64::engine::general_purpose::STANDARD.decode(b64).unwrap(), SERIAL_PY.as_bytes());
+        // Through ssh: the target, then the bridge instead of a shell.
+        let argv = Profile::ssh("pi").serial_argv("/dev/ttyUSB0", 9600, false);
+        assert_eq!(&argv[..3], ["ssh", "-tt", "pi"]);
+        assert!(argv[3].contains("exec \"$P\" -c"));
+        // A serial host has no agent of its own.
+        assert_eq!(Profile { name: "COM3".into(), kind: HostKind::Serial { via: "local".into(), port: "COM3".into(), baud: 115200 } }.agent_argv(false), None);
+    }
+
+    #[test]
     fn transfer_ops_copy_a_folder_in_chunks() {
         let dir = std::env::temp_dir().join(format!("weft-xfer-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

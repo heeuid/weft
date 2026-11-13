@@ -1149,6 +1149,8 @@ pub enum Pending {
     Cwd { pane: usize },
     /// A file transfer's request (see transfer.rs).
     Xfer { t: u64, step: crate::transfer::Step },
+    /// The serial ports of a host, for the Serial console dialog.
+    SerialPorts { host: String },
 }
 
 /// Which tabs a tab's context menu closes, relative to that tab.
@@ -1306,6 +1308,8 @@ pub struct App {
     pub started_at: std::time::SystemTime,
     pub update_ready: bool,
     pub update_checked: Instant,
+    /// The "Serial console…" dialog, while open.
+    pub serial_dialog: Option<crate::serial_ui::SerialDialog>,
     /// A file or folder (host, path) being dragged from a Files panel.
     pub file_drag: Option<(String, String)>,
     /// Folder rows drawn this frame (rect, host, path): drop targets.
@@ -1444,6 +1448,7 @@ impl App {
             started_at: std::time::SystemTime::now(),
             update_ready: false,
             update_checked: Instant::now(),
+            serial_dialog: None,
             file_drag: None,
             drop_dirs: Vec::new(),
             side_focus: 0,
@@ -1586,6 +1591,10 @@ impl App {
 
     fn start_pty(&mut self, pane: &mut Pane) {
         let prof = self.profile(&pane.host);
+        if let host::HostKind::Serial { via, port, baud } = prof.kind.clone() {
+            self.start_serial(pane, &via, &port, baud);
+            return;
+        }
         let secret = if prof.is_local() { None } else { self.secrets.get(&pane.host) };
         let mut argv = prof.pty_argv(pane.initial_cwd.as_deref(), secret.is_some());
         let mut env = secret.as_deref().map(|s| host::askpass_env(s)).unwrap_or_default();
@@ -1612,6 +1621,52 @@ impl App {
             }
             Err(e) => {
                 self.data.log(&format!("pane {} spawn failed: {e}", pane.id));
+                pane.pty = None;
+                pane.exited = true;
+                pane.spawn_error = Some(e);
+            }
+        }
+    }
+
+    /// A serial console pane: a local port opened here, or a remote one
+    /// through that host's ssh with the bridge (remote/serial.py).
+    fn start_serial(&mut self, pane: &mut Pane, via: &str, port: &str, baud: u32) {
+        pane.term = Term::new(pane.term.cols, pane.term.rows);
+        pane.injected = true; // no shell integration to inject
+        pane.shell_pid = None;
+        pane.parser = vte::Parser::new();
+        pane.widgets.clear();
+        pane.hist_seen = 0;
+        let result = if via == "local" {
+            self.data.log(&format!("pane {} serial {port} at {baud}", pane.id));
+            Pty::serial(port, baud, self.wake()).map_err(|e| {
+                // Is it one of ours?
+                let ours = self.panes.values().find(|p| p.id != pane.id && p.host == pane.host && !p.exited).map(|p| p.title());
+                match ours {
+                    Some(t) => format!("{e} — open in this weft already, in the tab \"{t}\""),
+                    None => e,
+                }
+            })
+        } else {
+            let through = self.profile(via);
+            let secret = self.secrets.get(via);
+            let argv = through.serial_argv(port, baud, secret.is_some());
+            let env = secret.as_deref().map(|s| host::askpass_env(s)).unwrap_or_default();
+            self.data.log(&format!("pane {} serial {via}:{port} at {baud} over {}", pane.id, argv.first().cloned().unwrap_or_default()));
+            if argv.is_empty() {
+                Err(format!("{via}: serial consoles go through ssh or a custom transport"))
+            } else {
+                Pty::spawn(&argv, None, &env, pane.term.cols as u16, pane.term.rows as u16, self.wake())
+            }
+        };
+        match result {
+            Ok(p) => {
+                pane.pty = Some(p);
+                pane.exited = false;
+                pane.spawn_error = None;
+            }
+            Err(e) => {
+                self.data.log(&format!("pane {} serial failed: {e}", pane.id));
                 pane.pty = None;
                 pane.exited = true;
                 pane.spawn_error = Some(e);
@@ -1797,13 +1852,30 @@ impl App {
     }
 
     pub fn on_active_changed(&mut self) {
-        if self.side.follow {
-            if let Some(p) = self.active_pane() {
-                let host = p.host.clone();
-                if let Some(cwd) = p.term.cwd.clone() {
-                    self.set_root(&host, &cwd);
-                }
+        if let Some(p) = self.active_pane() {
+            let host = p.host.clone();
+            if let Some(cwd) = p.term.cwd.clone() {
+                self.follow_terminal(&host, &cwd);
             }
+        }
+    }
+
+    /// The terminal moved to `host:cwd`: every side panel following it goes
+    /// there, whichever was clicked last (only that one used to, so a click
+    /// in a second side panel that stays put stopped the first following).
+    pub fn follow_terminal(&mut self, host: &str, cwd: &str) {
+        let new = Some((host.to_string(), cwd.to_string()));
+        let mut list = false;
+        for (n, v) in self.side_views.iter_mut() {
+            if v.follow && v.root != new && *n != self.side_focus {
+                v.root = new.clone();
+                list = true;
+            }
+        }
+        if self.side.follow {
+            self.set_root(host, cwd);
+        } else if list {
+            self.list_dir(host, cwd);
         }
     }
 
@@ -2324,6 +2396,11 @@ impl App {
 
     fn handle_term_event(&mut self, pane_id: usize, ev: TermEvent) {
         let Some(host) = self.panes.get(&pane_id).map(|p| p.host.clone()) else { return };
+        // A serial device is not a shell weft talks to: what it prints never
+        // opens files, sets the clipboard or asks for anything (a bell still rings).
+        if matches!(self.profile(&host).kind, host::HostKind::Serial { .. }) && !matches!(ev, TermEvent::Bell) {
+            return;
+        }
         match ev {
             TermEvent::Bell => {
                 if let Some(p) = self.panes.get_mut(&pane_id) {
@@ -2337,9 +2414,9 @@ impl App {
             }
             TermEvent::Notify(msg) => self.toast(format!("{host}: {msg}"), ToastKind::Info),
             TermEvent::CwdChanged => {
-                if Some(pane_id) == self.active_pane_id() && self.side.follow {
+                if Some(pane_id) == self.active_pane_id() {
                     if let Some(cwd) = self.panes[&pane_id].term.cwd.clone() {
-                        self.set_root(&host, &cwd);
+                        self.follow_terminal(&host, &cwd);
                     }
                 }
             }
@@ -2402,6 +2479,11 @@ impl App {
         let err = r.get("error").and_then(|v| v.as_str()).unwrap_or("error").to_string();
         match pending {
             Pending::Xfer { t, step } => self.on_transfer(t, step, ok, &r, err),
+            Pending::SerialPorts { host } => {
+                if let Some(d) = self.serial_dialog.as_mut().filter(|d| d.host == host) {
+                    d.ports = Some(if ok { Ok(crate::serial_ui::parse_ports(&r)) } else { Err(err) });
+                }
+            }
             Pending::List { path } => {
                 self.inflight.remove(&(host.to_string(), path.clone()));
                 if !ok {

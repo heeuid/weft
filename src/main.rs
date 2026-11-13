@@ -22,6 +22,7 @@ mod pty;
 mod records;
 mod restart;
 mod secret;
+mod serial_ui;
 mod term;
 mod theme;
 mod transfer;
@@ -156,6 +157,7 @@ impl eframe::App for WeftApp {
         app.ui_help(ctx);
         app.ui_memo_picker(ctx);
         app.ui_keys_window(ctx);
+        app.ui_serial_dialog(ctx);
         app.ui_toasts(ctx);
         app.ui_dock_drop(ctx);
         app.apply_actions();
