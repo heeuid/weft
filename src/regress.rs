@@ -247,6 +247,8 @@ fn table_cells_select_and_copy() {
     h.drag(a, b);
     h.frame(vec![Event::Copy]);
     assert_eq!(h.copied.take().as_deref(), Some("weft.exe\t12 MB\nnotes.md\t3 KB"));
+    // The mark is drawn by the toolbar, above: from the next frame.
+    h.frames(1);
     assert!(h.shows("\u{2713} copied"), "the copied mark");
     // One cell, by a double click.
     let c = cell(&h, "12 MB").center();
@@ -489,4 +491,18 @@ fn closing_a_busy_terminal_asks() {
     h.command("close_pane");
     assert!(h.app.confirm.is_none());
     assert_eq!(h.app.panes.len(), 1);
+}
+
+/// weft says which version it is: in Help, and from the palette's About.
+#[test]
+fn the_version_is_shown() {
+    let mut h = Harness::new(json!({}));
+    let line = crate::version::line();
+    assert!(line.contains(env!("CARGO_PKG_VERSION")));
+    h.command("help");
+    h.frames(2);
+    assert!(h.shows(&line), "Help shows {line:?}");
+    h.app.help = None;
+    h.command("about");
+    assert!(h.shows(&line), "About says it");
 }

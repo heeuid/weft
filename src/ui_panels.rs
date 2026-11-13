@@ -42,6 +42,7 @@ pub(crate) enum Cmd {
     Editor,
     Find,
     Composer,
+    About,
     ConfirmUnsaved,
     ConfirmRunning,
     PrevBlock,
@@ -160,6 +161,7 @@ const COMMANDS: &[(Cmd, &str, &str, &[&str])] = &[
     (Cmd::LocalShell(crate::host::LocalShell::Cmd), "shell_cmd", "Local shell: cmd", &[]),
     (Cmd::LocalShell(crate::host::LocalShell::Nu), "shell_nu", "Local shell: nushell", &[]),
     (Cmd::MarkdownBreaks, "markdown_breaks", "Markdown: toggle line breaks (GitHub PR style / CommonMark)", &[]),
+    (Cmd::About, "about", "About weft: which version this is", &[]),
     (Cmd::ConfirmUnsaved, "confirm_unsaved", "Ask before closing unsaved files: on / off", &[]),
     (Cmd::ConfirmRunning, "confirm_running", "Ask before ending running commands: on / off", &[]),
     (Cmd::Settings, "settings_file", "Open settings.json", &[]),
@@ -215,6 +217,7 @@ impl App {
                     self.ask_close_panes(vec![id])
                 }
             }
+            Cmd::About => self.toast(crate::version::line(), crate::app::ToastKind::Info),
             Cmd::ConfirmUnsaved => {
                 self.settings.confirm_unsaved = !self.settings.confirm_unsaved;
                 let how = if self.settings.confirm_unsaved { "weft asks before closing a file with unsaved changes" } else { "files close without asking, unsaved changes are dropped" };
@@ -1509,6 +1512,8 @@ impl App {
                 }
                 ui.add(TextEdit::singleline(&mut h.query).hint_text("search help…").desired_width(f32::INFINITY));
             });
+            // Which weft this is (also `weft --version`, and the palette's About).
+            ui.label(RichText::new(crate::version::line()).size(11.5).color(theme::text_faint()));
             ui.separator();
             let q = h.query.to_lowercase();
             let hit = |texts: &[&str]| q.is_empty() || texts.iter().any(|t| t.to_lowercase().contains(&q));
@@ -3924,7 +3929,7 @@ fn group(c: Cmd) -> &'static str {
         | Cmd::Fonts
         | Cmd::MarkdownBreaks => GROUPS[3],
         Cmd::Records | Cmd::Settings | Cmd::AgentLog | Cmd::Keys | Cmd::Restart | Cmd::ConfirmUnsaved | Cmd::ConfirmRunning => GROUPS[4],
-        Cmd::Help | Cmd::Features | Cmd::Palette => GROUPS[5],
+        Cmd::Help | Cmd::Features | Cmd::Palette | Cmd::About => GROUPS[5],
     }
 }
 

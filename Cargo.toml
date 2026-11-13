@@ -1,6 +1,6 @@
 [package]
 name = "weft"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "weft - a terminal that weaves GUI widgets into the TUI grid; thick local client, thin ssh/POSIX/python remote"
 

@@ -35,6 +35,7 @@ mod theme;
 mod transfer;
 mod ui_panels;
 mod ui_term;
+mod version;
 mod widgets;
 mod x11;
 
@@ -224,6 +225,12 @@ fn app_icon() -> egui::IconData {
 fn main() -> eframe::Result<()> {
     STARTED.get_or_init(Instant::now);
     let args: Vec<String> = std::env::args().collect();
+    // `weft --version` (or -V): say which weft this is, and leave. Before
+    // the console is let go of below, so a shell that started it sees it.
+    if args.iter().skip(1).any(|a| a == "--version" || a == "-V") {
+        println!("{}", version::line());
+        return Ok(());
+    }
     // ssh invokes SSH_ASKPASS as `weft.exe "<prompt>"` with a ticket in the environment.
     let as_askpass = args.get(1).map(|a| a == "--askpass").unwrap_or(false)
         || (std::env::var_os(secret::TICKET_VAR).is_some() && args.len() == 2);

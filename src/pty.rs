@@ -41,6 +41,10 @@ impl Pty {
         }
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
+        // As terminals name themselves to what runs in them
+        // (`echo $TERM_PROGRAM_VERSION`; local shells: ssh passes neither).
+        cmd.env("TERM_PROGRAM", "weft");
+        cmd.env("TERM_PROGRAM_VERSION", crate::version::VERSION);
         for (k, v) in env {
             cmd.env(k, v);
         }

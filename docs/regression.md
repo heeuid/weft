@@ -30,6 +30,10 @@ here. "none" marks what still has no automated test.
 | Drag a pane header to move it | `ui_term::tests::dragging_a_pane_header_moves_the_pane`, `app::node_tests::*` |
 | Serial console: bridge, command, missing port | `host::tests::serial_bridge_and_command`, `regress::serial_tab_explains_a_missing_port` |
 | X11 forwarding (-Y, DISPLAY, old settings) | `x11::tests::*` |
+| Block characters drawn, not from the font (no black band) | `ui_term::tests::blocks_fill_their_cells`, `a_full_block_hides_its_background` |
+| Letters stay in their cells in any font | `ui_term::tests::letters_keep_their_cells_in_any_font` |
+| Esc closes composer and scrollback search | `regress::escape_closes_composer_search_and_find` |
+| Closing a busy terminal asks | `regress::closing_a_busy_terminal_asks` |
 
 ## Keys, tabs, palette, dialogs
 
@@ -40,6 +44,10 @@ here. "none" marks what still has no automated test.
 | Ctrl+Shift+Z is redo in a text field | `ui_panels::tests::redo_key_stays_with_a_text_field` |
 | Tab drag reorder; narrow tab rows | `ui_panels::tests::dragged_tab_lands_between_tabs`, `narrow_tab_rows_keep_the_open_tab` |
 | Palette reopens full height, at the top | `regress::palette_reopens_full_height_at_the_top` |
+| Palette: fuzzy by default; text, glob, regex; mode kept | `ui_panels::tests::the_palette_matches_fuzzy_text_glob_or_regex`, `regress::the_palette_is_fuzzy_and_its_mode_is_kept` |
+| Version in Help and About; the version line; CHANGELOG has it | `regress::the_version_is_shown`, `version::tests::the_version_line` |
+| Closing weft with unsaved files asks, then closes | `regress::closing_weft_with_unsaved_files_asks` |
+| A restart brings back what was open | `regress::a_restart_brings_back_what_was_open` |
 | Keyboard shortcuts: rows hold still on remove | `regress::keys_window_rows_hold_still` |
 | Dialogs fit a small window | `regress::dialogs_fit_a_small_window` |
 | Privacy: "never" reads 0 while typed in | `ui_panels::tests::never_reads_zero_once_clicked` |
@@ -64,6 +72,10 @@ here. "none" marks what still has no automated test.
 | Tree like the agent | `host::tests::tree_lists_names_like_the_agent` |
 | Transfer ops; any host to any host; no overwrite | `host::tests::transfer_ops_copy_a_folder_in_chunks`, `transfer::tests::*` |
 | History search | `ui_panels::tests::history_search` |
+| New folder, new file, rename, delete (this PC) | `host::tests::file_operations`, `fileops::tests::parents_and_names` |
+| The same from a row's menu; Esc cancels a delete | `regress::files_new_folder_rename_delete` |
+| The hint beside a dragged file leaves its row readable | `transfer::tests::the_drop_hint_leaves_its_row_readable` |
+| Procs on this PC: list and kill | `host::tests::local_processes_list_and_kill` |
 
 ## Editor and markdown
 
@@ -78,7 +90,9 @@ here. "none" marks what still has no automated test.
 | Hidden images leave the GPU | `regress::hidden_images_leave_the_gpu` |
 | Images, PDF pages | `media::tests::*` |
 | Mermaid | `mermaid::tests::*` |
-| Copy rendered tables (read mode menu) | none (checked by hand: Copy as TSV) |
+| Table cells: letters, a cell, a block; Ctrl+C; the menu | `ui_panels::tests::a_table_selection_copies_letters_a_cell_or_a_block`, `regress::table_cells_select_and_copy` |
+| Closing an unsaved file asks: save, drop, cancel, off | `regress::closing_an_unsaved_file_asks` |
+| Esc closes the find bar | `regress::escape_closes_composer_search_and_find` |
 | Table resize settles after 150 ms | none |
 
 ## Fonts, theme, security, records
@@ -93,5 +107,8 @@ here. "none" marks what still has no automated test.
 ## Not automated
 
 - install.bat / uninstall.bat (cmd can't run from the test sandbox): run them by hand after changing them.
+- `weft --version` printed to a shell (the test binary isn't weft.exe): run it after a release build.
+- Delete to the Recycle Bin (tests delete for good: the bin is the user's).
+- File operations and Procs on a remote host (agent.py): the loopback tests don't reach them yet.
 - Dropping files from Explorer (the system gives no position; the cursor is asked).
 - The app icon in Explorer (checked: the exe carries one).

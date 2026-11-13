@@ -1457,7 +1457,7 @@ impl App {
         }
         crate::records::set_switches(&settings.records);
         let settings_passwords = settings.passwords;
-        data.log(&format!("start, data dir {}", data.root.display()));
+        data.log(&format!("start: {}, data dir {}", crate::version::line(), data.root.display()));
         let mut app = App {
             ctx,
             data,
