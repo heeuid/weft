@@ -2732,6 +2732,9 @@ impl App {
                 if !f.scratch && !memo && ui.add_enabled(!f.loading, egui::Button::new(RichText::new("Reload").size(12.5))).clicked() {
                     reload = true;
                 }
+                if !f.binary && ui.selectable_label(f.read, RichText::new("Read").size(12.5)).on_hover_text("read mode: select and copy, no editing (click again to edit)").clicked() {
+                    f.read = !f.read;
+                }
                 if md::is_markdown(&f.path) {
                     if ui.selectable_label(f.rich, RichText::new("Rich").size(12.5)).on_hover_text("edit the rendered document").clicked() {
                         f.rich = true;
@@ -3051,7 +3054,15 @@ impl App {
                     ui.fonts(|f| f.layout_job((*job).clone()))
                 };
                 let before = crate::widgets::cursor_before(ui, edit_id);
-                let out = TextEdit::multiline(&mut f.text)
+                // Read mode: the text as an immutable buffer, selectable and copyable.
+                let mut shown: &str;
+                let buf: &mut dyn egui::TextBuffer = if f.read {
+                    shown = f.text.as_str();
+                    &mut shown
+                } else {
+                    &mut f.text
+                };
+                let out = TextEdit::multiline(buf)
                     .id(edit_id)
                     .font(font.clone())
                     .code_editor()
@@ -3794,8 +3805,9 @@ fn secs_input(ui: &mut Ui, id: &str, secs: &mut u64, zero: &str) -> bool {
 fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size: f32, breaks: bool, renderer: &crate::mermaid::Renderer, readonly: bool, goto: Option<usize>, cache_dir: &std::path::Path) -> bool {
     let ctx = ui.ctx().clone();
     let focused = ui.memory(|m| m.has_focus(edit_id));
-    // The cursor's line shows its markup (from last frame's cursor).
-    let cursor_line = if focused {
+    // The cursor's line shows its markup (from last frame's cursor); in read
+    // mode everything stays rendered.
+    let cursor_line = if focused && !f.read {
         TextEdit::load_state(&ctx, edit_id).and_then(|s| s.cursor.char_range()).map(|r| md::line_of_char(&f.text, r.primary.index))
     } else {
         None
@@ -3841,7 +3853,16 @@ fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size:
             ui.fonts(|f| f.layout_job(job))
         };
         let before = crate::widgets::cursor_before(ui, edit_id);
-        let out = TextEdit::multiline(&mut f.text)
+        // Read mode: the text as an immutable buffer, selectable and copyable.
+        let read = f.read;
+        let mut shown: &str;
+        let buf: &mut dyn egui::TextBuffer = if read {
+            shown = f.text.as_str();
+            &mut shown
+        } else {
+            &mut f.text
+        };
+        let out = TextEdit::multiline(buf)
             .id(edit_id)
             .frame(false)
             .margin(egui::Margin::ZERO)
@@ -3885,7 +3906,7 @@ fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size:
                     } else {
                         painter.rect_stroke(b, CornerRadius::same(3), Stroke::new(1.2_f32, theme::text_dim()), egui::StrokeKind::Inside);
                     }
-                    if out.response.clicked() && pointer.map(|p| b.expand(2.0).contains(p)).unwrap_or(false) && !readonly {
+                    if out.response.clicked() && pointer.map(|p| b.expand(2.0).contains(p)).unwrap_or(false) && !readonly && !read {
                         toggle = Some(byte);
                     }
                 }

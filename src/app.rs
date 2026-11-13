@@ -963,6 +963,9 @@ pub struct EditorFile {
     pub mark_cur: Option<(usize, usize)>,
     /// Markdown shown rendered in place (false: plain source).
     pub rich: bool,
+    /// Read mode: selectable and copyable, not editable (markdown fully
+    /// rendered, its markup never shown at the cursor).
+    pub read: bool,
     pub error: Option<String>,
     /// Raw bytes of a non-text file (images are shown, not edited).
     pub bytes: Option<std::sync::Arc<Vec<u8>>>,
@@ -1852,6 +1855,7 @@ impl App {
             marks: Default::default(),
             mark_cur: None,
             rich: crate::md::is_markdown(path),
+            read: false,
             error: None,
         });
         self.editor.active = self.editor.files.len() - 1;
@@ -1877,6 +1881,7 @@ impl App {
             marks: Default::default(),
             mark_cur: None,
             rich: false,
+            read: false,
             error: None,
         });
         self.editor.active = self.editor.files.len() - 1;
@@ -1976,6 +1981,7 @@ impl App {
             marks: Default::default(),
             mark_cur: None,
             rich: true,
+            read: false,
             error: None,
         });
         self.editor.active = self.editor.files.len() - 1;
