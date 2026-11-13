@@ -377,7 +377,7 @@ fn row_at(t: &Term, abs: u64) -> Option<&term::Row> {
 fn word_span(t: &Term, abs: u64, col: usize) -> Option<(usize, usize)> {
     let chars = row_at(t, abs)?.chars_with_cols();
     let idx = chars.iter().rposition(|&(_, c)| c <= col)?;
-    let delim = |c: char| c.is_whitespace() || "\"'`<>()[]{}|;,".contains(c);
+    let delim = crate::widgets::word_break;
     let end_of = |i: usize| chars.get(i + 1).map(|n| n.1).unwrap_or(chars[i].1 + 1);
     if delim(chars[idx].0) {
         return Some((chars[idx].1, end_of(idx)));

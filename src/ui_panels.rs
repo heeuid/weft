@@ -3050,18 +3050,20 @@ impl App {
                     };
                     ui.fonts(|f| f.layout_job((*job).clone()))
                 };
-                let resp = ui.add(
-                    TextEdit::multiline(&mut f.text)
-                        .id(edit_id)
-                        .font(font.clone())
-                        .code_editor()
-                        .frame(false)
-                        .interactive(!readonly)
-                        .desired_width(f32::INFINITY)
-                        .desired_rows(lines.max(30))
-                        .lock_focus(true)
-                        .layouter(&mut layouter),
-                );
+                let before = crate::widgets::cursor_before(ui, edit_id);
+                let out = TextEdit::multiline(&mut f.text)
+                    .id(edit_id)
+                    .font(font.clone())
+                    .code_editor()
+                    .frame(false)
+                    .interactive(!readonly)
+                    .desired_width(f32::INFINITY)
+                    .desired_rows(lines.max(30))
+                    .lock_focus(true)
+                    .layouter(&mut layouter)
+                    .show(ui);
+                crate::widgets::select_word_on_double_click(ui, &out, &f.text, before);
+                let resp = out.response;
                 if resp.changed() {
                     changed = true;
                 }
@@ -3838,6 +3840,7 @@ fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size:
             job.wrap.max_width = wrap;
             ui.fonts(|f| f.layout_job(job))
         };
+        let before = crate::widgets::cursor_before(ui, edit_id);
         let out = TextEdit::multiline(&mut f.text)
             .id(edit_id)
             .frame(false)
@@ -3848,6 +3851,7 @@ fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size:
             .lock_focus(true)
             .layouter(&mut layouter)
             .show(ui);
+        crate::widgets::select_word_on_double_click(ui, &out, &f.text, before);
         changed = out.response.changed();
         let galley = &out.galley;
         let origin = out.galley_pos;
