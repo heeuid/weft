@@ -433,8 +433,10 @@ impl App {
         }
         if self.transfers_running() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
-        } else {
-            ctx.request_repaint_after(std::time::Duration::from_secs(1));
+        } else if let Some(left) = self.transfers.iter().filter(|t| t.state == State::Done).filter_map(|t| t.ended).map(|e| linger.saturating_sub(e.elapsed())).min() {
+            // Only to take a finished one away; failed and cancelled ones stay
+            // until cleared, with nothing to redraw meanwhile.
+            ctx.request_repaint_after(left + std::time::Duration::from_millis(50));
         }
         let mut cancel = None;
         let mut clear = false;

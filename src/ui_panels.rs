@@ -1888,14 +1888,17 @@ impl App {
                     if resp.clicked() {
                         scroll_to = Some(b.prompt_line);
                     }
-                    let (cmd, out) = (b.command.clone(), p.term.block_output(b));
+                    // The output is copied out only when asked for: per row and
+                    // per frame it built megabytes while a long output streamed.
+                    let cmd = b.command.clone();
+                    let out = || p.term.block_output(b);
                     resp.context_menu(|ui| {
                         if ui.button("Copy command").clicked() {
                             self.actions.push(Action::Copy(cmd.clone()));
                             ui.close_menu();
                         }
                         if ui.button("Copy output").clicked() {
-                            self.actions.push(Action::Copy(out.clone()));
+                            self.actions.push(Action::Copy(out()));
                             ui.close_menu();
                         }
                         if ui.button("Run again").clicked() {
@@ -1903,7 +1906,7 @@ impl App {
                             ui.close_menu();
                         }
                         if ui.button("Open output in editor").clicked() {
-                            self.actions.push(Action::OpenScratch(format!("output: {cmd}"), out.clone()));
+                            self.actions.push(Action::OpenScratch(format!("output: {cmd}"), out()));
                             ui.close_menu();
                         }
                     });
@@ -4028,6 +4031,8 @@ fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size:
         let painter = ui.painter().clone();
         let pointer = ctx.input(|i| i.pointer.interact_pos());
         let mut toggle: Option<usize> = None;
+        // Rendered tables: where, rows' y, rows' source, rows as tab-separated text.
+        let mut tables: Vec<(egui::Rect, Vec<f32>, Vec<(usize, usize)>, Vec<String>)> = Vec::new();
         for d in decos.iter() {
             match *d {
                 md::Deco::Code { start, end } => {
@@ -4097,6 +4102,8 @@ fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size:
                             painter.galley(pos2(x(*cx), top + y + vpad), g, theme::text());
                         }
                     }
+                    let tsv: Vec<String> = cells.iter().map(|row| row.iter().map(|(j, _)| j.text.replace('\t', " ")).collect::<Vec<_>>().join("\t")).collect();
+                    tables.push((egui::Rect::from_min_size(pos2(x(0.0), top), vec2(last_x, height)), rows_y.clone(), rows.clone(), tsv));
                 }
                 md::Deco::Diagram { start, end, ref source, collapsed } => {
                     let top = at(start).top();
@@ -4121,6 +4128,37 @@ fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size:
             }
         }
         ui.painter().set(bg, egui::Shape::Vec(back));
+        // Read mode: a rendered table is copied by rows. A drag over it
+        // selects whole rows (their markdown source; Ctrl+C copies them), and
+        // its menu copies the whole table, as markdown or tab-separated. (In
+        // edit mode a click shows the table's source instead, to edit it.)
+        if read {
+            let (press, at_now, dragging) = ctx.input(|i| (i.pointer.press_origin(), i.pointer.interact_pos(), i.pointer.primary_down()));
+            for (k, (r, ys, rows, tsv)) in tables.iter().enumerate() {
+                let (Some(&(first, _)), Some(&(_, last))) = (rows.first(), rows.last()) else { continue };
+                let row_at = |y: f32| ys.windows(2).position(|w| y < r.top() + w[1]).unwrap_or(rows.len() - 1).min(rows.len() - 1);
+                if let (true, Some(o), Some(p)) = (dragging, press, at_now) {
+                    if r.contains(o) && out.response.dragged() {
+                        let (a, b) = (row_at(o.y), row_at(p.y));
+                        let (from, to) = if a <= b { (rows[a].0, rows[b].1) } else { (rows[a].1, rows[b].0) };
+                        let mut st = out.state.clone();
+                        st.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(from), egui::text::CCursor::new(to))));
+                        st.store(&ctx, edit_id);
+                    }
+                }
+                let hit = ui.interact(*r, edit_id.with(("table", k)), Sense::click());
+                hit.context_menu(|ui| {
+                    if ui.button("Copy table (markdown)").clicked() {
+                        ctx.copy_text(f.text.chars().skip(first).take(last - first).collect());
+                        ui.close_menu();
+                    }
+                    if ui.button("Copy as TSV (for spreadsheets)").clicked() {
+                        ctx.copy_text(tsv.join("\n"));
+                        ui.close_menu();
+                    }
+                });
+            }
+        }
         if let Some(byte) = toggle {
             if let Some(c) = f.text.get(byte..byte + 1) {
                 let new = if c == " " { "x" } else { " " };
