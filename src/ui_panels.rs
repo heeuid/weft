@@ -372,12 +372,18 @@ impl App {
         let usable = |c: Cmd| multi || !matches!(c, Cmd::FocusLeft | Cmd::FocusRight | Cmd::FocusUp | Cmd::FocusDown);
         // A bound key runs its command and never reaches the terminal.
         let keymap = &self.keymap;
+        // In a text field (the editor, a search box) its own keys win: Ctrl+
+        // Shift+Z is redo there, not the Zoom command. A field keeps a text
+        // state; the terminal, which also takes the keyboard, does not.
+        let in_text = ctx.memory(|m| m.focused()).is_some_and(|id| egui::TextEdit::load_state(ctx, id).is_some());
+        let text_key = |key: Key, m: egui::Modifiers| in_text && key == Key::Z && m.shift && (m.ctrl || m.command);
         let mut cmds: Vec<Cmd> = ctx.input_mut(|i| {
             let mut out = Vec::new();
             let mods = i.modifiers;
             i.events.retain(|e| {
                 let pressed = match e {
-                    egui::Event::Key { key, pressed: true, modifiers, .. } => Some((*key, *modifiers)),
+                    egui::Event::Key { key, pressed: true, modifiers, .. } if !text_key(*key, *modifiers) => Some((*key, *modifiers)),
+                    egui::Event::Key { .. } => None,
                     // Ctrl+Shift+X and the like arrive as clipboard events only.
                     _ => crate::keys::clipboard_key(e, mods),
                 };
@@ -4031,6 +4037,46 @@ mod tests {
         assert_eq!(memo_title("- [ ] buy milk"), "[ ] buy milk");
         assert_eq!(memo_title("> quoted"), "quoted");
         assert_eq!(memo_title(&"가".repeat(30)), format!("{}…", "가".repeat(24)));
+    }
+
+    /// Ctrl+Shift+Z is redo in a text field, the Zoom command elsewhere.
+    #[test]
+    fn redo_key_stays_with_a_text_field() {
+        let dir = std::env::temp_dir().join(format!("weft-redo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let _guard = crate::app::TEST_APP.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("WEFT_DATA_DIR", &dir);
+        let ctx = egui::Context::default();
+        let mut app = crate::app::App::new(ctx.clone());
+        let mut text = String::from("abc");
+        let field = egui::Id::new("a text field");
+        let key = egui::Event::Key { key: egui::Key::Z, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers { ctrl: true, shift: true, ..Default::default() } };
+        // Returns whether the key was left for the widgets.
+        let mut frame = |events: Vec<egui::Event>, focus: bool| {
+            let mut kept = false;
+            let _ = ctx.run(egui::RawInput { events, ..Default::default() }, |ctx| {
+                app.handle_global_keys(ctx);
+                kept = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Key { key: egui::Key::Z, .. })));
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let r = ui.add(egui::TextEdit::singleline(&mut text).id(field));
+                    if focus {
+                        r.request_focus();
+                    } else {
+                        r.surrender_focus();
+                    }
+                });
+            });
+            kept
+        };
+        frame(vec![], true);
+        frame(vec![], true);
+        assert!(frame(vec![key.clone()], true), "redo reaches the focused text field");
+        frame(vec![], false);
+        frame(vec![], false);
+        assert!(!frame(vec![key], false), "elsewhere the Zoom command takes it");
+        drop(app);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// One frame of a seconds field; the texts drawn and where.
