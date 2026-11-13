@@ -42,6 +42,8 @@ pub(crate) enum Cmd {
     Editor,
     Find,
     Composer,
+    ConfirmUnsaved,
+    ConfirmRunning,
     PrevBlock,
     NextBlock,
     FoldAll,
@@ -158,6 +160,8 @@ const COMMANDS: &[(Cmd, &str, &str, &[&str])] = &[
     (Cmd::LocalShell(crate::host::LocalShell::Cmd), "shell_cmd", "Local shell: cmd", &[]),
     (Cmd::LocalShell(crate::host::LocalShell::Nu), "shell_nu", "Local shell: nushell", &[]),
     (Cmd::MarkdownBreaks, "markdown_breaks", "Markdown: toggle line breaks (GitHub PR style / CommonMark)", &[]),
+    (Cmd::ConfirmUnsaved, "confirm_unsaved", "Ask before closing unsaved files: on / off", &[]),
+    (Cmd::ConfirmRunning, "confirm_running", "Ask before ending running commands: on / off", &[]),
     (Cmd::Settings, "settings_file", "Open settings.json", &[]),
     (Cmd::AgentLog, "agent_log", "Open agent log for this host", &[]),
 ];
@@ -208,8 +212,20 @@ impl App {
             Cmd::SplitDown => self.split(false),
             Cmd::ClosePane => {
                 if let Some(id) = pane {
-                    self.close_pane(id)
+                    self.ask_close_panes(vec![id])
                 }
+            }
+            Cmd::ConfirmUnsaved => {
+                self.settings.confirm_unsaved = !self.settings.confirm_unsaved;
+                let how = if self.settings.confirm_unsaved { "weft asks before closing a file with unsaved changes" } else { "files close without asking, unsaved changes are dropped" };
+                self.toast(how, crate::app::ToastKind::Info);
+                self.save_settings();
+            }
+            Cmd::ConfirmRunning => {
+                self.settings.confirm_running = !self.settings.confirm_running;
+                let how = if self.settings.confirm_running { "weft asks before closing a terminal where a command is running" } else { "terminals close without asking, running commands are ended" };
+                self.toast(how, crate::app::ToastKind::Info);
+                self.save_settings();
             }
             Cmd::Zoom => self.toggle_zoom(),
             Cmd::Sidebar => self.settings.sidebar = !self.settings.sidebar,
@@ -783,7 +799,7 @@ impl App {
             self.focus_term = true;
         }
         if let Some((ti, which)) = close {
-            self.close_tabs(ti, which);
+            self.ask_close_tabs(ti, which);
         }
     }
 
@@ -1035,6 +1051,18 @@ impl App {
                         self.on_active_changed();
                     }
                 }
+                // A new folder or file in the folder shown.
+                ui.menu_button(RichText::new("+").size(15.0).color(theme::text_dim()), |ui| {
+                    use crate::fileops::FileOpKind;
+                    for (label, kind) in [("New folder…", FileOpKind::NewFolder), ("New file…", FileOpKind::NewFile)] {
+                        if ui.button(label).clicked() {
+                            self.ask_file_op(kind, &host, &root, true);
+                            ui.close_menu();
+                        }
+                    }
+                })
+                .response
+                .on_hover_text("new folder or file here");
                 // What to show: hidden files, what git ignores.
                 let lit = self.settings.show_hidden || !self.settings.show_ignored;
                 ui.menu_button(RichText::new("\u{f06e}").size(13.0).color(if lit { theme::accent() } else { theme::text_dim() }), |ui| {
@@ -1287,6 +1315,29 @@ impl App {
                     if ui.button("Copy path").clicked() {
                         self.actions.push(Action::Copy(path.clone()));
                         ui.close_menu();
+                    }
+                    ui.separator();
+                    {
+                        use crate::fileops::{parent_of, FileOpKind};
+                        // New ones go into a folder, or beside a file.
+                        let into = if isdir { path.clone() } else { parent_of(&path) };
+                        for (label, kind) in [("New folder…", FileOpKind::NewFolder), ("New file…", FileOpKind::NewFile)] {
+                            if ui.button(label).clicked() {
+                                if isdir {
+                                    self.side.expanded.insert((host.clone(), path.clone()));
+                                }
+                                self.ask_file_op(kind, &host, &into, true);
+                                ui.close_menu();
+                            }
+                        }
+                        if ui.button("Rename…").clicked() {
+                            self.ask_file_op(FileOpKind::Rename, &host, &path, isdir);
+                            ui.close_menu();
+                        }
+                        if ui.button("Delete…").clicked() {
+                            self.ask_file_op(FileOpKind::Delete, &host, &path, isdir);
+                            ui.close_menu();
+                        }
                     }
                     // Copies to another host or folder (also by dragging the row).
                     ui.separator();
@@ -2030,10 +2081,6 @@ impl App {
 
     fn ui_procs(&mut self, ui: &mut Ui) {
         let host = self.active_host();
-        if self.profile(&host).is_local() {
-            ui.label(RichText::new("The process list comes from the remote agent (POSIX `ps`). Connect to an ssh host to use it.").color(theme::text_faint()));
-            return;
-        }
         let stale = self.side.procs_host != host || self.side.procs_at.map(|t| t.elapsed() > Duration::from_secs(3)).unwrap_or(true);
         if stale {
             self.actions.push(Action::Procs);
@@ -2754,7 +2801,7 @@ impl App {
         });
         });
         if let Some((i, which)) = close {
-            self.close_files(i, which);
+            self.ask_close_files(i, which);
             if self.editor.files.is_empty() {
                 return;
             }
@@ -3235,15 +3282,12 @@ impl App {
 
     pub fn ui_palette(&mut self, ctx: &egui::Context) {
         let Some(mut st) = self.palette.take() else { return };
-        let q = st.query.to_lowercase();
         let theme_items: Vec<(Cmd, String, String)> =
             theme::themes().map(|(i, _, name, light)| (Cmd::Theme(i), format!("Theme: {name}"), if light { "light".into() } else { "dark".into() })).collect();
-        let items: Vec<(Cmd, String, String)> = COMMANDS
-            .iter()
-            .map(|(c, _, l, _)| (*c, l.to_string(), self.keys_label(*c)))
-            .chain(theme_items)
-            .filter(|(_, l, _)| q.is_empty() || l.to_lowercase().contains(&q))
-            .collect();
+        let all: Vec<(Cmd, String, String)> = COMMANDS.iter().map(|(c, _, l, _)| (*c, l.to_string(), self.keys_label(*c))).chain(theme_items).collect();
+        let labels: Vec<String> = all.iter().map(|i| i.1.clone()).collect();
+        let items: Vec<(Cmd, String, String)> = palette_matches(self.settings.palette_mode, &st.query, &labels).into_iter().map(|i| all[i].clone()).collect();
+        let mut mode = self.settings.palette_mode;
         let mut run = None;
         let mut keep = true;
         let area = egui::Area::new(Id::new("palette")).anchor(Align2::CENTER_TOP, vec2(0.0, 70.0)).order(egui::Order::Foreground).show(ctx, |ui| {
@@ -3275,7 +3319,16 @@ impl App {
                 }
                 let mut r = None;
                 ui.horizontal(|ui| {
-                    r = Some(ui.add(TextEdit::singleline(&mut st.query).id(id).hint_text("type a command").desired_width(ui.available_width() - 28.0)));
+                    r = Some(ui.add(TextEdit::singleline(&mut st.query).id(id).hint_text("type a command").desired_width(ui.available_width() - 28.0 - 56.0)));
+                    // How the query is read; a click takes the next one. (A
+                    // drop-down would open outside the palette and close it.)
+                    use crate::editfind::MatchMode;
+                    let tip = "how to match: fuzzy (letters in order, e.g. spdn → Split down), text (as typed), glob (*, ?), regex — click for the next";
+                    if ui.add_sized([50.0, 20.0], egui::Button::new(RichText::new(mode.label()).size(11.5).color(theme::text_dim()))).on_hover_text(tip).clicked() {
+                        let order = [MatchMode::Fuzzy, MatchMode::Text, MatchMode::Glob, MatchMode::Regex];
+                        mode = order[(order.iter().position(|m| *m == mode).unwrap_or(0) + 1) % order.len()];
+                        st.sel = 0;
+                    }
                     if icons::button(ui, Icon::Cross, "close (Esc)").clicked() {
                         keep = false;
                     }
@@ -3325,6 +3378,10 @@ impl App {
         });
         if clicked_outside(ctx, area.response.rect) {
             keep = false;
+        }
+        if mode != self.settings.palette_mode {
+            self.settings.palette_mode = mode;
+            self.save_settings();
         }
         if let Some(c) = run.filter(|c| matches!(c, Cmd::FontUp | Cmd::FontDown | Cmd::FontReset | Cmd::UiUp | Cmd::UiDown | Cmd::UiReset)) {
             // Size steps keep the palette open so they can be clicked repeatedly.
@@ -3866,7 +3923,7 @@ fn group(c: Cmd) -> &'static str {
         | Cmd::Theme(_)
         | Cmd::Fonts
         | Cmd::MarkdownBreaks => GROUPS[3],
-        Cmd::Records | Cmd::Settings | Cmd::AgentLog | Cmd::Keys | Cmd::Restart => GROUPS[4],
+        Cmd::Records | Cmd::Settings | Cmd::AgentLog | Cmd::Keys | Cmd::Restart | Cmd::ConfirmUnsaved | Cmd::ConfirmRunning => GROUPS[4],
         Cmd::Help | Cmd::Features | Cmd::Palette => GROUPS[5],
     }
 }
@@ -4315,6 +4372,28 @@ fn table_sel_text(cells: &[Vec<String>], s: &TableSel) -> String {
     (r0..=r1).map(|r| (c0..=c1).map(|c| cell(r, c)).collect::<Vec<_>>().join("\t")).collect::<Vec<_>>().join("\n")
 }
 
+/// The palette's rows for what is typed: which labels, in which order.
+/// Fuzzy (letters in order, the best match first) unless the mode is text,
+/// glob or regex, which keep the list's order. Nothing typed is everything;
+/// a pattern that can't be read matches nothing.
+pub fn palette_matches(mode: crate::editfind::MatchMode, query: &str, labels: &[String]) -> Vec<usize> {
+    use crate::editfind::MatchMode;
+    let q = query.trim();
+    if q.is_empty() {
+        return (0..labels.len()).collect();
+    }
+    if mode == MatchMode::Fuzzy {
+        let Ok(m) = crate::find::Matcher::new(crate::find::FindMode::Fuzzy, q) else { return Vec::new() };
+        let mut hits: Vec<(i64, usize)> = labels.iter().enumerate().filter_map(|(i, l)| m.matches(l).map(|(score, _)| (score, i))).collect();
+        hits.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        return hits.into_iter().map(|h| h.1).collect();
+    }
+    match crate::editfind::line_matcher(mode, q, true) {
+        Some(re) => labels.iter().enumerate().filter(|(_, l)| re.is_match(l)).map(|(i, _)| i).collect(),
+        None => Vec::new(),
+    }
+}
+
 fn replace_leaf(n: Node, target: usize, new_id: usize) -> Node {
     match n {
         Node::Leaf(id) if id == target => Node::Split { vertical: true, ratio: 0.5, a: Box::new(Node::Leaf(id)), b: Box::new(Node::Leaf(new_id)) },
@@ -4346,6 +4425,29 @@ fn close_menu(ui: &mut Ui, at: usize, n: usize) -> Option<CloseWhich> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_palette_matches_fuzzy_text_glob_or_regex() {
+        use super::{palette_matches, COMMANDS};
+        use crate::editfind::MatchMode;
+        let labels: Vec<String> = COMMANDS.iter().map(|c| c.2.to_string()).collect();
+        let found = |mode, q: &str| -> Vec<&str> { palette_matches(mode, q, &labels).into_iter().map(|i| labels[i].as_str()).collect() };
+        // Nothing typed: everything, in order.
+        assert_eq!(found(MatchMode::Fuzzy, "  ").len(), labels.len());
+        assert_eq!(found(MatchMode::Fuzzy, "")[0], labels[0]);
+        // Fuzzy: letters in order, the best first; text needs them together.
+        assert_eq!(found(MatchMode::Fuzzy, "spldn").first(), Some(&"Split down"));
+        assert_eq!(found(MatchMode::Fuzzy, "split down").first(), Some(&"Split down"));
+        assert!(found(MatchMode::Fuzzy, "cmdpal").contains(&"Command palette"));
+        assert!(found(MatchMode::Text, "spldn").is_empty());
+        assert_eq!(found(MatchMode::Text, "split d"), ["Split down"]);
+        assert!(found(MatchMode::Fuzzy, "zzzzqq").is_empty());
+        // Glob and regex, any case, in the list's order.
+        assert_eq!(found(MatchMode::Glob, "go to tab ?"), ["Go to tab 1", "Go to tab 2", "Go to tab 3", "Go to tab 4", "Go to tab 5", "Go to tab 6", "Go to tab 7", "Go to tab 8"]);
+        assert_eq!(found(MatchMode::Regex, "^go to tab [1-3]$"), ["Go to tab 1", "Go to tab 2", "Go to tab 3"]);
+        // A pattern that can't be read: nothing, and no panic.
+        assert!(found(MatchMode::Regex, "(").is_empty());
+    }
+
     #[test]
     fn a_table_selection_copies_letters_a_cell_or_a_block() {
         use super::{table_sel_text, TableSel};
@@ -4446,8 +4548,11 @@ mod tests {
         std::fs::create_dir_all(app.memo_dir()).unwrap();
         std::fs::write(&path, "# old").unwrap();
         app.open_file("local", &path, 1);
-        for _ in 0..5 {
+        // Read by the local backend's thread: a moment later.
+        let asked = std::time::Instant::now();
+        while asked.elapsed().as_secs() < 5 && !app.editor.files.iter().any(|f| f.path == path && f.mtime.is_some()) {
             app.poll();
+            std::thread::sleep(std::time::Duration::from_millis(5));
         }
         let i = app.editor.files.iter().position(|f| f.path == path).unwrap();
         assert!(app.editor.files[i].mtime.is_some(), "opened with its time");

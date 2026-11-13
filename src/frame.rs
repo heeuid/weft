@@ -41,6 +41,8 @@ impl App {
         self.ui_memo_picker(ctx);
         self.ui_keys_window(ctx);
         self.ui_serial_dialog(ctx);
+        self.ui_file_op(ctx);
+        self.ui_confirm(ctx);
         self.ui_toasts(ctx);
         self.ui_dock_drop(ctx);
         self.apply_actions();
@@ -55,8 +57,14 @@ impl App {
             ctx.request_repaint_after(Duration::from_secs(1));
         }
         if ctx.input(|i| i.viewport().close_requested()) {
-            self.flush_memos();
-            self.save_settings();
+            if self.may_quit(false) {
+                self.flush_memos();
+                self.save_settings();
+            } else {
+                // Unsaved files or running commands: asked first; the answer
+                // closes the window.
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            }
         }
     }
 }

@@ -19,6 +19,9 @@ pub struct Harness {
     pub texts: Vec<(String, Rect)>,
     /// The last text weft put on the clipboard.
     pub copied: Option<String>,
+    /// What weft asked of its window in the last frame (Close, CancelClose…).
+    pub window: Vec<egui::ViewportCommand>,
+    close_window: bool,
     pointer: Pos2,
     /// The clock the app is shown: a frame is 1/60 s, and a hand pauses
     /// before each click or drag (else clicks far apart count as double).
@@ -53,9 +56,24 @@ impl Harness {
         let ctx = egui::Context::default();
         crate::theme::install_fonts(&ctx, crate::theme::DEFAULT_FONT, crate::theme::DEFAULT_ICON_FONT);
         let app = App::new(ctx.clone());
-        let mut h = Harness { app, ctx, dir, size: vec2(1200.0, 800.0), texts: Vec::new(), copied: None, now: 0.0, pointer: pos2(600.0, 400.0), _guard: guard };
+        let mut h = Harness { app, ctx, dir, size: vec2(1200.0, 800.0), texts: Vec::new(), copied: None, window: Vec::new(), close_window: false, now: 0.0, pointer: pos2(600.0, 400.0), _guard: guard };
         h.frames(3);
         h
+    }
+
+    /// The window's × (or Alt+F4): one frame with the close asked.
+    pub fn close_window(&mut self) {
+        self.close_window = true;
+        self.frames(1);
+    }
+
+    /// Close weft and start it again on the same data folder, as a restart
+    /// does: what it saved is what the new one starts from.
+    pub fn restart(&mut self) {
+        self.app.flush_memos();
+        self.app.save_settings();
+        self.app = App::new(self.ctx.clone());
+        self.frames(3);
     }
 
     /// One frame with these events.
@@ -68,9 +86,13 @@ impl Harness {
             })
             .unwrap_or_default();
         self.now += 1.0 / 60.0;
-        let input = egui::RawInput { events, modifiers, time: Some(self.now), screen_rect: Some(Rect::from_min_size(Pos2::ZERO, self.size)), ..Default::default() };
+        let mut input = egui::RawInput { events, modifiers, time: Some(self.now), screen_rect: Some(Rect::from_min_size(Pos2::ZERO, self.size)), ..Default::default() };
+        if std::mem::take(&mut self.close_window) {
+            input.viewports.entry(egui::ViewportId::ROOT).or_default().events.push(egui::ViewportEvent::Close);
+        }
         let app = &mut self.app;
         let out = self.ctx.run(input, |ctx| app.frame(ctx));
+        self.window = out.viewport_output.get(&egui::ViewportId::ROOT).map(|v| v.commands.clone()).unwrap_or_default();
         for c in &out.platform_output.commands {
             if let egui::OutputCommand::CopyText(t) = c {
                 self.copied = Some(t.clone());

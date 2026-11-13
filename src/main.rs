@@ -6,11 +6,13 @@
 //! tools and python, and nothing is written to the remote disk.
 
 mod app;
+mod confirm;
 mod copymode;
 mod editfind;
 mod help;
 mod highlight;
 mod host;
+mod fileops;
 mod find;
 mod fontfix;
 mod frame;

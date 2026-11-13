@@ -46,6 +46,10 @@ impl App {
 
     /// Save everything, start the new weft, close this one.
     pub fn restart(&mut self) {
+        // Unsaved files, running commands: asked first (confirm.rs).
+        if !self.may_quit(true) {
+            return;
+        }
         self.flush_memos();
         self.save_settings();
         let started = match std::env::var_os("WEFT_LAUNCHER").map(PathBuf::from).filter(|p| p.is_file()) {
@@ -72,9 +76,13 @@ impl App {
         match started {
             Ok(what) => {
                 self.data.log(&format!("restart: started {what}; closing"));
+                self.quit_confirmed = true;
                 self.ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
-            Err(e) => self.toast(format!("restart failed: {e}"), ToastKind::Error),
+            Err(e) => {
+                self.quit_confirmed = false;
+                self.toast(format!("restart failed: {e}"), ToastKind::Error)
+            }
         }
     }
 }

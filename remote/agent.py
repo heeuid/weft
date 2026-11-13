@@ -198,6 +198,42 @@ def op_mkdirs(req):
     return {}
 
 
+def op_mkdir(req):
+    p = _path(req.get("path"))
+    os.mkdir(p)
+    return {"path": p}
+
+
+def op_create(req):
+    p = _path(req.get("path"))
+    # O_EXCL: never over a file that exists.
+    os.close(os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666))
+    return {"path": p}
+
+
+def op_rename(req):
+    src, dst = _path(req.get("from")), _path(req.get("to"))
+    # rename() replaces silently: never onto something else.
+    if os.path.lexists(dst):
+        raise OSError("%s already exists" % os.path.basename(dst))
+    os.rename(src, dst)
+    return {"path": dst}
+
+
+def op_delete(req):
+    if not str(req.get("path") or "").strip():
+        raise OSError("refusing to delete a root")
+    p = _path(req.get("path"))
+    if os.path.dirname(p) == p:
+        raise OSError("refusing to delete a root")
+    if os.path.isdir(p) and not os.path.islink(p):
+        import shutil
+        shutil.rmtree(p)  # links inside are removed, not followed
+    else:
+        os.remove(p)
+    return {"path": p, "trashed": False}
+
+
 def _port_holders(dev):
     """Other processes with a serial port open (pid, user, command), and
     the pid in a lock file (minicom, screen…). Other users' processes show
@@ -436,6 +472,7 @@ OPS = {
     "complete": op_complete, "procs": op_procs, "kill": op_kill, "sys": op_sys, "grep": op_grep,
     "tree": op_tree, "cwd": op_cwd, "walk": op_walk, "rchunk": op_rchunk, "wchunk": op_wchunk,
     "finish": op_finish, "mkdirs": op_mkdirs, "serial_ports": op_serial_ports,
+    "mkdir": op_mkdir, "create": op_create, "rename": op_rename, "delete": op_delete,
 }
 
 

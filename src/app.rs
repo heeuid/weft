@@ -31,6 +31,9 @@ fn d_icon_font() -> String {
     crate::theme::DEFAULT_ICON_FONT.into()
 }
 
+fn d_palette_mode() -> crate::editfind::MatchMode {
+    crate::editfind::MatchMode::Fuzzy
+}
 fn d_theme() -> String {
     crate::theme::DEFAULT_DARK.into()
 }
@@ -494,6 +497,10 @@ pub struct Settings {
     /// File panel filter: fuzzy, glob or regex.
     #[serde(default)]
     pub find_mode: crate::find::FindMode,
+    /// How the command palette reads what is typed: fuzzy (letters in
+    /// order) unless changed to text, glob or regex.
+    #[serde(default = "d_palette_mode")]
+    pub palette_mode: crate::editfind::MatchMode,
     /// The file panel follows the active terminal's directory (OSC 7).
     #[serde(default = "d_true")]
     pub follow_cwd: bool,
@@ -533,6 +540,52 @@ pub struct Settings {
     /// what the side panel showed before there could be several).
     #[serde(default)]
     pub side_tabs: std::collections::BTreeMap<u32, SideTab>,
+    /// What was open besides the terminals when weft closed, to open again.
+    #[serde(default)]
+    pub open: SavedOpen,
+    /// Ask before closing an editor file with unsaved changes (also when
+    /// closing or restarting weft).
+    #[serde(default = "d_true")]
+    pub confirm_unsaved: bool,
+    /// Ask before closing a terminal where a command is still running.
+    #[serde(default = "d_true")]
+    pub confirm_running: bool,
+}
+
+/// What was open besides the terminals, kept with the session: the
+/// editor's files, the folders opened in Files, each panel's own view.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(default)]
+pub struct SavedOpen {
+    /// The editor's files (memos too; not scratch buffers), in tab order.
+    pub files: Vec<SavedFile>,
+    /// Which of them was in front.
+    pub active: usize,
+    /// The editor was showing.
+    pub editor: bool,
+    /// What the further editor panels show (panel number: host, path).
+    pub editor_shows: std::collections::BTreeMap<u32, (String, String)>,
+    /// Folders opened in Files (host, path).
+    pub expanded: Vec<(String, String)>,
+    /// Each further side panel's folder, and whether it follows the terminal.
+    pub side_views: std::collections::BTreeMap<u32, SavedView>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(default)]
+pub struct SavedFile {
+    pub host: String,
+    pub path: String,
+    /// Markdown shown rendered (else its source).
+    pub rich: bool,
+    pub read: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(default)]
+pub struct SavedView {
+    pub root: Option<(String, String)>,
+    pub follow: bool,
 }
 
 impl Default for Settings {
@@ -550,7 +603,7 @@ impl Default for Settings {
                 },
             });
         }
-        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, layout: Layout::default(), show_hidden: false, show_ignored: true, find_mode: Default::default(), cursor_style: Default::default(), local_shell: Default::default(), mermaid: Default::default(), follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, term_font: d_font_file(), icon_font: d_icon_font(), records: Default::default(), passwords: Default::default(), keys: Default::default(), session: Vec::new(), side_tabs: Default::default() }
+        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, layout: Layout::default(), show_hidden: false, show_ignored: true, find_mode: Default::default(), palette_mode: d_palette_mode(), cursor_style: Default::default(), local_shell: Default::default(), mermaid: Default::default(), follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, term_font: d_font_file(), icon_font: d_icon_font(), records: Default::default(), passwords: Default::default(), keys: Default::default(), session: Vec::new(), side_tabs: Default::default(), open: Default::default(), confirm_unsaved: true, confirm_running: true }
     }
 }
 
@@ -1157,6 +1210,9 @@ pub enum Pending {
     Xfer { t: u64, step: crate::transfer::Step },
     /// The serial ports of a host, for the Serial console dialog.
     SerialPorts { host: String },
+    /// A file operation asked from Files (fileops.rs): what to say when it
+    /// is done, the folders to list again, and what was renamed to what.
+    FileOp { done: String, refresh: Vec<String>, renamed: Option<(String, String)> },
 }
 
 /// Which tabs a tab's context menu closes, relative to that tab.
@@ -1316,6 +1372,14 @@ pub struct App {
     pub update_checked: Instant,
     /// The "Serial console…" dialog, while open.
     pub serial_dialog: Option<crate::serial_ui::SerialDialog>,
+    /// New folder / new file / rename / delete, while its dialog is open.
+    pub file_op: Option<crate::fileops::FileOp>,
+    /// A question before something is lost (confirm.rs), while it is asked;
+    /// what goes on once the files it saves are saved; and weft may close
+    /// (it was answered).
+    pub confirm: Option<crate::confirm::Confirm>,
+    pub after_save: Option<crate::confirm::AfterSave>,
+    pub quit_confirmed: bool,
     /// A file or folder (host, path) being dragged from a Files panel.
     pub file_drag: Option<(String, String)>,
     /// Folder rows drawn this frame (rect, host, path): drop targets.
@@ -1455,6 +1519,10 @@ impl App {
             update_ready: false,
             update_checked: Instant::now(),
             serial_dialog: None,
+            file_op: None,
+            confirm: None,
+            after_save: None,
+            quit_confirmed: false,
             file_drag: None,
             drop_dirs: Vec::new(),
             side_focus: 0,
@@ -1493,7 +1561,47 @@ impl App {
         if app.tabs.is_empty() {
             app.new_tab("local", None);
         }
+        app.restore_open();
         app
+    }
+
+    /// What is open besides the terminals, to keep with the session.
+    fn saved_open(&self) -> SavedOpen {
+        let kept: Vec<usize> = (0..self.editor.files.len()).filter(|&i| !self.editor.files[i].scratch).collect();
+        let mut expanded: Vec<(String, String)> = self.side.expanded.iter().cloned().collect();
+        expanded.sort();
+        SavedOpen {
+            files: kept.iter().map(|&i| &self.editor.files[i]).map(|f| SavedFile { host: f.host.clone(), path: f.path.clone(), rich: f.rich, read: f.read }).collect(),
+            active: kept.iter().position(|&i| i == self.editor.active).unwrap_or(0),
+            editor: self.editor.visible,
+            editor_shows: self.editor_shows.iter().map(|(n, v)| (*n, v.clone())).collect(),
+            expanded,
+            side_views: self.side_views.iter().map(|(n, v)| (*n, SavedView { root: v.root.clone(), follow: v.follow })).collect(),
+        }
+    }
+
+    /// Open again what was open when weft closed: the editor's files (each
+    /// as it was shown: rendered or source, read mode), the one in front,
+    /// the folders opened in Files and each panel's view. A file that is
+    /// gone says so in its tab.
+    fn restore_open(&mut self) {
+        let saved = self.settings.open.clone();
+        for f in &saved.files {
+            self.open_file(&f.host, &f.path, 1);
+            if let Some(e) = self.editor.files.iter_mut().find(|e| e.host == f.host && e.path == f.path) {
+                e.rich = f.rich;
+                e.read = f.read;
+                // Where it was is not kept: no jump to the first line either.
+                e.goto = None;
+            }
+        }
+        self.editor.active = saved.active.min(self.editor.files.len().saturating_sub(1));
+        self.editor.visible = saved.editor && !self.editor.files.is_empty();
+        self.editor_shows = saved.editor_shows.into_iter().collect();
+        self.side.expanded = saved.expanded.into_iter().collect();
+        for (n, v) in saved.side_views {
+            self.side_views.insert(n, SideView { root: v.root, follow: v.follow, selected: None });
+        }
     }
 
     fn restore_node(&mut self, n: &SavedNode) -> Node {
@@ -1525,6 +1633,7 @@ impl App {
 
     pub fn save_settings(&mut self) {
         self.settings.session = self.tabs.iter().map(|t| self.save_node(&t.root)).collect();
+        self.settings.open = self.saved_open();
         if let Ok(s) = serde_json::to_string_pretty(&self.settings) {
             let _ = std::fs::write(self.data.path("settings.json"), s);
         }
@@ -2636,6 +2745,20 @@ impl App {
                     }
                 }
             }
+            Pending::FileOp { done, refresh, renamed } => {
+                if ok {
+                    self.toast(done, ToastKind::Ok);
+                    if let Some((from, to)) = renamed {
+                        self.file_renamed(host, &from, &to);
+                    }
+                    for dir in refresh {
+                        self.inflight.remove(&(host.to_string(), dir.clone()));
+                        self.list_dir(host, &dir);
+                    }
+                } else {
+                    self.toast(err, ToastKind::Error);
+                }
+            }
             Pending::Kill => {
                 if ok {
                     self.toast(format!("signal sent to {}", r["pid"]), ToastKind::Ok);
@@ -2745,7 +2868,7 @@ impl App {
                 Action::NewTab(h, cwd) => self.new_tab(&h, cwd),
                 Action::Split(v) => self.split(v),
                 Action::ToggleZoom => self.toggle_zoom(),
-                Action::ClosePane(id) => self.close_pane(id),
+                Action::ClosePane(id) => self.ask_close_panes(vec![id]),
                 Action::Restart(id) => {
                     if let Some(mut p) = self.panes.remove(&id) {
                         p.initial_cwd = p.term.cwd.clone().or(p.initial_cwd.clone());

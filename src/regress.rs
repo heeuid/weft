@@ -125,7 +125,8 @@ fn editor_marks_buttons_and_read_mode() {
     std::fs::write(&file, "# Title\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\nsome *text*\n").unwrap();
     let path = file.display().to_string().replace('\\', "/");
     h.app.open_file("local", &path, 1);
-    assert!(h.wait_for(5.0, |h| h.shows("Rich")), "opened");
+    assert!(h.wait_for(20.0, |h| h.shows("Rich") && h.app.editor.files.iter().all(|f| !f.loading)), "opened and read");
+    h.frames(2);
     let i = h.app.editor.files.iter().position(|f| f.path == path).unwrap();
     // One view button.
     assert!(h.shows("Rich \u{21c4}") && !h.shows("Source \u{21c4}"));
@@ -139,7 +140,7 @@ fn editor_marks_buttons_and_read_mode() {
     h.frames(2);
     assert!(h.shows("\u{25cf} unsaved"));
     h.click_text("Save");
-    assert!(h.wait_for(5.0, |h| h.shows("\u{2713} saved")), "saved mark");
+    assert!(h.wait_for(20.0, |h| h.shows("\u{2713} saved")), "saved mark");
     assert!(std::fs::read_to_string(&file).unwrap().ends_with("more\n"));
     // Copy: the whole file when nothing is selected.
     h.click_text("Copy");
@@ -182,7 +183,7 @@ fn hidden_images_leave_the_gpu() {
     std::fs::write(&txt, "hello").unwrap();
     let (png, txt) = (png.display().to_string().replace('\\', "/"), txt.display().to_string().replace('\\', "/"));
     h.app.open_file("local", &png, 1);
-    assert!(h.wait_for(5.0, |h| h.app.editor.files.iter().any(|f| f.path == png && f.image.has_texture())), "shown: on the GPU");
+    assert!(h.wait_for(20.0, |h| h.app.editor.files.iter().any(|f| f.path == png && f.image.has_texture())), "shown: on the GPU");
     h.app.open_file("local", &txt, 1);
     h.frames(3);
     let img = h.app.editor.files.iter().find(|f| f.path == png).unwrap();
@@ -212,7 +213,8 @@ fn escape_closes_composer_search_and_find() {
     std::fs::write(&file, "one two\n").unwrap();
     let path = file.display().to_string().replace('\\', "/");
     h.app.open_file("local", &path, 1);
-    assert!(h.wait_for(5.0, |h| h.shows("Find")), "opened");
+    assert!(h.wait_for(20.0, |h| h.shows("Find") && h.app.editor.files.iter().all(|f| !f.loading)), "opened and read");
+    h.frames(2);
     h.click_text("Find");
     h.type_text("two");
     assert_eq!(h.app.editor.find.as_ref().map(|f| f.query.as_str()), Some("two"), "typed into find");
@@ -230,7 +232,8 @@ fn table_cells_select_and_copy() {
     std::fs::write(&file, "| name | size |\n|---|---|\n| weft.exe | 12 MB |\n| notes.md | 3 KB |\n\nend\n").unwrap();
     let path = file.display().to_string().replace('\\', "/");
     h.app.open_file("local", &path, 1);
-    assert!(h.wait_for(5.0, |h| h.shows("Read")), "opened");
+    assert!(h.wait_for(20.0, |h| h.shows("Read") && h.app.editor.files.iter().all(|f| !f.loading)), "opened and read");
+    h.frames(2);
     h.click_text("Read");
     let cell = |h: &Harness, t: &str| h.texts.iter().find(|(s, _)| s == t).map(|(_, r)| *r).unwrap_or_else(|| panic!("cell {t:?} is drawn"));
     // Some letters of one cell: from its left edge to its middle.
@@ -260,4 +263,230 @@ fn table_cells_select_and_copy() {
     h.right_click(c);
     h.click_text("Copy as TSV");
     assert_eq!(h.copied.take().as_deref(), Some("name\tsize\nweft.exe\t12 MB\nnotes.md\t3 KB"));
+}
+
+/// Files: new folder, rename and delete from a row's menu; Esc leaves a
+/// dialog without doing anything.
+#[test]
+fn files_new_folder_rename_delete() {
+    let mut h = Harness::new(json!({"sidebar": true, "follow_cwd": false}));
+    let root = h.dir.join("tree");
+    std::fs::create_dir_all(root.join("sub")).unwrap();
+    std::fs::write(root.join("a.txt"), "hello").unwrap();
+    let dir = root.display().to_string().replace('\\', "/");
+    h.app.set_root("local", &dir);
+    assert!(h.wait_for(20.0, |h| h.shows("a.txt") && h.shows("sub")), "the folder is listed");
+
+    // Rename a.txt: the name is there to change; Enter does it.
+    let row = h.at("a.txt");
+    h.right_click(row);
+    h.click_text("Rename\u{2026}");
+    assert_eq!(h.app.file_op.as_ref().map(|o| o.name.as_str()), Some("a.txt"));
+    h.key(Key::A, Modifiers::COMMAND);
+    h.type_text("b.txt");
+    h.key(Key::Enter, Modifiers::NONE);
+    assert!(h.wait_for(20.0, |h| root.join("b.txt").exists() && h.shows("b.txt")), "renamed, and listed again");
+    assert!(!root.join("a.txt").exists());
+    assert_eq!(std::fs::read_to_string(root.join("b.txt")).unwrap(), "hello");
+
+    // A new folder inside sub.
+    let row = h.at("sub");
+    h.right_click(row);
+    h.click_text("New folder\u{2026}");
+    h.type_text("made");
+    h.key(Key::Enter, Modifiers::NONE);
+    assert!(h.wait_for(20.0, |h| root.join("sub/made").is_dir() && h.shows("made")), "made, and shown in the opened folder");
+
+    // Delete, cancelled by Esc: nothing happens.
+    let row = h.at("b.txt");
+    h.right_click(row);
+    h.click_text("Delete\u{2026}");
+    assert!(h.shows("This cannot be undone."));
+    h.key(Key::Escape, Modifiers::NONE);
+    h.frames(5);
+    assert!(h.app.file_op.is_none() && root.join("b.txt").exists(), "Esc keeps the file");
+
+    // Delete, for real.
+    let row = h.at("b.txt");
+    h.right_click(row);
+    h.click_text("Delete\u{2026}");
+    h.click_text("Delete for good");
+    assert!(h.wait_for(20.0, |h| !root.join("b.txt").exists() && !h.shows("b.txt")), "deleted, and gone from the list");
+}
+
+/// The palette matches fuzzily by default (letters in order), runs the best
+/// match on Enter, and its mode button changes how the query is read and
+/// is remembered.
+#[test]
+fn the_palette_is_fuzzy_and_its_mode_is_kept() {
+    use crate::editfind::MatchMode;
+    let mut h = Harness::new(json!({}));
+    assert_eq!(h.app.settings.palette_mode, MatchMode::Fuzzy);
+    h.command("palette");
+    h.type_text("spldn");
+    h.frames(2);
+    assert!(h.shows("Split down"), "found by its letters");
+    assert_eq!(h.app.pane_rects.len(), 1);
+    h.key(Key::Enter, Modifiers::NONE);
+    h.frames(3);
+    assert_eq!(h.app.pane_rects.len(), 2, "Enter ran the best match: the pane was split");
+    // As typed: the same letters find nothing.
+    h.command("palette");
+    h.click_text("fuzzy");
+    assert_eq!(h.app.settings.palette_mode, MatchMode::Text);
+    assert!(h.app.palette.is_some(), "the palette stays open");
+    h.type_text("spldn");
+    h.frames(2);
+    assert!(!h.shows("Split down"));
+    h.key(Key::Escape, Modifiers::NONE);
+    // Kept in settings.json.
+    let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(h.dir.join("settings.json")).unwrap()).unwrap();
+    assert_eq!(saved["palette_mode"], json!("Text"));
+}
+
+/// What was open comes back after a restart: the editor's files as they
+/// were shown (source or rendered, read mode), the one in front, and the
+/// folders opened in Files. Settings from before this was kept still load.
+#[test]
+fn a_restart_brings_back_what_was_open() {
+    let mut h = Harness::new(json!({}));
+    assert!(h.app.editor.files.is_empty() && !h.app.editor.visible, "old settings: nothing to restore");
+    let (md, txt) = (h.dir.join("note.md"), h.dir.join("b.txt"));
+    std::fs::write(&md, "# Title\n\ntext\n").unwrap();
+    std::fs::write(&txt, "plain\n").unwrap();
+    let p = |f: &std::path::Path| f.display().to_string().replace('\\', "/");
+    h.app.open_file("local", &p(&md), 1);
+    h.app.open_file("local", &p(&txt), 1);
+    assert!(h.wait_for(20.0, |h| h.app.editor.files.iter().all(|f| !f.loading)), "both loaded");
+    h.app.editor.files[0].read = true;
+    h.app.editor.files[0].rich = false;
+    h.app.editor.active = 0;
+    let dir = p(&h.dir);
+    h.app.side.expanded.insert(("local".into(), format!("{dir}/sub")));
+
+    h.restart();
+    let files: Vec<(String, bool, bool)> = h.app.editor.files.iter().map(|f| (f.path.clone(), f.rich, f.read)).collect();
+    assert_eq!(files, [(p(&md), false, true), (p(&txt), false, false)]);
+    assert_eq!(h.app.editor.active, 0, "the one in front");
+    assert!(h.app.editor.visible);
+    assert!(h.app.side.expanded.contains(&("local".to_string(), format!("{dir}/sub"))));
+    assert!(h.wait_for(20.0, |h| h.app.editor.files[0].text.starts_with("# Title") && h.app.editor.files[1].text == "plain\n"), "their text is read again");
+
+    // A file that is gone meanwhile: its tab says so, the rest is there.
+    std::fs::remove_file(&txt).unwrap();
+    h.restart();
+    assert_eq!(h.app.editor.files.len(), 2);
+    assert!(h.wait_for(20.0, |h| h.app.editor.files[1].error.is_some() && h.app.editor.files[0].text.starts_with("# Title")), "the missing one explains itself");
+}
+
+fn dirty_file(h: &mut Harness, name: &str) -> (std::path::PathBuf, usize) {
+    let file = h.dir.join(name);
+    std::fs::write(&file, "old\n").unwrap();
+    let path = file.display().to_string().replace('\\', "/");
+    h.app.open_file("local", &path, 1);
+    assert!(h.wait_for(20.0, |h| h.app.editor.files.iter().any(|f| f.path == path && !f.loading)), "opened");
+    let i = h.app.editor.files.iter().position(|f| f.path == path).unwrap();
+    h.app.editor.files[i].text = "new\n".into();
+    h.app.editor.files[i].dirty = true;
+    h.frames(2);
+    (file, i)
+}
+
+/// Closing a file with unsaved changes asks: Cancel keeps it, "without
+/// saving" drops the changes, "Save and close" writes them first. With the
+/// setting off it closes at once, as before.
+#[test]
+fn closing_an_unsaved_file_asks() {
+    use crate::app::CloseWhich;
+    let mut h = Harness::new(json!({}));
+    let (file, i) = dirty_file(&mut h, "a.txt");
+    h.app.ask_close_files(i, CloseWhich::This);
+    h.frames(2);
+    assert!(h.shows("Unsaved changes") && h.shows("a.txt"), "asked, naming the file");
+    assert_eq!(h.app.editor.files.len(), 1, "nothing closed yet");
+    // Esc: as Cancel.
+    h.key(Key::Escape, Modifiers::NONE);
+    assert!(h.app.confirm.is_none() && h.app.editor.files.len() == 1 && h.app.editor.files[0].dirty);
+    // Save and close.
+    h.app.ask_close_files(i, CloseWhich::This);
+    h.frames(2);
+    h.click_text("Save and close");
+    assert!(h.wait_for(20.0, |h| h.app.editor.files.is_empty()), "closed once saved");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "new\n");
+    // Without saving.
+    let (file, i) = dirty_file(&mut h, "b.txt");
+    h.app.ask_close_files(i, CloseWhich::This);
+    h.frames(2);
+    h.click_text("Close without saving");
+    assert!(h.app.editor.files.is_empty());
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "old\n", "the changes were dropped");
+    // A saved file never asks; nor does anything with the setting off.
+    let (_, i) = dirty_file(&mut h, "c.txt");
+    h.app.editor.files[i].dirty = false;
+    h.app.ask_close_files(i, CloseWhich::This);
+    assert!(h.app.confirm.is_none() && h.app.editor.files.is_empty());
+    let (_, i) = dirty_file(&mut h, "d.txt");
+    h.command("confirm_unsaved");
+    assert!(!h.app.settings.confirm_unsaved);
+    h.app.ask_close_files(i, CloseWhich::This);
+    assert!(h.app.confirm.is_none() && h.app.editor.files.is_empty(), "off: closes at once");
+}
+
+/// Closing the window with unsaved changes is held back and asked about;
+/// the answer closes it. With nothing to lose it closes at once.
+#[test]
+fn closing_weft_with_unsaved_files_asks() {
+    let closes = |h: &Harness| h.window.iter().any(|c| matches!(c, egui::ViewportCommand::Close));
+    let cancels = |h: &Harness| h.window.iter().any(|c| matches!(c, egui::ViewportCommand::CancelClose));
+    let mut h = Harness::new(json!({}));
+    h.close_window();
+    assert!(!cancels(&h) && h.app.confirm.is_none(), "nothing to lose: it just closes");
+    let (file, _) = dirty_file(&mut h, "a.txt");
+    h.close_window();
+    assert!(cancels(&h), "the close is held back");
+    h.frames(2);
+    assert!(h.shows("Close weft?") && h.shows("a.txt"));
+    h.click_text("Cancel");
+    assert!(h.app.confirm.is_none() && !h.app.quit_confirmed);
+    // Asked again the next time; saving closes it.
+    h.close_window();
+    h.frames(2);
+    h.click_text("Save and close");
+    assert!(h.wait_for(20.0, |h| closes(h) || h.app.quit_confirmed), "weft closes itself once saved");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "new\n");
+    h.close_window();
+    assert!(!cancels(&h), "and the close goes through");
+}
+
+/// Closing a terminal where a command is still running asks; an idle one
+/// closes at once.
+#[test]
+fn closing_a_busy_terminal_asks() {
+    let mut h = Harness::new(json!({}));
+    h.command("split_right");
+    assert_eq!(h.app.panes.len(), 2);
+    let id = h.app.active_pane_id().unwrap();
+    assert_eq!(h.app.running_in(id), None, "nothing known to run");
+    // The shell says a command started (OSC 133 C after a prompt and input).
+    let osc = "\x1b]133;A\x07$ \x1b]133;B\x07make -j8\r\n\x1b]133;C\x07building\r\n";
+    {
+        let p = h.app.panes.get_mut(&id).unwrap();
+        for b in osc.bytes() {
+            p.parser.advance(&mut p.term, &[b]);
+        }
+    }
+    assert!(h.app.running_in(id).is_some(), "a command is running");
+    h.command("close_pane");
+    assert_eq!(h.app.panes.len(), 2, "not closed yet");
+    assert!(h.shows("Still running"));
+    h.click_text("Cancel");
+    assert_eq!(h.app.panes.len(), 2);
+    h.command("close_pane");
+    h.click_text("Close anyway");
+    assert_eq!(h.app.panes.len(), 1, "closed on the answer");
+    // The other one is idle: no question.
+    h.command("split_right");
+    h.command("close_pane");
+    assert!(h.app.confirm.is_none());
+    assert_eq!(h.app.panes.len(), 1);
 }

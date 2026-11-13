@@ -11,12 +11,11 @@
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::UNIX_EPOCH;
 
@@ -476,7 +475,9 @@ enum AgentMsg {
 }
 
 enum Backend {
-    Local { queue: VecDeque<Value> },
+    /// Served by a thread of ours: listing a big folder, a search or a slow
+    /// disk never holds up a frame.
+    Local { tx: Sender<Value>, rx: Receiver<Value> },
     Remote { stdin: Option<ChildStdin>, rx: Receiver<AgentMsg>, child: Child },
     Dead,
 }
@@ -521,7 +522,20 @@ impl Conn {
             None => {
                 self.status = ConnStatus::Ready;
                 self.info = local_hello();
-                self.backend = Backend::Local { queue: VecDeque::new() };
+                let (tx, requests) = mpsc::channel::<Value>();
+                let (answers, rx) = mpsc::channel::<Value>();
+                thread::spawn(move || {
+                    // In order, as they were asked; ends when the Conn goes.
+                    for req in requests {
+                        let mut res = local_op(&req);
+                        res["id"] = req["id"].clone();
+                        if answers.send(res).is_err() {
+                            break;
+                        }
+                        wake();
+                    }
+                });
+                self.backend = Backend::Local { tx, rx };
                 self.write_log("local backend ready");
             }
             Some(argv) => {
@@ -562,10 +576,10 @@ impl Conn {
         let line = req.to_string();
         self.write_log(&format!("-> {}", truncate_for_log(&line)));
         match &mut self.backend {
-            Backend::Local { queue } => {
-                let mut res = local_op(&req);
-                res["id"] = json!(id);
-                queue.push_back(res);
+            Backend::Local { tx, .. } => {
+                if tx.send(req).is_err() {
+                    self.backend_failures.push(json!({"id": id, "ok": false, "error": "local backend stopped"}));
+                }
             }
             Backend::Remote { stdin: Some(stdin), .. } => {
                 if stdin.write_all(line.as_bytes()).and_then(|_| stdin.write_all(b"\n")).and_then(|_| stdin.flush()).is_err()
@@ -590,7 +604,7 @@ impl Conn {
         let mut logs = Vec::new();
         let mut exited = false;
         match &mut self.backend {
-            Backend::Local { queue } => out.extend(queue.drain(..)),
+            Backend::Local { rx, .. } => out.extend(rx.try_iter()),
             Backend::Remote { rx, .. } => {
                 while let Ok(msg) = rx.try_recv() {
                     match msg {
@@ -863,6 +877,51 @@ fn local_op(req: &Value) -> Value {
             }
             Ok(json!({}))
         }
+        "procs" => local_procs(),
+        "kill" => {
+            let pid = req.get("pid").and_then(|v| v.as_u64()).ok_or("no pid")?;
+            local_kill(pid as u32, &s("sig"))?;
+            Ok(json!({"pid": pid}))
+        }
+        "mkdir" => {
+            let p = s("path");
+            std::fs::create_dir(&p).map_err(|e| e.to_string())?;
+            Ok(json!({"path": p}))
+        }
+        "create" => {
+            let p = s("path");
+            OpenOptions::new().write(true).create_new(true).open(&p).map_err(|e| e.to_string())?;
+            Ok(json!({"path": p}))
+        }
+        "rename" => {
+            let (from, to) = (s("from"), s("to"));
+            // Never onto something else (a rename replaces silently). Only
+            // the letters' case changing is the same file on Windows.
+            let same = cfg!(windows) && from.to_lowercase() == to.to_lowercase();
+            if !same && std::fs::symlink_metadata(&to).is_ok() {
+                return Err(format!("{} already exists", Path::new(&to).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or(to)));
+            }
+            std::fs::rename(&from, &to).map_err(|e| e.to_string())?;
+            Ok(json!({"path": to}))
+        }
+        "delete" => {
+            let p = s("path");
+            if p.trim().is_empty() || Path::new(&p).parent().is_none() {
+                return Err("refusing to delete a root".into());
+            }
+            let md = std::fs::symlink_metadata(&p).map_err(|e| e.to_string())?;
+            let trash = req.get("trash").and_then(|v| v.as_bool()).unwrap_or(false);
+            if trash {
+                to_trash(&p)?;
+            } else if md.is_dir() {
+                // Links inside are removed, not followed.
+                std::fs::remove_dir_all(&p).map_err(|e| e.to_string())?;
+            } else {
+                // A link to a folder is a folder to Windows, a file elsewhere.
+                std::fs::remove_file(&p).or_else(|_| std::fs::remove_dir(&p)).map_err(|e| e.to_string())?;
+            }
+            Ok(json!({"path": p, "trashed": trash}))
+        }
         op => Err(format!("'{op}' is only available on remote hosts")),
     })();
     match result {
@@ -872,6 +931,89 @@ fn local_op(req: &Value) -> Value {
         }
         Err(e) => json!({"ok": false, "error": e}),
     }
+}
+
+/// The processes of this PC, in the rows agent.py makes of `ps`: pid,
+/// parent, user, CPU % (of the whole machine, as Task Manager counts it),
+/// memory %, time running, command line.
+fn local_procs() -> Result<Value, String> {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind, Users};
+    // Kept between calls: CPU use is what was used since the call before
+    // (so the first list shows none).
+    static STATE: std::sync::Mutex<Option<(System, Users)>> = std::sync::Mutex::new(None);
+    let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
+    if state.is_none() {
+        let sys = System::new().map_err(|e| format!("{e:?}"))?;
+        let users = Users::new_with_refreshed_list().map_err(|e| format!("{e:?}"))?;
+        *state = Some((sys, users));
+    }
+    let Some((sys, users)) = state.as_mut() else { return Err("no process list".into()) };
+    sys.refresh_memory();
+    let kind = ProcessRefreshKind::nothing().with_cpu().with_memory().with_cmd(UpdateKind::OnlyIfNotSet).with_user(UpdateKind::OnlyIfNotSet).without_tasks();
+    sys.refresh_processes_specifics(ProcessesToUpdate::All, true, kind);
+    let cores = thread::available_parallelism().map(|n| n.get()).unwrap_or(1) as f64;
+    let total = sys.total_memory().max(1) as f64;
+    let rows: Vec<Value> = sys
+        .processes()
+        .iter()
+        .map(|(pid, p)| {
+            let user = p.user_id().and_then(|u| users.get_user_by_id(u)).map(|u| u.name().to_string()).unwrap_or_default();
+            let cmd = p.cmd().iter().map(|a| a.to_string_lossy()).collect::<Vec<_>>().join(" ");
+            let cmd = if cmd.is_empty() { p.name().to_string_lossy().into_owned() } else { cmd };
+            json!([pid.as_u32(), p.parent().map(|p| p.as_u32()).unwrap_or(0), user, p.cpu_usage() as f64 / cores, p.memory() as f64 / total * 100.0, elapsed(p.run_time()), cmd])
+        })
+        .collect();
+    Ok(json!({"procs": rows}))
+}
+
+/// Seconds as `ps` writes them: 05:09, 01:02:03, 2-03:04:05.
+fn elapsed(t: u64) -> String {
+    let (d, h, m, s) = (t / 86400, t % 86400 / 3600, t % 3600 / 60, t % 60);
+    match (d, h) {
+        (0, 0) => format!("{m:02}:{s:02}"),
+        (0, _) => format!("{h:02}:{m:02}:{s:02}"),
+        _ => format!("{d}-{h:02}:{m:02}:{s:02}"),
+    }
+}
+
+/// End a process of this PC. TERM asks it to, where the system has such a
+/// thing; Windows has none, and ends it either way.
+fn local_kill(pid: u32, sig: &str) -> Result<(), String> {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, Signal, System};
+    let mut sys = System::new().map_err(|e| format!("{e:?}"))?;
+    let pid = Pid::from_u32(pid);
+    sys.refresh_processes_specifics(ProcessesToUpdate::Some(&[pid]), true, ProcessRefreshKind::nothing());
+    let p = sys.process(pid).ok_or("no such process")?;
+    let done = if sig.eq_ignore_ascii_case("KILL") { p.kill() } else { p.kill_with(Signal::Term).unwrap_or_else(|| p.kill()) };
+    if done {
+        Ok(())
+    } else {
+        Err("the process could not be ended (it may belong to another user)".into())
+    }
+}
+
+/// Move a file or folder to the Recycle Bin (Windows; elsewhere there is
+/// none to ask for, and the caller doesn't).
+#[cfg(windows)]
+fn to_trash(path: &str) -> Result<(), String> {
+    use windows_sys::Win32::UI::Shell::{SHFileOperationW, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT, FO_DELETE, SHFILEOPSTRUCTW};
+    // The shell wants backslashes and a list ending in two NULs.
+    let from: Vec<u16> = path.replace('/', "\\").encode_utf16().chain([0, 0]).collect();
+    let mut op: SHFILEOPSTRUCTW = unsafe { std::mem::zeroed() };
+    op.wFunc = FO_DELETE as _;
+    op.pFrom = from.as_ptr();
+    op.fFlags = (FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT) as _;
+    let rc = unsafe { SHFileOperationW(&mut op) };
+    if rc == 0 && op.fAnyOperationsAborted == 0 {
+        Ok(())
+    } else {
+        Err(format!("could not move it to the Recycle Bin (error {rc})"))
+    }
+}
+
+#[cfg(not(windows))]
+fn to_trash(_path: &str) -> Result<(), String> {
+    Err("there is no Recycle Bin here".into())
 }
 
 /// The names in folder `dir` that git ignores (.gitignore and friends), as
@@ -1142,6 +1284,70 @@ mod tests {
         let env = askpass_env("s3cret");
         assert!(env.iter().all(|(_, v)| !v.contains("s3cret")), "the password is not in ssh's environment");
         assert!(env.iter().any(|(k, _)| k == crate::secret::TICKET_VAR));
+    }
+
+    /// Procs on this PC: the list has this very process, in `ps`-like rows,
+    /// and kill ends one.
+    #[test]
+    fn local_processes_list_and_kill() {
+        let v = local_op(&json!({"op": "procs"}));
+        assert_eq!(v["ok"], json!(true), "{v}");
+        let rows = v["procs"].as_array().unwrap();
+        let me = std::process::id() as u64;
+        let mine = rows.iter().find(|r| r[0].as_u64() == Some(me)).expect("this process is listed");
+        assert_eq!(mine.as_array().unwrap().len(), 7);
+        assert!(mine[6].as_str().unwrap().to_lowercase().contains("weft"), "its command line: {mine}");
+        assert!(mine[3].is_number() && mine[4].as_f64().unwrap() > 0.0, "cpu and memory: {mine}");
+        assert!(mine[5].as_str().unwrap().contains(':'), "time running: {mine}");
+        assert_eq!((elapsed(309), elapsed(3723), elapsed(183845)), ("05:09".to_string(), "01:02:03".to_string(), "2-03:04:05".to_string()));
+
+        let mut child = Command::new("python").args(["-c", "import time; time.sleep(120)"]).spawn().expect("python");
+        let k = local_op(&json!({"op": "kill", "pid": child.id(), "sig": "KILL"}));
+        assert_eq!(k["ok"], json!(true), "{k}");
+        let t = std::time::Instant::now();
+        while child.try_wait().unwrap().is_none() {
+            assert!(t.elapsed().as_secs() < 10, "the process ended");
+            thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let gone = local_op(&json!({"op": "kill", "pid": 0xFFFF_FFF0u32, "sig": "TERM"}));
+        assert_eq!(gone["ok"], json!(false));
+    }
+
+    /// New folder, new file, rename, delete: what Files asks of this PC.
+    #[test]
+    fn file_operations() {
+        let dir = std::env::temp_dir().join(format!("weft-fileops-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let at = |n: &str| format!("{}/{n}", dir.display().to_string().replace('\\', "/"));
+        let ok = |v: &Value| v["ok"] == json!(true);
+        assert!(ok(&local_op(&json!({"op": "mkdir", "path": at("sub")}))));
+        assert!(dir.join("sub").is_dir());
+        assert!(!ok(&local_op(&json!({"op": "mkdir", "path": at("sub")}))), "it is already there");
+        assert!(ok(&local_op(&json!({"op": "create", "path": at("sub/a.txt")}))));
+        assert_eq!(std::fs::read(dir.join("sub/a.txt")).unwrap(), b"");
+        std::fs::write(dir.join("sub/a.txt"), "kept").unwrap();
+        assert!(!ok(&local_op(&json!({"op": "create", "path": at("sub/a.txt")}))), "never over a file that exists");
+        assert_eq!(std::fs::read(dir.join("sub/a.txt")).unwrap(), b"kept");
+        // Rename; never onto another file.
+        std::fs::write(dir.join("sub/b.txt"), "other").unwrap();
+        let clash = local_op(&json!({"op": "rename", "from": at("sub/a.txt"), "to": at("sub/b.txt")}));
+        assert!(!ok(&clash) && clash["error"].as_str().unwrap().contains("b.txt already exists"), "{clash}");
+        assert_eq!(std::fs::read(dir.join("sub/b.txt")).unwrap(), b"other");
+        assert!(ok(&local_op(&json!({"op": "rename", "from": at("sub/a.txt"), "to": at("sub/c.txt")}))));
+        assert!(!dir.join("sub/a.txt").exists() && std::fs::read(dir.join("sub/c.txt")).unwrap() == b"kept");
+        assert!(ok(&local_op(&json!({"op": "rename", "from": at("sub"), "to": at("moved")}))), "a folder too");
+        // Delete: a file, then a folder with what is in it; never a root.
+        assert!(ok(&local_op(&json!({"op": "delete", "path": at("moved/b.txt")}))));
+        assert!(!dir.join("moved/b.txt").exists() && dir.join("moved/c.txt").exists());
+        assert!(ok(&local_op(&json!({"op": "delete", "path": at("moved")}))));
+        assert!(!dir.join("moved").exists());
+        assert!(!ok(&local_op(&json!({"op": "delete", "path": at("gone")}))), "nothing there");
+        for root in ["/", "C:/", ""] {
+            let r = local_op(&json!({"op": "delete", "path": root}));
+            assert!(!ok(&r), "{root:?}: {r}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
