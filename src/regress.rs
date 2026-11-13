@@ -270,6 +270,11 @@ fn table_cells_select_and_copy() {
     h.right_click(c);
     h.click_text("Copy as TSV");
     assert_eq!(h.copied.take().as_deref(), Some("name\tsize\nweft.exe\t12 MB\nnotes.md\t3 KB"));
+    // And as it is written in the file.
+    let c = cell(&h, "name").center();
+    h.right_click(c);
+    h.click_text("Copy table (markdown)");
+    assert_eq!(h.copied.take().as_deref(), Some("| name | size |\n|---|---|\n| weft.exe | 12 MB |\n| notes.md | 3 KB |"));
 }
 
 /// Files: new folder, rename and delete from a row's menu; Esc leaves a
@@ -539,4 +544,139 @@ fn saving_then_closing_asks_about_what_changed_meanwhile() {
     assert!(!h.window_log.iter().any(|c| matches!(c, egui::ViewportCommand::Close)));
     assert_eq!(std::fs::read_to_string(&b).unwrap(), "old\n");
     assert_eq!(h.app.editor.files.len(), 2);
+}
+
+/// Esc closes whatever is open on top: every dialog, menu and picker.
+#[test]
+fn every_dialog_closes_on_escape() {
+    use crate::app::App;
+    type IsOpen = fn(&App) -> bool;
+    let dialogs: [(&str, IsOpen); 9] = [
+        ("help", |a| a.help.is_some()),
+        ("keys", |a| a.keys_window.is_some()),
+        ("privacy", |a| a.records_window.is_some()),
+        ("serial", |a| a.serial_dialog.is_some()),
+        ("palette", |a| a.palette.is_some()),
+        ("connect", |a| a.connect.is_some()),
+        ("open_memo", |a| a.memo_picker),
+        ("fonts", |a| a.font_menu.is_some()),
+        ("theme", |a| a.theme_menu.is_some()),
+    ];
+    let mut stayed = Vec::new();
+    for (cmd, open) in dialogs {
+        let mut h = Harness::new(json!({}));
+        h.command(cmd);
+        h.frames(2);
+        assert!(open(&h.app), "{cmd} opens");
+        h.key(Key::Escape, Modifiers::NONE);
+        h.frames(2);
+        if open(&h.app) {
+            stayed.push(cmd);
+        }
+    }
+    assert!(stayed.is_empty(), "Esc left these open: {stayed:?}");
+}
+
+fn files_on(h: &mut Harness, names: &[&str]) -> (std::path::PathBuf, String) {
+    let root = h.dir.join("tree");
+    std::fs::create_dir_all(root.join("sub")).unwrap();
+    for n in names {
+        std::fs::write(root.join(n), format!("{n} text")).unwrap();
+    }
+    let dir = root.display().to_string().replace('\\', "/");
+    h.app.set_root("local", &dir);
+    assert!(h.wait_for(20.0, |h| h.has("sub")), "the folder is listed");
+    (root, dir)
+}
+
+/// A file dragged onto a folder row is copied into it, and stays where it was.
+#[test]
+fn dragging_a_file_onto_a_folder_copies_it() {
+    let mut h = Harness::new(json!({"sidebar": true, "follow_cwd": false}));
+    let (root, _) = files_on(&mut h, &["a.txt"]);
+    let (from, to) = (h.at_exact("a.txt"), h.at_exact("sub"));
+    h.drag(from, to);
+    assert!(h.wait_for(20.0, |_| root.join("sub/a.txt").is_file()), "copied into the folder");
+    assert_eq!(std::fs::read_to_string(root.join("sub/a.txt")).unwrap(), "a.txt text");
+    assert!(root.join("a.txt").is_file(), "the original stays");
+    assert!(h.app.file_drag.is_none());
+}
+
+/// The eye menu in Files shows and hides hidden files, and is kept.
+#[test]
+fn files_show_hidden_from_the_eye_menu() {
+    let mut h = Harness::new(json!({"sidebar": true, "follow_cwd": false}));
+    files_on(&mut h, &[".secret", "seen.txt"]);
+    assert!(h.has("seen.txt") && !h.has(".secret"), "hidden files are not listed at first");
+    h.click_text("\u{f06e}");
+    h.click_text("Hidden files");
+    assert!(h.app.settings.show_hidden);
+    assert!(h.wait_for(20.0, |h| h.has(".secret")), "now listed");
+    h.click_text("Hidden files");
+    assert!(h.wait_for(20.0, |h| !h.has(".secret") && h.has("seen.txt")), "and hidden again");
+}
+
+/// A new memo takes typing at once, and its Save button writes it.
+#[test]
+fn a_memo_is_typed_and_saved() {
+    let mut h = Harness::new(json!({}));
+    h.command("new_memo");
+    h.frames(3);
+    let path = h.app.editor.files.last().expect("a memo is open").path.clone();
+    h.type_text("remember this");
+    h.frames(2);
+    assert_eq!(h.app.editor.files.last().unwrap().text, "remember this", "typed into the memo");
+    h.click_text("Save");
+    assert!(h.wait_for(20.0, |_| std::fs::read_to_string(&path).is_ok_and(|t| t == "remember this")), "on disk");
+}
+
+/// The composer sends its line on Enter and closes.
+#[test]
+fn the_composer_sends_on_enter() {
+    let mut h = Harness::new(json!({}));
+    let pane = h.app.active_pane_id().unwrap();
+    h.command("composer");
+    h.type_text("echo hi");
+    h.key(Key::Enter, Modifiers::NONE);
+    h.frames(2);
+    assert!(h.app.panes[&pane].composer.is_none(), "closed after sending");
+}
+
+/// Side panels and editors can be split into more, each a panel of its own.
+#[test]
+fn panels_split() {
+    use crate::app::Region;
+    let mut h = Harness::new(json!({"sidebar": true, "follow_cwd": false}));
+    let file = h.dir.join("a.txt");
+    std::fs::write(&file, "x").unwrap();
+    h.app.open_file("local", &file.display().to_string().replace('\\', "/"), 1);
+    h.frames(3);
+    let count = |h: &Harness, region: Region| h.app.panel_rects.keys().filter(|p| p.region == region).count();
+    assert_eq!((count(&h, Region::Side), count(&h, Region::Editor)), (1, 1));
+    h.command("split_side_down");
+    h.command("split_editor_right");
+    h.frames(2);
+    assert_eq!((count(&h, Region::Side), count(&h, Region::Editor)), (2, 2));
+    let rects: Vec<egui::Rect> = h.app.panel_rects.values().copied().collect();
+    for (i, a) in rects.iter().enumerate() {
+        assert!(a.width() > 40.0 && a.height() > 40.0, "every panel has room: {a:?}");
+        for b in &rects[i + 1..] {
+            assert!(a.intersect(*b).area() < 1.0, "panels don't overlap: {a:?} {b:?}");
+        }
+    }
+}
+
+/// Procs lists this PC's processes (it said "remote only" before).
+#[test]
+fn procs_lists_this_pc() {
+    use crate::app::SideTab;
+    let mut h = Harness::new(json!({"sidebar": true, "session": [{"t": "Pane", "host": "local", "cwd": null}]}));
+    h.app.side.tab = SideTab::Procs;
+    h.app.settings.side_tabs.insert(0, SideTab::Procs);
+    assert!(h.wait_for(30.0, |h| h.shows("PID") && h.app.side.procs.as_ref().is_some_and(|p| p.as_ref().is_ok_and(|rows| rows.len() > 5))), "the list arrived: {:?}", h.app.side.procs.as_ref().map(|p| p.as_ref().map(|r| r.len())));
+    assert!(!h.shows("remote agent"), "no \"connect to an ssh host\" note");
+    let me = std::process::id().to_string();
+    h.app.side.procs_filter = me.clone();
+    h.frames(3);
+    assert!(h.has(&me), "this very process is in the list, by its pid");
 }

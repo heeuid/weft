@@ -133,6 +133,11 @@ impl Harness {
         self.texts.iter().any(|(t, _)| t == text)
     }
 
+    /// Where the text that is exactly this is drawn.
+    pub fn at_exact(&self, text: &str) -> Pos2 {
+        self.texts.iter().find(|(t, _)| t == text).unwrap_or_else(|| panic!("\"{text}\" is not on screen; shown: {:?}", self.texts.iter().map(|t| &t.0).collect::<Vec<_>>())).1.center()
+    }
+
     /// Where a drawn text containing `needle` is.
     pub fn find(&self, needle: &str) -> Option<Rect> {
         self.texts.iter().find(|(t, _)| t.contains(needle)).map(|(_, r)| *r)

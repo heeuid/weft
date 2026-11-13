@@ -17,6 +17,7 @@ impl App {
         }
         self.poll();
         self.handle_global_keys(ctx);
+        self.escape_closes_windows(ctx);
 
         // Focus mode: no status bar either.
         if self.focus_mode.is_none() {

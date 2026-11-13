@@ -418,6 +418,24 @@ impl App {
         }
     }
 
+    /// Esc closes the window on top that has no way of its own to take it:
+    /// Help, Keyboard shortcuts, Privacy, Serial console, the memo picker
+    /// and Fonts only had their ×. Before the terminal sees the key: the
+    /// shell gets no Esc for it. (A key being bound has taken its Esc by
+    /// now: that cancels the binding, not the window.)
+    pub fn escape_closes_windows(&mut self, ctx: &egui::Context) {
+        let open = self.serial_dialog.is_some() || self.font_menu.is_some() || self.memo_picker || self.keys_window.is_some() || self.records_window.is_some() || self.help.is_some();
+        if !open || !ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+            return;
+        }
+        // One at a time, the smaller ones (opened from the others) first.
+        if self.serial_dialog.take().is_some() || self.font_menu.take().is_some() || std::mem::take(&mut self.memo_picker) || self.keys_window.take().is_some() || self.records_window.take().is_some() {
+        } else {
+            self.help = None;
+        }
+        self.focus_term = true;
+    }
+
     pub fn handle_global_keys(&mut self, ctx: &egui::Context) {
         if self.keys_window.as_ref().map(|w| w.capture.is_some()).unwrap_or(false) {
             self.capture_key(ctx);
