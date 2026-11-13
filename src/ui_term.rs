@@ -600,6 +600,7 @@ impl App {
                 self.ui_pane(ui, id, r, id == active, multi);
             }
         }
+        self.pane_drop(ui);
         if zoomed {
             // "ZOOM" badge left of the pane buttons; clicking it restores the split.
             let label = "ZOOM · click to restore";
@@ -611,6 +612,58 @@ impl App {
             ui.painter().galley(pos2(pill.left() + 8.0, pill.center().y - g.size().y / 2.0), g, theme::accent());
             if resp.on_hover_text("restore split layout (Ctrl+Shift+Z)").clicked() {
                 self.actions.push(Action::ToggleZoom);
+            }
+        }
+    }
+
+    /// While a pane is dragged by its header: show where it would go — a
+    /// half of the pane under the pointer (split there) or its middle (swap)
+    /// — and move it there on release.
+    fn pane_drop(&mut self, ui: &mut Ui) {
+        let Some(src) = self.pane_drag else { return };
+        let (pos, released) = ui.input(|i| (i.pointer.latest_pos(), i.pointer.any_released() || !i.pointer.primary_down()));
+        let target = pos.and_then(|p| self.pane_rects.iter().find(|(id, r)| *id != src && r.contains(p)).map(|&(id, r)| (id, r, p)));
+        let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, Id::new("pane-drop")));
+        ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+        let drop = target.map(|(id, r, p)| {
+            let (fx, fy) = ((p.x - r.left()) / r.width(), (p.y - r.top()) / r.height());
+            // The middle third (both ways) swaps; elsewhere the nearest edge.
+            let side = if (0.33..=0.67).contains(&fx) && (0.33..=0.67).contains(&fy) {
+                None
+            } else {
+                [(Dock::Left, fx), (Dock::Right, 1.0 - fx), (Dock::Top, fy), (Dock::Bottom, 1.0 - fy)].into_iter().min_by(|a, b| a.1.total_cmp(&b.1)).map(|t| t.0)
+            };
+            let zone = match side {
+                None => r.shrink2(vec2(r.width() * 0.2, r.height() * 0.2)),
+                Some(Dock::Left) => Rect::from_min_max(r.min, pos2(r.center().x, r.bottom())),
+                Some(Dock::Right) => Rect::from_min_max(pos2(r.center().x, r.top()), r.max),
+                Some(Dock::Top) => Rect::from_min_max(r.min, pos2(r.right(), r.center().y)),
+                Some(Dock::Bottom) => Rect::from_min_max(pos2(r.left(), r.center().y), r.max),
+            };
+            (id, side, zone)
+        });
+        match drop {
+            Some((_, side, zone)) => {
+                painter.rect(zone.shrink(4.0), CornerRadius::same(8), theme::tint(theme::accent(), 40), Stroke::new(2.0_f32, theme::accent()), StrokeKind::Inside);
+                let text = match side {
+                    None => "swap the two panes".to_string(),
+                    Some(d) => format!("move the pane to the {}", d.label()),
+                };
+                painter.text(zone.center(), Align2::CENTER_CENTER, text, FontId::proportional(14.0), theme::text());
+            }
+            None => {
+                if let Some(p) = pos {
+                    painter.text(p + vec2(16.0, 16.0), Align2::LEFT_TOP, "drop on another pane of this tab", FontId::proportional(12.0), theme::text_dim());
+                }
+            }
+        }
+        if released {
+            self.pane_drag = None;
+            if let (Some((target, side, _)), Some(tab)) = (drop, self.tabs.get_mut(self.active_tab)) {
+                let root = std::mem::replace(&mut tab.root, crate::app::Node::Leaf(src));
+                tab.root = root.moved(src, target, side);
+                tab.active = src;
+                tab.zoomed = false;
             }
         }
     }
@@ -1257,6 +1310,18 @@ impl App {
             let bx = hr.right() - 26.0;
             let zx = bx - 34.0;
             let title_clip = Rect::from_min_max(hr.min, pos2(zx - 6.0, hr.bottom()));
+            // The header moves the pane: drag it onto another pane of the tab.
+            let grab = ui.interact(title_clip, Id::new(("pane-grab", id)), Sense::click_and_drag());
+            if grab.hovered() && self.pane_drag.is_none() {
+                ui.ctx().set_cursor_icon(CursorIcon::Grab);
+            }
+            if grab.drag_started() {
+                self.pane_drag = Some(id);
+            }
+            if grab.clicked() && !active {
+                acts.push(Action::Focus(id));
+            }
+            grab.on_hover_text("drag onto another pane to move it there (the middle swaps the two)");
             crate::widgets::text_fit(&painter.with_clip_rect(title_clip), pos2(hr.left() + 28.0, hr.center().y), &title, FontId::proportional(12.0), if active { theme::text() } else { theme::text_dim() }, title_clip.right() - hr.left() - 34.0);
             if icons::overlay_button_styled(ui, Rect::from_min_size(pos2(bx, hr.top() + 2.0), vec2(20.0, 20.0)), Id::new(("close", id)), Icon::Cross, "close pane (Ctrl+Shift+W)", true).clicked() {
                 acts.push(Action::ClosePane(id));
@@ -1601,6 +1666,80 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A pane dragged by its header in the real App, frame by frame: the
+    /// pointer events egui gets from the mouse.
+    #[test]
+    fn dragging_a_pane_header_moves_the_pane() {
+        let dir = std::env::temp_dir().join(format!("weft-pane-drag-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // Only this test builds an App, the one thing reading WEFT_DATA_DIR.
+        std::env::set_var("WEFT_DATA_DIR", &dir);
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx, crate::theme::DEFAULT_FONT, crate::theme::DEFAULT_ICON_FONT);
+        let mut app = App::new(ctx.clone());
+        app.split(true);
+        app.split(false);
+        let frame = |app: &mut App, events: Vec<egui::Event>| {
+            let input = egui::RawInput { events, screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(1200.0, 700.0))), ..Default::default() };
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| app.ui_panes(ui));
+            });
+        };
+        frame(&mut app, vec![]);
+        frame(&mut app, vec![]);
+        let mut ids = Vec::new();
+        app.tabs[0].root.leaves(&mut ids);
+        let [first, _, third] = ids[..] else { panic!("{ids:?}") };
+        let rect = |app: &App, id| app.pane_rects.iter().find(|p| p.0 == id).unwrap().1;
+        let (from, to) = (rect(&app, third).left_top() + vec2(60.0, 12.0), rect(&app, first).left_center() + vec2(30.0, 0.0));
+        let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        frame(&mut app, vec![egui::Event::PointerMoved(from)]);
+        frame(&mut app, vec![button(from, true)]);
+        for k in 1..=10 {
+            frame(&mut app, vec![egui::Event::PointerMoved(from + (to - from) * k as f32 / 10.0)]);
+        }
+        assert_eq!(app.pane_drag, Some(third), "the header drag started");
+        frame(&mut app, vec![button(to, false)]);
+        frame(&mut app, vec![]);
+        assert_eq!(app.pane_drag, None);
+        // The third pane is now left of the first, at the same height.
+        let (a, b) = (rect(&app, third), rect(&app, first));
+        assert!(a.right() <= b.left() + 1.0 && (a.top() - b.top()).abs() < 1.0, "third {a:?} first {b:?}");
+        // A second editor, dragged by its grip to the left of the terminals.
+        app.editor.visible = true;
+        let first_editor = PanelId::first(Region::Editor);
+        app.split_panel(first_editor, crate::app::Dock::Bottom);
+        let second = PanelId { region: Region::Editor, n: 1 };
+        let layout_frame = |app: &mut App, events: Vec<egui::Event>| {
+            let input = egui::RawInput { events, screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(1200.0, 700.0))), ..Default::default() };
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| app.ui_layout(ui));
+                app.ui_dock_drop(ctx);
+            });
+        };
+        layout_frame(&mut app, vec![]);
+        layout_frame(&mut app, vec![]);
+        let panel = |app: &App, p: PanelId| app.panel_rects[&p];
+        assert!(panel(&app, second).top() > panel(&app, first_editor).top(), "the new editor is below the first");
+        // Its grip: the first thing in the panel, after the frame's margin.
+        let grip = panel(&app, second).left_top() + vec2(8.0 + 7.0, 6.0 + 10.0);
+        let to = panel(&app, PanelId::TERMS).left_center() + vec2(20.0, 0.0);
+        layout_frame(&mut app, vec![egui::Event::PointerMoved(grip)]);
+        layout_frame(&mut app, vec![button(grip, true)]);
+        for k in 1..=10 {
+            layout_frame(&mut app, vec![egui::Event::PointerMoved(grip + (to - grip) * k as f32 / 10.0)]);
+        }
+        assert_eq!(app.dock_drag, Some(second), "the grip drag started");
+        layout_frame(&mut app, vec![button(to, false)]);
+        layout_frame(&mut app, vec![]);
+        let (ed, terms) = (panel(&app, second), panel(&app, PanelId::TERMS));
+        assert!(ed.right() <= terms.left() + 1.0, "second editor {ed:?} left of the terminals {terms:?}");
+        assert!(app.settings.layout.contains(first_editor), "the first editor stays");
+        drop(app);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn selection_modes() {

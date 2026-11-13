@@ -72,6 +72,10 @@ pub(crate) enum Cmd {
     Keys,
     NextTab,
     PrevTab,
+    /// Tab n (0-based); `usize::MAX` is the last tab.
+    GoTab(usize),
+    /// Another side panel or editor beside the focused one (true: to the right).
+    PanelSplit(Region, bool),
     FocusLeft,
     FocusRight,
     FocusUp,
@@ -89,8 +93,17 @@ const COMMANDS: &[(Cmd, &str, &str, &[&str])] = &[
     (Cmd::ClosePane, "close_pane", "Close pane", &["Ctrl+Shift+W"]),
     (Cmd::Zoom, "zoom", "Zoom / restore pane", &["Ctrl+Shift+Z"]),
     (Cmd::FocusMode, "focus_mode", "Focus mode: terminals only (again to leave)", &["Ctrl+Shift+Enter"]),
-    (Cmd::NextTab, "next_tab", "Next tab", &["Ctrl+Tab"]),
-    (Cmd::PrevTab, "prev_tab", "Previous tab", &["Ctrl+Shift+Tab"]),
+    (Cmd::NextTab, "next_tab", "Next tab", &["Ctrl+Tab", "Alt+Shift+Right"]),
+    (Cmd::PrevTab, "prev_tab", "Previous tab", &["Ctrl+Shift+Tab", "Alt+Shift+Left"]),
+    (Cmd::GoTab(0), "tab_1", "Go to tab 1", &["Alt+1"]),
+    (Cmd::GoTab(1), "tab_2", "Go to tab 2", &["Alt+2"]),
+    (Cmd::GoTab(2), "tab_3", "Go to tab 3", &["Alt+3"]),
+    (Cmd::GoTab(3), "tab_4", "Go to tab 4", &["Alt+4"]),
+    (Cmd::GoTab(4), "tab_5", "Go to tab 5", &["Alt+5"]),
+    (Cmd::GoTab(5), "tab_6", "Go to tab 6", &["Alt+6"]),
+    (Cmd::GoTab(6), "tab_7", "Go to tab 7", &["Alt+7"]),
+    (Cmd::GoTab(7), "tab_8", "Go to tab 8", &["Alt+8"]),
+    (Cmd::GoTab(usize::MAX), "tab_last", "Go to the last tab", &["Alt+9"]),
     (Cmd::FocusLeft, "focus_left", "Focus the pane on the left (split)", &["Alt+Left"]),
     (Cmd::FocusRight, "focus_right", "Focus the pane on the right (split)", &["Alt+Right"]),
     (Cmd::FocusUp, "focus_up", "Focus the pane above (split)", &["Alt+Up"]),
@@ -104,6 +117,10 @@ const COMMANDS: &[(Cmd, &str, &str, &[&str])] = &[
     (Cmd::UnfoldAll, "unfold_all", "Unfold all command outputs", &[]),
     (Cmd::ClearScrollback, "clear_scrollback", "Clear scrollback", &[]),
     (Cmd::Sidebar, "side_panel", "Toggle side panel", &["Ctrl+Shift+B"]),
+    (Cmd::PanelSplit(Region::Side, false), "split_side_down", "Side panel: another one below", &[]),
+    (Cmd::PanelSplit(Region::Side, true), "split_side_right", "Side panel: another one to the right", &[]),
+    (Cmd::PanelSplit(Region::Editor, false), "split_editor_down", "Editor: another one below (shows the same file)", &[]),
+    (Cmd::PanelSplit(Region::Editor, true), "split_editor_right", "Editor: another one to the right (shows the same file)", &[]),
     (Cmd::Editor, "editor", "Toggle editor", &["Ctrl+Shift+J"]),
     (Cmd::NewMemo, "new_memo", "New memo (markdown, saved automatically)", &["Ctrl+Shift+M"]),
     (Cmd::OpenMemo, "open_memo", "Open memo… (list, search)", &[]),
@@ -180,6 +197,13 @@ impl App {
             }
             Cmd::Zoom => self.toggle_zoom(),
             Cmd::Sidebar => self.settings.sidebar = !self.settings.sidebar,
+            Cmd::PanelSplit(region, right) => {
+                let focus = if region == Region::Side { self.side_focus } else { self.editor_focus };
+                let all = self.panels_of(region);
+                if let Some(&at) = all.iter().find(|p| p.n == focus).or(all.first()) {
+                    self.split_panel(at, if right { Dock::Right } else { Dock::Bottom });
+                }
+            }
             Cmd::Editor => self.editor.visible = !self.editor.visible,
             Cmd::Find => {
                 if let Some(p) = pane.and_then(|id| self.panes.get_mut(&id)) {
@@ -272,6 +296,15 @@ impl App {
             Cmd::Records => self.open_records_window(),
             Cmd::Palette => self.palette = if self.palette.is_some() { None } else { Some(PaletteState { query: String::new(), sel: 0 }) },
             Cmd::Keys => self.keys_window = Some(KeysWindow { query: String::new(), capture: None }),
+            Cmd::GoTab(n) => {
+                // Alt+9 is the last tab, as in browsers; a number past the end does nothing.
+                let to = if n == usize::MAX { self.tabs.len().checked_sub(1) } else { Some(n).filter(|&n| n < self.tabs.len()) };
+                if let Some(to) = to {
+                    self.active_tab = to;
+                    self.focus_term = true;
+                    self.on_active_changed();
+                }
+            }
             Cmd::NextTab | Cmd::PrevTab => {
                 if !self.tabs.is_empty() {
                     let n = self.tabs.len() as i32;
@@ -474,7 +507,7 @@ impl App {
     pub fn ui_tabbar(&mut self, ui: &mut Ui) {
         ui.horizontal_centered(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
-            self.dock_grip(ui, Region::Terms);
+            self.dock_grip(ui);
             // The buttons on the right get their room first; the tabs share
             // what is left (they used to run on under the buttons).
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -834,7 +867,8 @@ impl App {
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
-            self.dock_grip(ui, Region::Side);
+            self.dock_grip(ui);
+            self.panel_buttons(ui);
             const TABS: [(SideTab, &str); 5] = [(SideTab::Files, "Files"), (SideTab::Blocks, "Commands"), (SideTab::History, "History"), (SideTab::Search, "Search"), (SideTab::Procs, "Procs")];
             // A narrow panel shows the tabs that fit (the open one always) and
             // the rest under ».
@@ -2062,11 +2096,13 @@ impl App {
 
     // ---- editor -----------------------------------------------------------------------
 
-    /// Drag handle that moves a panel to another window edge (drop zones are
-    /// drawn by `ui_dock_drop`); right-click for the same choices as a menu.
-    fn dock_grip(&mut self, ui: &mut Ui, region: Region) {
+    /// Drag handle that moves the panel being drawn to another window edge
+    /// or beside another panel (drop zones are drawn by `ui_dock_drop`);
+    /// right-click for the same choices, and to split or close the panel.
+    fn dock_grip(&mut self, ui: &mut Ui) {
+        let panel = self.drawing;
         let (rect, resp) = ui.allocate_exact_size(vec2(14.0, 20.0), Sense::click_and_drag());
-        let active = resp.hovered() || resp.dragged() || self.dock_drag == Some(region);
+        let active = resp.hovered() || resp.dragged() || self.dock_drag == Some(panel);
         let c = if active { theme::text() } else { theme::text_faint() };
         for row in 0..3 {
             for col in 0..2 {
@@ -2076,23 +2112,157 @@ impl App {
         }
         let resp = resp.on_hover_cursor(egui::CursorIcon::Grab).on_hover_text("drag onto another panel or a window edge to move this panel (right-click: menu)");
         if resp.drag_started() {
-            self.dock_drag = Some(region);
+            self.dock_drag = Some(panel);
         }
         resp.context_menu(|ui| {
             for d in Dock::ALL {
                 if ui.button(format!("Move to the {} edge", d.label())).clicked() {
-                    self.move_panel(region, None, d);
+                    self.move_panel(panel, None, d);
+                    ui.close_menu();
+                }
+            }
+            if panel.region != Region::Terms {
+                ui.separator();
+                if ui.button("Split right").clicked() {
+                    self.split_panel(panel, Dock::Right);
+                    ui.close_menu();
+                }
+                if ui.button("Split down").clicked() {
+                    self.split_panel(panel, Dock::Bottom);
+                    ui.close_menu();
+                }
+                if self.panels_of(panel.region).len() > 1 && ui.button("Close this panel").clicked() {
+                    self.close_panel(panel);
                     ui.close_menu();
                 }
             }
         });
     }
 
-    /// Move a panel next to another one (or to a window edge) and remember it.
-    pub fn move_panel(&mut self, region: Region, target: Option<Region>, side: Dock) {
+    /// Split and (when there are several) close buttons for the side panel
+    /// or editor being drawn, after its grip.
+    fn panel_buttons(&mut self, ui: &mut Ui) {
+        let panel = self.drawing;
+        let what = panel.region.name().to_lowercase();
+        let split = icons::button(ui, Icon::SplitDown, &format!("another {what} below (right-click: to the right)"));
+        if split.clicked() {
+            self.split_panel(panel, Dock::Bottom);
+        } else if split.secondary_clicked() {
+            self.split_panel(panel, Dock::Right);
+        }
+        if self.panels_of(panel.region).len() > 1 && icons::button(ui, Icon::Cross, &format!("close this {what} (the others stay)")).clicked() {
+            self.close_panel(panel);
+        }
+    }
+
+    /// The side panels or editors in the layout.
+    pub fn panels_of(&self, region: Region) -> Vec<PanelId> {
+        let mut all = Vec::new();
+        self.settings.layout.panels(&mut all);
+        all.retain(|p| p.region == region);
+        all
+    }
+
+    /// Another side panel or editor beside `panel`, half its space: a side
+    /// panel shows another tab, an editor the same file.
+    pub fn split_panel(&mut self, panel: PanelId, side: Dock) {
+        let new = PanelId { region: panel.region, n: self.settings.layout.free_n(panel.region) };
         let layout = std::mem::take(&mut self.settings.layout);
-        self.settings.layout = layout.moved(region, target, side);
+        self.settings.layout = layout.split(panel, new, side);
+        match panel.region {
+            Region::Side => {
+                let tab = self.settings.side_tabs.get(&panel.n).copied().unwrap_or(self.side.tab);
+                let other = if tab == SideTab::Files { SideTab::Search } else { SideTab::Files };
+                self.settings.side_tabs.insert(new.n, other);
+                self.settings.sidebar = true;
+            }
+            Region::Editor => {
+                if let Some(shown) = self.editor_shows.get(&panel.n).cloned() {
+                    self.editor_shows.insert(new.n, shown);
+                }
+                self.editor.visible = true;
+            }
+            Region::Terms => {}
+        }
         self.save_settings();
+    }
+
+    /// Close one of several side panels or editors (the last one is hidden
+    /// with its toggle instead, so it comes back where it was).
+    pub fn close_panel(&mut self, panel: PanelId) {
+        if self.panels_of(panel.region).len() < 2 {
+            return;
+        }
+        if let Some(rest) = std::mem::take(&mut self.settings.layout).remove(panel) {
+            self.settings.layout = rest;
+        }
+        match panel.region {
+            Region::Side => {
+                self.settings.side_tabs.remove(&panel.n);
+            }
+            Region::Editor => {
+                self.editor_shows.remove(&panel.n);
+            }
+            Region::Terms => {}
+        }
+        let first = self.panels_of(panel.region).first().map(|p| p.n).unwrap_or(0);
+        match panel.region {
+            Region::Side if self.side_focus == panel.n => self.side_focus = first,
+            Region::Editor if self.editor_focus == panel.n => self.editor_focus = first,
+            _ => {}
+        }
+        self.save_settings();
+    }
+
+    /// Move a panel next to another one (or to a window edge) and remember it.
+    pub fn move_panel(&mut self, panel: PanelId, target: Option<PanelId>, side: Dock) {
+        let layout = std::mem::take(&mut self.settings.layout);
+        self.settings.layout = layout.moved(panel, target, side);
+        self.save_settings();
+    }
+
+    /// What changed since the last frame for "the" side panel or editor (a
+    /// command picked a tab, a file was opened) belongs to the focused one;
+    /// a focus on a panel that is gone moves to the first.
+    fn panels_follow_focus(&mut self) {
+        let sides = self.panels_of(Region::Side);
+        if !sides.iter().any(|p| p.n == self.side_focus) {
+            self.side_focus = sides.first().map_or(0, |p| p.n);
+        }
+        let editors = self.panels_of(Region::Editor);
+        if !editors.iter().any(|p| p.n == self.editor_focus) {
+            self.editor_focus = editors.first().map_or(0, |p| p.n);
+        }
+        self.settings.side_tabs.insert(self.side_focus, self.side.tab);
+        if let Some(f) = self.editor.files.get(self.editor.active) {
+            self.editor_shows.insert(self.editor_focus, (f.host.clone(), f.path.clone()));
+        }
+    }
+
+    /// Side panel `n`: the shared side state, showing its own tab.
+    fn side_panel(&mut self, ui: &mut Ui, n: u32) {
+        self.side.tab = self.settings.side_tabs.get(&n).copied().unwrap_or(self.side.tab);
+        self.ui_sidebar(ui);
+        self.settings.side_tabs.insert(n, self.side.tab);
+    }
+
+    /// Editor `n`: the open files (shared), showing its own one. The find
+    /// bar and a selection waiting to be made belong to the focused editor.
+    fn editor_panel(&mut self, ui: &mut Ui, n: u32) {
+        let focused = n == self.editor_focus;
+        let shows = self.editor_shows.get(&n).and_then(|(h, p)| self.editor.files.iter().position(|f| &f.host == h && &f.path == p));
+        if let Some(i) = shows {
+            self.editor.active = i;
+        }
+        let held = (!focused).then(|| (self.editor.find.take(), self.editor.select.take()));
+        self.ui_editor(ui);
+        if let Some((find, select)) = held {
+            self.editor.find = find;
+            self.editor.select = select;
+        }
+        if let Some(f) = self.editor.files.get(self.editor.active) {
+            self.editor_shows.insert(n, (f.host.clone(), f.path.clone()));
+        }
     }
 
     /// The panels where the layout tree puts them, with draggable dividers.
@@ -2101,31 +2271,42 @@ impl App {
         let rect = ui.max_rect();
         self.layout_rect = rect;
         let (side, editor) = (self.settings.sidebar, self.editor.visible);
-        let shown = |r: Region| match r {
+        let shown = |p: PanelId| match p.region {
             Region::Side => side,
             Region::Editor => editor,
             Region::Terms => true,
         };
-        if !self.settings.layout.contains(Region::Terms) {
+        if !self.settings.layout.contains(PanelId::TERMS) {
             self.settings.layout = crate::app::Layout::default();
         }
+        self.panels_follow_focus();
         let Some(tree) = self.settings.layout.pruned(&shown) else { return };
         let mut panels = Vec::new();
         let mut dividers = Vec::new();
         tree.rects(rect, &mut panels, &mut dividers);
         self.panel_rects = panels.iter().copied().collect();
-        for (region, r) in panels {
-            ui.scope_builder(egui::UiBuilder::new().max_rect(r).id_salt(("panel", region)), |ui| {
+        let pressed = ui.input(|i| (i.pointer.primary_pressed() || i.pointer.secondary_pressed()).then(|| i.pointer.interact_pos()).flatten());
+        for (panel, r) in panels {
+            self.drawing = panel;
+            // A click in a side panel or editor makes it the one commands go to.
+            if pressed.is_some_and(|p| r.contains(p)) {
+                match panel.region {
+                    Region::Side => self.side_focus = panel.n,
+                    Region::Editor => self.editor_focus = panel.n,
+                    Region::Terms => {}
+                }
+            }
+            ui.scope_builder(egui::UiBuilder::new().max_rect(r).id_salt(("panel", panel.region, panel.n)), |ui| {
                 ui.set_clip_rect(r.intersect(ui.clip_rect()));
-                match region {
+                match panel.region {
                     Region::Side | Region::Editor => {
-                        let margin = if region == Region::Side { egui::Margin::symmetric(8, 0) } else { egui::Margin::symmetric(8, 6) };
+                        let margin = if panel.region == Region::Side { egui::Margin::symmetric(8, 0) } else { egui::Margin::symmetric(8, 6) };
                         egui::Frame::new().fill(theme::bg_base()).inner_margin(margin).show(ui, |ui| {
                             ui.set_min_size(ui.available_size());
-                            if region == Region::Side {
-                                self.ui_sidebar(ui);
+                            if panel.region == Region::Side {
+                                self.side_panel(ui, panel.n);
                             } else {
-                                self.ui_editor(ui);
+                                self.editor_panel(ui, panel.n);
                             }
                         });
                     }
@@ -2160,6 +2341,15 @@ impl App {
                 }
             });
         }
+        // Back to the focused side panel's tab and editor's file, for commands.
+        if let Some(&tab) = self.settings.side_tabs.get(&self.side_focus) {
+            self.side.tab = tab;
+        }
+        let focused_file = self.editor_shows.get(&self.editor_focus).and_then(|(h, p)| self.editor.files.iter().position(|f| &f.host == h && &f.path == p));
+        if let Some(i) = focused_file {
+            self.editor.active = i;
+        }
+        self.drawing = PanelId::TERMS;
         // Where a vertical border meets a horizontal one (three panels
         // around a point): one grip moves both, laid over the borders.
         let junctions = crate::app::panel_junctions(&dividers);
@@ -2230,7 +2420,7 @@ impl App {
     /// a half of the panel under the pointer, or a window edge near the
     /// border — and move it there on release.
     pub fn ui_dock_drop(&mut self, ctx: &egui::Context) {
-        let Some(region) = self.dock_drag else { return };
+        let Some(panel) = self.dock_drag else { return };
         let area = self.layout_rect;
         let (pos, released) = ctx.input(|i| (i.pointer.latest_pos(), i.pointer.any_released() || !i.pointer.primary_down()));
         let Some(p) = pos else { return };
@@ -2249,13 +2439,13 @@ impl App {
         };
         // Within this distance of the window border: the window edge.
         let border = [p.x - area.left(), area.right() - p.x, p.y - area.top(), area.bottom() - p.y].into_iter().fold(f32::MAX, f32::min);
-        let over = self.panel_rects.iter().find(|(r, rect)| **r != region && rect.contains(p)).map(|(r, rect)| (*r, *rect));
+        let over = self.panel_rects.iter().find(|(r, rect)| **r != panel && rect.contains(p)).map(|(r, rect)| (*r, *rect));
         let (target, side, zone, text) = if border < 36.0 || !area.contains(p) {
             let side = nearest(area);
-            (None, side, half_of(area, side, 0.3), format!("{} \u{2192} {} edge of the window", region.name(), side.label()))
+            (None, side, half_of(area, side, 0.3), format!("{} \u{2192} {} edge of the window", panel.name(), side.label()))
         } else if let Some((t, rect)) = over {
             let side = nearest(rect);
-            (Some(t), side, half_of(rect, side, 0.5), format!("{} \u{2192} {} of {}", region.name(), side.label(), t.name().to_lowercase()))
+            (Some(t), side, half_of(rect, side, 0.5), format!("{} \u{2192} {} of {}", panel.name(), side.label(), t.name().to_lowercase()))
         } else {
             // Over its own panel: nothing to do.
             painter.text(p + vec2(16.0, 16.0), Align2::LEFT_TOP, "drop on another panel or near a window edge", FontId::proportional(12.0), theme::text_dim());
@@ -2268,13 +2458,16 @@ impl App {
         painter.text(zone.center(), Align2::CENTER_CENTER, text, FontId::proportional(15.0), theme::text());
         if released {
             self.dock_drag = None;
-            self.move_panel(region, target, side);
+            self.move_panel(panel, target, side);
         }
     }
 
     pub fn ui_editor(&mut self, ui: &mut Ui) {
         if self.editor.files.is_empty() {
-            ui.horizontal(|ui| self.dock_grip(ui, Region::Editor));
+            ui.horizontal(|ui| {
+                self.dock_grip(ui);
+                self.panel_buttons(ui);
+            });
             ui.add_space(20.0);
             ui.vertical_centered(|ui| {
                 ui.label(RichText::new("No files open").color(theme::text_dim()));
@@ -2298,7 +2491,8 @@ impl App {
         // Tabs.
         let mut close = None;
         ui.horizontal(|ui| {
-        self.dock_grip(ui, Region::Editor);
+        self.dock_grip(ui);
+        self.panel_buttons(ui);
         if icons::button(ui, Icon::Plus, "new memo — a markdown note, saved automatically (Ctrl+Shift+M)").clicked() {
             self.actions.push(Action::NewMemo);
         }
@@ -3353,6 +3547,7 @@ fn group(c: Cmd) -> &'static str {
         | Cmd::FocusMode
         | Cmd::NextTab
         | Cmd::PrevTab
+        | Cmd::GoTab(_)
         | Cmd::FocusLeft
         | Cmd::FocusRight
         | Cmd::FocusUp
@@ -3368,7 +3563,7 @@ fn group(c: Cmd) -> &'static str {
         | Cmd::Reconnect
         | Cmd::CursorStyle
         | Cmd::LocalShell(_) => GROUPS[1],
-        Cmd::Sidebar | Cmd::Editor | Cmd::Hidden | Cmd::History | Cmd::NewMemo | Cmd::Memos | Cmd::OpenMemo => GROUPS[2],
+        Cmd::Sidebar | Cmd::Editor | Cmd::PanelSplit(..) | Cmd::Hidden | Cmd::History | Cmd::NewMemo | Cmd::Memos | Cmd::OpenMemo => GROUPS[2],
         Cmd::FontUp
         | Cmd::FontDown
         | Cmd::FontReset

@@ -77,7 +77,7 @@ impl Dock {
     }
 }
 
-/// A panel that can be dragged to another window edge.
+/// A kind of panel that can be dragged to another window edge.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Region {
     Side,
@@ -95,7 +95,32 @@ impl Region {
     }
 }
 
-/// The window's panels (side panel, editor, terminals) as a split tree;
+/// One panel of the window. Side panels and editors can be split into
+/// several (each its own panel in the layout, number `n`; 0 is the first);
+/// there is one terminal panel, its panes split inside each tab.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct PanelId {
+    pub region: Region,
+    pub n: u32,
+}
+
+impl PanelId {
+    pub const TERMS: PanelId = PanelId { region: Region::Terms, n: 0 };
+
+    pub fn first(region: Region) -> PanelId {
+        PanelId { region, n: 0 }
+    }
+
+    pub fn name(self) -> String {
+        if self.n == 0 || self.region == Region::Terms {
+            self.region.name().to_string()
+        } else {
+            format!("{} {}", self.region.name(), self.n + 1)
+        }
+    }
+}
+
+/// The window's panels (side panels, editors, terminals) as a split tree;
 /// every panel can be dragged to any side of another one or of the window.
 /// Hidden panels stay in the tree (they come back where they were) and are
 /// pruned when laid out. Split ids keep a divider's ratio addressable in the
@@ -103,14 +128,20 @@ impl Region {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(tag = "t")]
 pub enum Layout {
-    Panel { region: Region },
+    /// `n`: which side panel or editor (settings from before there could be
+    /// several have none: the first).
+    Panel {
+        region: Region,
+        #[serde(default)]
+        n: u32,
+    },
     Split { id: u32, vertical: bool, ratio: f32, a: Box<Layout>, b: Box<Layout> },
 }
 
 impl Default for Layout {
     /// Files | terminals | editor.
     fn default() -> Layout {
-        let panel = |region| Box::new(Layout::Panel { region });
+        let panel = |region| Box::new(Layout::panel(PanelId::first(region)));
         Layout::Split {
             id: 1,
             vertical: true,
@@ -122,11 +153,33 @@ impl Default for Layout {
 }
 
 impl Layout {
-    pub fn contains(&self, r: Region) -> bool {
+    pub fn panel(p: PanelId) -> Layout {
+        Layout::Panel { region: p.region, n: p.n }
+    }
+
+    pub fn contains(&self, p: PanelId) -> bool {
         match self {
-            Layout::Panel { region } => *region == r,
-            Layout::Split { a, b, .. } => a.contains(r) || b.contains(r),
+            Layout::Panel { region, n } => *region == p.region && *n == p.n,
+            Layout::Split { a, b, .. } => a.contains(p) || b.contains(p),
         }
+    }
+
+    /// Every panel in the tree, in order.
+    pub fn panels(&self, out: &mut Vec<PanelId>) {
+        match self {
+            Layout::Panel { region, n } => out.push(PanelId { region: *region, n: *n }),
+            Layout::Split { a, b, .. } => {
+                a.panels(out);
+                b.panels(out);
+            }
+        }
+    }
+
+    /// A number no panel of `region` has yet.
+    pub fn free_n(&self, region: Region) -> u32 {
+        let mut all = Vec::new();
+        self.panels(&mut all);
+        (0..).find(|n| !all.contains(&PanelId { region, n: *n })).unwrap_or(0)
     }
 
     fn max_id(&self) -> u32 {
@@ -137,9 +190,9 @@ impl Layout {
     }
 
     /// The tree without the panels `shown` rejects.
-    pub fn pruned(&self, shown: &dyn Fn(Region) -> bool) -> Option<Layout> {
+    pub fn pruned(&self, shown: &dyn Fn(PanelId) -> bool) -> Option<Layout> {
         match self {
-            Layout::Panel { region } => shown(*region).then(|| self.clone()),
+            Layout::Panel { region, n } => shown(PanelId { region: *region, n: *n }).then(|| self.clone()),
             Layout::Split { id, vertical, ratio, a, b } => match (a.pruned(shown), b.pruned(shown)) {
                 (Some(a), Some(b)) => Some(Layout::Split { id: *id, vertical: *vertical, ratio: *ratio, a: Box::new(a), b: Box::new(b) }),
                 (x, None) | (None, x) => x,
@@ -147,11 +200,11 @@ impl Layout {
         }
     }
 
-    pub fn remove(self, r: Region) -> Option<Layout> {
+    pub fn remove(self, p: PanelId) -> Option<Layout> {
         match self {
-            Layout::Panel { region } if region == r => None,
+            Layout::Panel { region, n } if region == p.region && n == p.n => None,
             Layout::Panel { .. } => Some(self),
-            Layout::Split { id, vertical, ratio, a, b } => match (a.remove(r), b.remove(r)) {
+            Layout::Split { id, vertical, ratio, a, b } => match (a.remove(p), b.remove(p)) {
                 (Some(a), Some(b)) => Some(Layout::Split { id, vertical, ratio, a: Box::new(a), b: Box::new(b) }),
                 (x, None) | (None, x) => x,
             },
@@ -159,10 +212,10 @@ impl Layout {
     }
 
     /// `new` beside `target` on its `side`, taking `share` of the space.
-    fn insert_beside(&mut self, target: Region, new: Region, side: Dock, share: f32, id: u32) -> bool {
+    fn insert_beside(&mut self, target: PanelId, new: PanelId, side: Dock, share: f32, id: u32) -> bool {
         match self {
-            Layout::Panel { region } if *region == target => {
-                let old = std::mem::replace(self, Layout::Panel { region: new });
+            Layout::Panel { region, n } if *region == target.region && *n == target.n => {
+                let old = std::mem::replace(self, Layout::panel(new));
                 *self = Layout::wrap(old, new, side, share, id);
                 true
             }
@@ -172,8 +225,8 @@ impl Layout {
     }
 
     /// `inner` with `new` on its `side`, taking `share` of the space.
-    fn wrap(inner: Layout, new: Region, side: Dock, share: f32, id: u32) -> Layout {
-        let panel = Box::new(Layout::Panel { region: new });
+    fn wrap(inner: Layout, new: PanelId, side: Dock, share: f32, id: u32) -> Layout {
+        let panel = Box::new(Layout::panel(new));
         let inner = Box::new(inner);
         let vertical = matches!(side, Dock::Left | Dock::Right);
         match side {
@@ -182,24 +235,33 @@ impl Layout {
         }
     }
 
-    /// Move panel `r` to `side` of panel `target`, or of the whole window (None).
-    pub fn moved(self, r: Region, target: Option<Region>, side: Dock) -> Layout {
-        if target == Some(r) || !self.contains(r) {
+    /// Move panel `p` to `side` of panel `target`, or of the whole window (None).
+    pub fn moved(self, p: PanelId, target: Option<PanelId>, side: Dock) -> Layout {
+        if target == Some(p) || !self.contains(p) {
             return self;
         }
         let id = self.max_id() + 1;
-        let Some(mut rest) = self.clone().remove(r) else { return self };
+        let Some(mut rest) = self.clone().remove(p) else { return self };
         match target {
-            Some(t) if rest.insert_beside(t, r, side, 0.5, id) => rest,
+            Some(t) if rest.insert_beside(t, p, side, 0.5, id) => rest,
             _ => {
-                let share = match r {
+                let share = match p.region {
                     Region::Side => 0.2,
                     Region::Editor => 0.42,
                     Region::Terms => 0.6,
                 };
-                Layout::wrap(rest, r, side, share, id)
+                Layout::wrap(rest, p, side, share, id)
             }
         }
+    }
+
+    /// A new panel `new` beside `target`, half of its space.
+    pub fn split(mut self, target: PanelId, new: PanelId, side: Dock) -> Layout {
+        let id = self.max_id() + 1;
+        if self.contains(new) || !self.insert_beside(target, new, side, 0.5, id) {
+            return self;
+        }
+        self
     }
 
     pub fn ratio_mut(&mut self, split: u32) -> Option<&mut f32> {
@@ -216,9 +278,9 @@ impl Layout {
     }
 
     /// Panel rects and dividers (split id, divider rect, vertical, parent rect).
-    pub fn rects(&self, rect: Rect, panels: &mut Vec<(Region, Rect)>, dividers: &mut Vec<(u32, Rect, bool, Rect)>) {
+    pub fn rects(&self, rect: Rect, panels: &mut Vec<(PanelId, Rect)>, dividers: &mut Vec<(u32, Rect, bool, Rect)>) {
         match self {
-            Layout::Panel { region } => panels.push((*region, rect)),
+            Layout::Panel { region, n } => panels.push((PanelId { region: *region, n: *n }, rect)),
             Layout::Split { id, vertical, ratio, a, b } => {
                 let gap = 4.0;
                 let (ra, rb, handle) = if *vertical {
@@ -245,12 +307,48 @@ impl Layout {
 }
 
 #[cfg(test)]
+mod node_tests {
+    use super::*;
+
+    fn order(n: &Node) -> Vec<(usize, [i32; 4])> {
+        let mut panes = Vec::new();
+        n.layout(Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1000.0, 1000.0)), &mut Vec::new(), &mut panes, &mut Vec::new());
+        panes.into_iter().map(|(id, r)| (id, [r.left() as i32, r.top() as i32, r.right() as i32, r.bottom() as i32])).collect()
+    }
+
+    fn three() -> Node {
+        // 1 | (2 over 3)
+        Node::Split { vertical: true, ratio: 0.5, a: Box::new(Node::Leaf(1)), b: Box::new(Node::Split { vertical: false, ratio: 0.5, a: Box::new(Node::Leaf(2)), b: Box::new(Node::Leaf(3)) }) }
+    }
+
+    #[test]
+    fn a_pane_dropped_on_a_side_of_another() {
+        // 3 onto the left of 1: the right column is only 2 now.
+        let o = order(&three().moved(3, 1, Some(Dock::Left)));
+        let at = |id| o.iter().find(|p| p.0 == id).unwrap().1;
+        assert!(at(3)[0] < at(1)[0] && at(3)[1] == at(1)[1], "3 left of 1: {o:?}");
+        assert_eq!((at(2)[1], at(2)[3]), (0, 1000), "2 has the whole right column: {o:?}");
+    }
+
+    #[test]
+    fn dropped_in_the_middle_they_swap() {
+        let o = order(&three().moved(1, 3, None));
+        assert_eq!(o.iter().map(|p| p.0).collect::<Vec<_>>(), [3, 2, 1]);
+        // On itself: nothing.
+        assert_eq!(order(&three().moved(2, 2, Some(Dock::Top))), order(&three()));
+    }
+}
+
+#[cfg(test)]
 mod layout_tests {
     use super::*;
     use Dock::*;
-    use Region::*;
 
-    fn order(l: &Layout) -> Vec<(Region, [i32; 4])> {
+    const SIDE: PanelId = PanelId { region: Region::Side, n: 0 };
+    const EDITOR: PanelId = PanelId { region: Region::Editor, n: 0 };
+    const TERMS: PanelId = PanelId::TERMS;
+
+    fn order(l: &Layout) -> Vec<(PanelId, [i32; 4])> {
         let mut panels = Vec::new();
         l.rects(Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1000.0, 1000.0)), &mut panels, &mut Vec::new());
         panels.into_iter().map(|(r, x)| (r, [x.left() as i32, x.top() as i32, x.right() as i32, x.bottom() as i32])).collect()
@@ -259,17 +357,17 @@ mod layout_tests {
     #[test]
     fn terminal_moves_like_any_panel() {
         // Default: side | terms | editor. Terminal to the right window edge.
-        let l = Layout::default().moved(Terms, None, Right);
+        let l = Layout::default().moved(TERMS, None, Right);
         let o = order(&l);
-        assert_eq!(o.last().unwrap().0, Terms, "{o:?}");
+        assert_eq!(o.last().unwrap().0, TERMS, "{o:?}");
         assert!(o.last().unwrap().1[0] > 300, "terminal on the right: {o:?}");
     }
 
     #[test]
     fn junction_where_three_panels_meet() {
-        // Editor under the side panel: the column's horizontal border meets
+        // EDITOR under the side panel: the column's horizontal border meets
         // the vertical one beside the terminal.
-        let l = Layout::default().moved(Editor, Some(Side), Bottom);
+        let l = Layout::default().moved(EDITOR, Some(SIDE), Bottom);
         let mut dividers = Vec::new();
         l.rects(Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1000.0, 1000.0)), &mut Vec::new(), &mut dividers);
         let j = super::panel_junctions(&dividers);
@@ -283,15 +381,15 @@ mod layout_tests {
             id: 1,
             vertical: true,
             ratio: 0.5,
-            a: Box::new(Layout::Split { id: 2, vertical: false, ratio: 0.5, a: Box::new(Layout::Panel { region: Side }), b: Box::new(Layout::Panel { region: Editor }) }),
-            b: Box::new(Layout::Split { id: 3, vertical: false, ratio: 0.5, a: Box::new(Layout::Panel { region: Terms }), b: Box::new(Layout::Panel { region: Side }) }),
+            a: Box::new(Layout::Split { id: 2, vertical: false, ratio: 0.5, a: Box::new(Layout::panel(SIDE)), b: Box::new(Layout::panel(EDITOR)) }),
+            b: Box::new(Layout::Split { id: 3, vertical: false, ratio: 0.5, a: Box::new(Layout::panel(TERMS)), b: Box::new(Layout::panel(SIDE)) }),
         };
         let mut dividers = Vec::new();
         plus.rects(Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1000.0, 1000.0)), &mut Vec::new(), &mut dividers);
         let j = super::panel_junctions(&dividers);
         assert_eq!(j.len(), 1, "{j:?}");
         assert_eq!((j[0].0.len(), j[0].1.len()), (1, 2), "one vertical, two horizontal");
-        // Side by side only (the default): borders never meet.
+        // SIDE by side only (the default): borders never meet.
         let mut dividers = Vec::new();
         Layout::default().rects(Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1000.0, 1000.0)), &mut Vec::new(), &mut dividers);
         assert!(super::panel_junctions(&dividers).is_empty());
@@ -299,25 +397,25 @@ mod layout_tests {
 
     #[test]
     fn stacking_inside_a_column() {
-        // Editor dropped on the bottom half of the side panel: they share the left column.
-        let l = Layout::default().moved(Editor, Some(Side), Bottom);
+        // EDITOR dropped on the bottom half of the side panel: they share the left column.
+        let l = Layout::default().moved(EDITOR, Some(SIDE), Bottom);
         let o = order(&l);
-        let side = o.iter().find(|p| p.0 == Side).unwrap().1;
-        let ed = o.iter().find(|p| p.0 == Editor).unwrap().1;
+        let side = o.iter().find(|p| p.0 == SIDE).unwrap().1;
+        let ed = o.iter().find(|p| p.0 == EDITOR).unwrap().1;
         assert_eq!(side[0], ed[0], "same column");
         assert!(ed[1] > side[1], "editor below");
         // And the terminal can go into that column too, top.
-        let l = l.moved(Terms, Some(Side), Top);
+        let l = l.moved(TERMS, Some(SIDE), Top);
         assert!(order(&l).iter().all(|p| p.1[0] == 0), "all three stacked: {:?}", order(&l));
     }
 
     #[test]
     fn hidden_panels_keep_their_place() {
         let l = Layout::default();
-        let shown = l.pruned(&|r| r != Editor).unwrap();
-        assert!(!shown.contains(Editor) && shown.contains(Terms));
+        let shown = l.pruned(&|r| r != EDITOR).unwrap();
+        assert!(!shown.contains(EDITOR) && shown.contains(TERMS));
         // The stored tree still has the editor where it was.
-        assert_eq!(order(&l).last().unwrap().0, Editor);
+        assert_eq!(order(&l).last().unwrap().0, EDITOR);
         // A divider of the pruned tree is the stored one.
         let Layout::Split { id, .. } = shown else { panic!() };
         let mut l = l;
@@ -326,8 +424,37 @@ mod layout_tests {
     }
 
     #[test]
+    fn settings_from_before_split_panels_still_load() {
+        // A layout saved before panels had numbers: each is the first of its kind.
+        let old = r#"{"t":"Split","id":1,"vertical":true,"ratio":0.2,"a":{"t":"Panel","region":"Side"},"b":{"t":"Panel","region":"Terms"}}"#;
+        let l: Layout = serde_json::from_str(old).unwrap();
+        assert!(l.contains(SIDE) && l.contains(TERMS));
+    }
+
+    #[test]
+    fn a_second_editor_beside_the_first() {
+        let l = Layout::default();
+        let n = l.free_n(Region::Editor);
+        assert_eq!(n, 1);
+        let second = PanelId { region: Region::Editor, n };
+        let l = l.split(EDITOR, second, Bottom);
+        let o = order(&l);
+        let (a, b) = (o.iter().find(|p| p.0 == EDITOR).unwrap().1, o.iter().find(|p| p.0 == second).unwrap().1);
+        assert_eq!((a[0], a[2]), (b[0], b[2]), "same column");
+        assert!(b[1] > a[1], "below");
+        assert_eq!(l.free_n(Region::Editor), 2);
+        // It moves like any panel, and goes away on its own.
+        let l = l.moved(second, Some(SIDE), Top);
+        assert!(l.contains(second));
+        let l = l.remove(second).unwrap();
+        assert!(!l.contains(second) && l.contains(EDITOR));
+        // Splitting off a panel already there does nothing.
+        assert_eq!(Layout::default().split(EDITOR, SIDE, Left), Layout::default());
+    }
+
+    #[test]
     fn dropping_on_itself_changes_nothing() {
-        assert_eq!(Layout::default().moved(Side, Some(Side), Left), Layout::default());
+        assert_eq!(Layout::default().moved(SIDE, Some(SIDE), Left), Layout::default());
     }
 }
 
@@ -395,6 +522,10 @@ pub struct Settings {
     pub keys: std::collections::BTreeMap<String, Vec<String>>,
     #[serde(default)]
     pub session: Vec<SavedNode>,
+    /// The tab each side panel shows, by panel number (the first one's is
+    /// what the side panel showed before there could be several).
+    #[serde(default)]
+    pub side_tabs: std::collections::BTreeMap<u32, SideTab>,
 }
 
 impl Default for Settings {
@@ -412,7 +543,7 @@ impl Default for Settings {
                 },
             });
         }
-        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, layout: Layout::default(), show_hidden: false, find_mode: Default::default(), cursor_style: Default::default(), local_shell: Default::default(), mermaid: Default::default(), follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, term_font: d_font_file(), icon_font: d_icon_font(), records: Default::default(), passwords: Default::default(), keys: Default::default(), session: Vec::new() }
+        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, layout: Layout::default(), show_hidden: false, find_mode: Default::default(), cursor_style: Default::default(), local_shell: Default::default(), mermaid: Default::default(), follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, term_font: d_font_file(), icon_font: d_icon_font(), records: Default::default(), passwords: Default::default(), keys: Default::default(), session: Vec::new(), side_tabs: Default::default() }
     }
 }
 
@@ -501,6 +632,48 @@ impl Node {
                 b.layout(rb, path, panes, splits);
                 path.pop();
             }
+        }
+    }
+
+    /// Put pane `src` on `side` of pane `target` (it leaves its own place),
+    /// or with no side swap the two.
+    pub fn moved(self, src: usize, target: usize, side: Option<Dock>) -> Node {
+        if src == target {
+            return self;
+        }
+        let Some(side) = side else {
+            let mut n = self;
+            n.swap(src, target);
+            return n;
+        };
+        let Some(mut rest) = self.remove(src) else { return Node::Leaf(src) };
+        rest.insert_beside(target, src, side);
+        rest
+    }
+
+    fn swap(&mut self, x: usize, y: usize) {
+        match self {
+            Node::Leaf(id) if *id == x => *id = y,
+            Node::Leaf(id) if *id == y => *id = x,
+            Node::Leaf(_) => {}
+            Node::Split { a, b, .. } => {
+                a.swap(x, y);
+                b.swap(x, y);
+            }
+        }
+    }
+
+    fn insert_beside(&mut self, target: usize, new: usize, side: Dock) -> bool {
+        match self {
+            Node::Leaf(id) if *id == target => {
+                let (old, new) = (Box::new(Node::Leaf(target)), Box::new(Node::Leaf(new)));
+                let vertical = matches!(side, Dock::Left | Dock::Right);
+                let (a, b) = if matches!(side, Dock::Left | Dock::Top) { (new, old) } else { (old, new) };
+                *self = Node::Split { vertical, ratio: 0.5, a, b };
+                true
+            }
+            Node::Leaf(_) => false,
+            Node::Split { a, b, .. } => a.insert_beside(target, new, side) || b.insert_beside(target, new, side),
         }
     }
 
@@ -728,7 +901,7 @@ pub struct DirListing {
     pub error: Option<String>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SideTab {
     Files,
     Blocks,
@@ -1089,9 +1262,19 @@ pub struct App {
     /// When the oldest unsaved memo change was made (see autosave_memos).
     pub memo_edited: Option<Instant>,
     /// A panel being dragged by its grip to another window edge.
-    pub dock_drag: Option<Region>,
+    pub dock_drag: Option<PanelId>,
+    /// A terminal pane being dragged by its header to another place in its tab.
+    pub pane_drag: Option<usize>,
     /// Where each panel was drawn this frame (drop targets).
-    pub panel_rects: HashMap<Region, egui::Rect>,
+    pub panel_rects: HashMap<PanelId, egui::Rect>,
+    /// The panel being drawn (its grip, split and close buttons act on it).
+    pub drawing: PanelId,
+    /// The side panel and the editor last clicked: where a command (History,
+    /// opening a file) lands.
+    pub side_focus: u32,
+    pub editor_focus: u32,
+    /// The file each editor panel shows (host, path), by panel number.
+    pub editor_shows: HashMap<u32, (String, String)>,
     /// The area the panels share (window minus the status bar).
     pub layout_rect: egui::Rect,
     /// ssh passwords for this session only; never written to disk or logs.
@@ -1206,6 +1389,11 @@ impl App {
             find_result: None,
             dock_drag: None,
             panel_rects: HashMap::new(),
+            drawing: PanelId::TERMS,
+            pane_drag: None,
+            side_focus: 0,
+            editor_focus: 0,
+            editor_shows: HashMap::new(),
             layout_rect: egui::Rect::NOTHING,
             secrets: crate::secret::Vault::new(settings_passwords),
             auth_prompted: HashSet::new(),
