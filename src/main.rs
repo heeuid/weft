@@ -13,6 +13,11 @@ mod highlight;
 mod host;
 mod find;
 mod fontfix;
+mod frame;
+#[cfg(test)]
+mod testkit;
+#[cfg(test)]
+mod regress;
 mod icons;
 mod keys;
 mod md;
@@ -126,62 +131,13 @@ impl eframe::App for WeftApp {
             }
         }
         let app = &mut self.app;
-        let wanted = theme::resolve(&app.settings.theme, &app.settings.theme_dark, &app.settings.theme_light, ctx);
-        if wanted != theme::active() {
-            theme::apply(ctx, wanted);
-        }
-        if (ctx.zoom_factor() - app.settings.ui_scale).abs() > 0.001 {
-            ctx.set_zoom_factor(app.settings.ui_scale);
-        }
-        app.poll();
-        app.handle_global_keys(ctx);
-
-        // Focus mode: no status bar either.
-        if app.focus_mode.is_none() {
-            egui::TopBottomPanel::bottom("status")
-                .exact_height(24.0)
-                .frame(egui::Frame::new().fill(theme::bg_base()).inner_margin(egui::Margin::symmetric(10, 0)))
-                .show(ctx, |ui| app.ui_status(ui));
-        }
-        app.check_update();
-        app.drop_dirs.clear();
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::bg_base())).show(ctx, |ui| app.ui_layout(ui));
-        app.ui_file_drop(ctx);
-        app.ui_transfers(ctx);
-
-        app.ui_palette(ctx);
-        app.ui_connect(ctx);
-        app.ui_auth(ctx);
-        app.ui_theme_menu(ctx);
-        app.ui_font_menu(ctx);
-        app.ui_records_window(ctx);
-        app.ui_help(ctx);
-        app.ui_memo_picker(ctx);
-        app.ui_keys_window(ctx);
-        app.ui_serial_dialog(ctx);
-        app.ui_toasts(ctx);
-        app.ui_dock_drop(ctx);
-        app.apply_actions();
-        for f in &mut app.editor.files {
-            f.image.unload_hidden();
-            f.pdf.unload_hidden();
-        }
-
+        app.frame(ctx);
         let title = app.active_pane().map(|p| format!("weft — {}", p.title())).unwrap_or_else(|| "weft".into());
         // Only on change: every viewport command asks for another frame, so
         // sending it each frame kept weft redrawing ~100 times a second.
         if title != self.title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.title = title;
-        }
-        // A running command's time badge counts seconds: once a second is
-        // enough, and not at all under a full-screen app (no badge there).
-        if app.panes.values().any(|p| !p.term.alt_active && p.term.blocks.last().map(|b| b.started.is_some() && b.end_line.is_none()).unwrap_or(false)) {
-            ctx.request_repaint_after(Duration::from_secs(1));
-        }
-        if ctx.input(|i| i.viewport().close_requested()) {
-            app.flush_memos();
-            app.save_settings();
         }
         if self.first_frame {
             self.first_frame = false;

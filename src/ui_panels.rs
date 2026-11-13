@@ -188,6 +188,13 @@ fn hash_str(s: &str, extra: &str) -> u64 {
 }
 
 impl App {
+    /// Run a command by its settings id ("new_tab", "palette"…), for tests.
+    #[cfg(test)]
+    pub fn run_command_id(&mut self, id: &str) {
+        let c = COMMANDS.iter().find(|c| c.1 == id).unwrap_or_else(|| panic!("no command {id}")).0;
+        self.run_cmd(c);
+    }
+
     fn run_cmd(&mut self, c: Cmd) {
         let pane = self.active_pane_id();
         match c {

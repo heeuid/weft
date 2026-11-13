@@ -43,6 +43,11 @@ pub struct ImageState {
 }
 
 impl ImageState {
+    #[cfg(test)]
+    pub fn has_texture(&self) -> bool {
+        self.tex.is_some()
+    }
+
     /// Off the GPU unless it was drawn since the last call: an image in a
     /// tab behind another, or in a hidden editor, held its texture for as
     /// long as the tab was open. Showing it again decodes it again.
