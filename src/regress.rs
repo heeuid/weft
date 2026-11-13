@@ -219,3 +219,45 @@ fn escape_closes_composer_search_and_find() {
     h.key(Key::Escape, Modifiers::NONE);
     assert!(h.app.editor.find.is_none(), "the find bar closed");
 }
+
+/// A rendered table in read mode is selected like a spreadsheet: a drag
+/// inside a cell copies those letters, a double click the cell, a drag
+/// across cells the block (tab-separated), and its menu the whole table.
+#[test]
+fn table_cells_select_and_copy() {
+    let mut h = Harness::new(json!({}));
+    let file = h.dir.join("t.md");
+    std::fs::write(&file, "| name | size |\n|---|---|\n| weft.exe | 12 MB |\n| notes.md | 3 KB |\n\nend\n").unwrap();
+    let path = file.display().to_string().replace('\\', "/");
+    h.app.open_file("local", &path, 1);
+    assert!(h.wait_for(5.0, |h| h.shows("Read")), "opened");
+    h.click_text("Read");
+    let cell = |h: &Harness, t: &str| h.texts.iter().find(|(s, _)| s == t).map(|(_, r)| *r).unwrap_or_else(|| panic!("cell {t:?} is drawn"));
+    // Some letters of one cell: from its left edge to its middle.
+    let r = cell(&h, "weft.exe");
+    h.drag(r.left_center(), r.center());
+    h.frame(vec![Event::Copy]);
+    let got = h.copied.take().expect("Ctrl+C copied");
+    assert!(!got.is_empty() && got.len() < 8 && "weft.exe".starts_with(&got), "letters of the cell: {got:?}");
+    // A block of cells.
+    let (a, b) = (cell(&h, "weft.exe").center(), cell(&h, "3 KB").center());
+    h.drag(a, b);
+    h.frame(vec![Event::Copy]);
+    assert_eq!(h.copied.take().as_deref(), Some("weft.exe\t12 MB\nnotes.md\t3 KB"));
+    assert!(h.shows("\u{2713} copied"), "the copied mark");
+    // One cell, by a double click.
+    let c = cell(&h, "12 MB").center();
+    h.double_click(c);
+    h.frame(vec![Event::Copy]);
+    assert_eq!(h.copied.take().as_deref(), Some("12 MB"));
+    // A click lets go of it.
+    let c = cell(&h, "size").center();
+    h.click(c);
+    h.frame(vec![Event::Copy]);
+    assert_eq!(h.copied.take(), None, "nothing selected, nothing copied");
+    // The menu: the whole table, tab-separated.
+    let c = cell(&h, "name").center();
+    h.right_click(c);
+    h.click_text("Copy as TSV");
+    assert_eq!(h.copied.take().as_deref(), Some("name\tsize\nweft.exe\t12 MB\nnotes.md\t3 KB"));
+}

@@ -4039,8 +4039,7 @@ fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size:
         let painter = ui.painter().clone();
         let pointer = ctx.input(|i| i.pointer.interact_pos());
         let mut toggle: Option<usize> = None;
-        // Rendered tables: where, rows' y, rows' source, rows as tab-separated text.
-        let mut tables: Vec<(egui::Rect, Vec<f32>, Vec<(usize, usize)>, Vec<String>)> = Vec::new();
+        let mut tables: Vec<TableView> = Vec::new();
         for d in decos.iter() {
             match *d {
                 md::Deco::Code { start, end } => {
@@ -4104,14 +4103,18 @@ fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size:
                     for &c in cols.iter() {
                         painter.vline(x(c), top..=top + height, stroke);
                     }
+                    let mut laid = Vec::new();
                     for (row, &y) in cells.iter().zip(rows_y.iter()) {
+                        let mut line = Vec::new();
                         for (job, cx) in row {
                             let g = painter.layout_job(job.clone());
-                            painter.galley(pos2(x(*cx), top + y + vpad), g, theme::text());
+                            let at = pos2(x(*cx), top + y + vpad);
+                            painter.galley(at, g.clone(), theme::text());
+                            line.push((g, at));
                         }
+                        laid.push(line);
                     }
-                    let tsv: Vec<String> = cells.iter().map(|row| row.iter().map(|(j, _)| j.text.replace('\t', " ")).collect::<Vec<_>>().join("\t")).collect();
-                    tables.push((egui::Rect::from_min_size(pos2(x(0.0), top), vec2(last_x, height)), rows_y.clone(), rows.clone(), tsv));
+                    tables.push(TableView { rect: egui::Rect::from_min_size(pos2(x(0.0), top), vec2(last_x, height)), xs: cols.clone(), ys: rows_y.clone(), rows: rows.clone(), cells: laid });
                 }
                 md::Deco::Diagram { start, end, ref source, collapsed } => {
                     let top = at(start).top();
@@ -4135,38 +4138,76 @@ fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size:
                 }
             }
         }
-        ui.painter().set(bg, egui::Shape::Vec(back));
-        // Read mode: a rendered table is copied by rows. A drag over it
-        // selects whole rows (their markdown source; Ctrl+C copies them), and
-        // its menu copies the whole table, as markdown or tab-separated. (In
-        // edit mode a click shows the table's source instead, to edit it.)
+        // Read mode: a rendered table is selected like a spreadsheet. A drag
+        // inside one cell takes some of its letters, a drag across cells the
+        // block of cells between, a double click one cell; Ctrl+C copies it
+        // (cells tab-separated, rows on lines). Its menu copies that, or the
+        // whole table as markdown or tab-separated. (In edit mode a click
+        // shows the table's source instead, to edit it.)
         if read {
-            let (press, at_now, dragging) = ctx.input(|i| (i.pointer.press_origin(), i.pointer.interact_pos(), i.pointer.primary_down()));
-            for (k, (r, ys, rows, tsv)) in tables.iter().enumerate() {
-                let (Some(&(first, _)), Some(&(_, last))) = (rows.first(), rows.last()) else { continue };
-                let row_at = |y: f32| ys.windows(2).position(|w| y < r.top() + w[1]).unwrap_or(rows.len() - 1).min(rows.len() - 1);
-                if let (true, Some(o), Some(p)) = (dragging, press, at_now) {
-                    if r.contains(o) && out.response.dragged() {
-                        let (a, b) = (row_at(o.y), row_at(p.y));
-                        let (from, to) = if a <= b { (rows[a].0, rows[b].1) } else { (rows[a].1, rows[b].0) };
+            let sel_id = edit_id.with("table-sel");
+            let mut sel: Option<TableSel> = ctx.memory(|m| m.data.get_temp::<Option<TableSel>>(sel_id)).flatten();
+            let (press, at_now, down, pressed, copy) = ctx.input(|i| (i.pointer.press_origin(), i.pointer.interact_pos(), i.pointer.primary_down(), i.pointer.primary_pressed(), i.events.iter().any(|e| matches!(e, egui::Event::Copy))));
+            if pressed {
+                sel = None;
+            }
+            let double = ctx.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary) || i.pointer.button_triple_clicked(egui::PointerButton::Primary));
+            for (k, t) in tables.iter().enumerate() {
+                let (Some(&(first, _)), Some(&(_, last))) = (t.rows.first(), t.rows.last()) else { continue };
+                if let (true, Some(o), Some(p)) = (down, press, at_now) {
+                    if t.rect.contains(o) && out.response.dragged() {
+                        let (from, to) = (t.cell_at(o), t.cell_at(p));
+                        sel = (from != to).then_some(TableSel { table: k, from, to, whole: false });
+                        // The text under the table keeps no selection of its own.
                         let mut st = out.state.clone();
-                        st.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(from), egui::text::CCursor::new(to))));
+                        st.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(first))));
                         st.store(&ctx, edit_id);
                     }
                 }
-                let hit = ui.interact(*r, edit_id.with(("table", k)), Sense::click());
+                let hit = ui.interact(t.rect, edit_id.with(("table", k)), Sense::click());
+                if let (true, Some(p)) = (double && hit.contains_pointer(), at_now) {
+                    let c = t.cell_at(p);
+                    sel = Some(TableSel { table: k, from: c, to: c, whole: true });
+                }
+                let texts = t.texts();
+                let mine = sel.filter(|s| s.table == k);
+                let mut copied = false;
                 hit.context_menu(|ui| {
+                    if let Some(s) = mine {
+                        if ui.button("Copy selection").clicked() {
+                            ctx.copy_text(table_sel_text(&texts, &s));
+                            copied = true;
+                            ui.close_menu();
+                        }
+                    }
                     if ui.button("Copy table (markdown)").clicked() {
                         ctx.copy_text(f.text.chars().skip(first).take(last - first).collect());
+                        copied = true;
                         ui.close_menu();
                     }
                     if ui.button("Copy as TSV (for spreadsheets)").clicked() {
-                        ctx.copy_text(tsv.join("\n"));
+                        ctx.copy_text(texts.iter().map(|row| row.join("\t")).collect::<Vec<_>>().join("\n"));
+                        copied = true;
                         ui.close_menu();
                     }
                 });
+                if let Some(s) = mine {
+                    let fill = theme::tint(ui.visuals().selection.bg_fill, 110);
+                    for r in t.sel_rects(&s) {
+                        back.push(egui::Shape::rect_filled(r, CornerRadius::ZERO, fill));
+                    }
+                    if copy {
+                        ctx.copy_text(table_sel_text(&texts, &s));
+                        copied = true;
+                    }
+                }
+                if copied {
+                    f.copied_at = Some(std::time::Instant::now());
+                }
             }
+            ctx.memory_mut(|m| m.data.insert_temp(sel_id, sel));
         }
+        ui.painter().set(bg, egui::Shape::Vec(back));
         if let Some(byte) = toggle {
             if let Some(c) = f.text.get(byte..byte + 1) {
                 let new = if c == " " { "x" } else { " " };
@@ -4180,6 +4221,98 @@ fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size:
         }
     });
     changed
+}
+
+/// A rendered table on screen: where, its column borders' x and rows' y
+/// (from its left / top), its rows' source, and each cell's text as laid out
+/// and where.
+struct TableView {
+    rect: egui::Rect,
+    xs: Vec<f32>,
+    ys: Vec<f32>,
+    rows: Vec<(usize, usize)>,
+    cells: Vec<Vec<(Arc<egui::Galley>, egui::Pos2)>>,
+}
+
+/// What is selected in a rendered table: from one (row, column, letter) to
+/// another. Within one cell it is the letters between, unless `whole` (a
+/// double click); across cells it is the block of cells between.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct TableSel {
+    table: usize,
+    from: (usize, usize, usize),
+    to: (usize, usize, usize),
+    whole: bool,
+}
+
+impl TableSel {
+    /// Some letters of one cell, not cells.
+    fn within_cell(&self) -> bool {
+        !self.whole && (self.from.0, self.from.1) == (self.to.0, self.to.1)
+    }
+
+    /// The block of cells: rows and columns, each first to last.
+    fn block(&self) -> ((usize, usize), (usize, usize)) {
+        ((self.from.0.min(self.to.0), self.from.0.max(self.to.0)), (self.from.1.min(self.to.1), self.from.1.max(self.to.1)))
+    }
+}
+
+impl TableView {
+    /// The (row, column, letter) at a point; a point outside is taken to
+    /// the nearest cell.
+    fn cell_at(&self, p: egui::Pos2) -> (usize, usize, usize) {
+        let within = |edges: &[f32], v: f32| edges.windows(2).position(|w| v < w[1]).unwrap_or(edges.len().saturating_sub(2));
+        let row = within(&self.ys, p.y - self.rect.top()).min(self.cells.len().saturating_sub(1));
+        let col = within(&self.xs, p.x - self.rect.left());
+        let letter = self.cells.get(row).and_then(|r| r.get(col)).map(|(g, at)| g.cursor_from_pos(p - *at).ccursor.index).unwrap_or(0);
+        (row, col, letter)
+    }
+
+    fn texts(&self) -> Vec<Vec<String>> {
+        self.cells.iter().map(|row| row.iter().map(|(g, _)| g.text().to_string()).collect()).collect()
+    }
+
+    /// What to highlight for a selection: the letters' rows inside a cell,
+    /// or the cells of a block.
+    fn sel_rects(&self, s: &TableSel) -> Vec<egui::Rect> {
+        let mut out = Vec::new();
+        if s.within_cell() {
+            let Some((g, at)) = self.cells.get(s.from.0).and_then(|r| r.get(s.from.1)) else { return out };
+            let (a, b) = (s.from.2.min(s.to.2), s.from.2.max(s.to.2));
+            let mut seen = 0;
+            for row in &g.rows {
+                let n = row.char_count_excluding_newline();
+                let (lo, hi) = (a.max(seen), b.min(seen + n));
+                if lo < hi {
+                    out.push(egui::Rect::from_min_max(pos2(at.x + row.x_offset(lo - seen), at.y + row.min_y()), pos2(at.x + row.x_offset(hi - seen), at.y + row.max_y())));
+                }
+                seen += row.char_count_including_newline();
+            }
+            return out;
+        }
+        let ((r0, r1), (c0, c1)) = s.block();
+        for r in r0..=r1 {
+            for c in c0..=c1 {
+                if let (Some(y), Some(x)) = (self.ys.get(r..r + 2), self.xs.get(c..c + 2)) {
+                    out.push(egui::Rect::from_min_max(self.rect.min + vec2(x[0], y[0]), self.rect.min + vec2(x[1], y[1])));
+                }
+            }
+        }
+        out
+    }
+}
+
+/// What a selection in a table copies: some letters of a cell, a cell, or a
+/// block of cells (rows on lines, cells tab-separated, as spreadsheets paste).
+fn table_sel_text(cells: &[Vec<String>], s: &TableSel) -> String {
+    if s.within_cell() {
+        let (a, b) = (s.from.2.min(s.to.2), s.from.2.max(s.to.2));
+        return cells.get(s.from.0).and_then(|r| r.get(s.from.1)).map(|t| t.chars().skip(a).take(b - a).collect()).unwrap_or_default();
+    }
+    let ((r0, r1), (c0, c1)) = s.block();
+    let single = (r0, c0) == (r1, c1);
+    let cell = |r: usize, c: usize| cells.get(r).and_then(|row| row.get(c)).map(|t| if single { t.clone() } else { t.replace(['\t', '\n'], " ") }).unwrap_or_default();
+    (r0..=r1).map(|r| (c0..=c1).map(|c| cell(r, c)).collect::<Vec<_>>().join("\t")).collect::<Vec<_>>().join("\n")
 }
 
 fn replace_leaf(n: Node, target: usize, new_id: usize) -> Node {
@@ -4213,6 +4346,24 @@ fn close_menu(ui: &mut Ui, at: usize, n: usize) -> Option<CloseWhich> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_table_selection_copies_letters_a_cell_or_a_block() {
+        use super::{table_sel_text, TableSel};
+        let cells: Vec<Vec<String>> = [["name", "size"], ["weft.exe", "12 MB"], ["notes.md", "3 KB"]].iter().map(|r| r.iter().map(|s| s.to_string()).collect()).collect();
+        let sel = |from, to, whole| TableSel { table: 0, from, to, whole };
+        // Letters of one cell, either direction.
+        assert_eq!(table_sel_text(&cells, &sel((1, 0, 0), (1, 0, 4), false)), "weft");
+        assert_eq!(table_sel_text(&cells, &sel((1, 0, 8), (1, 0, 5), false)), "exe");
+        // A double-clicked cell.
+        assert_eq!(table_sel_text(&cells, &sel((2, 1, 2), (2, 1, 2), true)), "3 KB");
+        // A block, dragged from any corner; the letters no longer matter.
+        assert_eq!(table_sel_text(&cells, &sel((1, 0, 3), (2, 1, 1), false)), "weft.exe\t12 MB\nnotes.md\t3 KB");
+        assert_eq!(table_sel_text(&cells, &sel((2, 1, 0), (1, 0, 0), false)), "weft.exe\t12 MB\nnotes.md\t3 KB");
+        // One column, one row.
+        assert_eq!(table_sel_text(&cells, &sel((0, 1, 0), (2, 1, 0), false)), "size\n12 MB\n3 KB");
+        assert_eq!(table_sel_text(&cells, &sel((0, 0, 0), (0, 1, 0), false)), "name\tsize");
+    }
+
     use super::{history_matches, FindMode};
     use crate::app::memo_title;
     use crate::records::Record;

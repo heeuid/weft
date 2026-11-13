@@ -372,6 +372,11 @@ impl App {
         None
     }
 
+    /// The folder row under the pointer, if it is over one.
+    fn drop_row(&self, pos: egui::Pos2) -> Option<Rect> {
+        self.drop_dirs.iter().map(|(r, _, _)| *r).find(|r| r.contains(pos))
+    }
+
     /// Files dragged: a row from a Files panel, or files from the system's
     /// file manager. Shows where they would go and starts the copies on drop.
     pub fn ui_file_drop(&mut self, ctx: &egui::Context) {
@@ -388,7 +393,7 @@ impl App {
                     None => "drop on a Files panel, a folder or a terminal".to_string(),
                 };
                 if let Some(p) = pos {
-                    drop_hint(&painter, p, &text, target.is_some());
+                    drop_hint(&painter, p, self.drop_row(p), &text, target.is_some());
                 }
             }
             if let Some((h, d)) = target.filter(|_| !dropped.is_empty()) {
@@ -414,7 +419,7 @@ impl App {
                 Some((h, d)) => format!("copy {name} to {h}:{d}"),
                 None => format!("{name}: drop on another Files panel, a folder or a terminal"),
             };
-            drop_hint(&painter, p, &text, target.is_some());
+            drop_hint(&painter, p, self.drop_row(p), &text, target.is_some());
         }
         if released {
             self.file_drag = None;
@@ -502,9 +507,31 @@ impl App {
 }
 
 /// A label by the pointer saying where a drop would go.
-fn drop_hint(painter: &egui::Painter, p: egui::Pos2, text: &str, ok: bool) {
+/// Where the hint beside a dragged file goes: right of and below the
+/// pointer, clear of the row it is over (`avoid`: the folder it would drop
+/// into was hidden behind the hint) and inside the window.
+fn hint_rect(p: egui::Pos2, size: egui::Vec2, avoid: Option<Rect>, screen: Rect) -> Rect {
+    // Inside the window first, then off the row: below it, or above it
+    // when there is no room below.
+    let inside = |r: Rect| {
+        let dx = (screen.right() - 4.0 - r.right()).min(0.0).max(screen.left() + 4.0 - r.left());
+        let dy = (screen.bottom() - 4.0 - r.bottom()).min(0.0);
+        r.translate(vec2(dx, dy))
+    };
+    let r = inside(Rect::from_min_size(p + vec2(16.0, 14.0), size));
+    match avoid.filter(|a| a.intersects(r)) {
+        Some(a) => {
+            let below = a.bottom() + 4.0;
+            let top = if below + size.y <= screen.bottom() - 4.0 { below } else { a.top() - 4.0 - size.y };
+            Rect::from_min_size(egui::pos2(r.left(), top), size)
+        }
+        None => r,
+    }
+}
+
+fn drop_hint(painter: &egui::Painter, p: egui::Pos2, avoid: Option<Rect>, text: &str, ok: bool) {
     let g = painter.layout_no_wrap(text.to_string(), FontId::proportional(12.5), if ok { theme::text() } else { theme::text_dim() });
-    let r = Rect::from_min_size(p + vec2(16.0, 14.0), g.size() + vec2(16.0, 10.0));
+    let r = hint_rect(p, g.size() + vec2(16.0, 10.0), avoid, painter.ctx().screen_rect());
     painter.rect(r, CornerRadius::same(6), theme::bg_raised(), Stroke::new(1.0_f32, if ok { theme::accent() } else { theme::border() }), egui::StrokeKind::Inside);
     painter.galley(r.min + vec2(8.0, 5.0), g, Color32::WHITE);
 }
@@ -538,6 +565,29 @@ fn cursor_in_window(ctx: &egui::Context) -> Option<egui::Pos2> {
 
 #[cfg(test)]
 mod tests {
+    /// The hint beside a dragged file leaves the folder row under the
+    /// pointer readable, and stays in the window.
+    #[test]
+    fn the_drop_hint_leaves_its_row_readable() {
+        use super::hint_rect;
+        use egui::{pos2, vec2, Rect};
+        let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 600.0));
+        let size = vec2(260.0, 26.0);
+        // Over a row: below it, not on it.
+        let row = Rect::from_min_size(pos2(40.0, 100.0), vec2(300.0, 20.0));
+        let r = hint_rect(pos2(60.0, 104.0), size, Some(row), screen);
+        assert!(!r.intersects(row) && r.top() >= row.bottom(), "{r:?}");
+        // The last row of the window: above it.
+        let row = Rect::from_min_size(pos2(40.0, 578.0), vec2(300.0, 20.0));
+        let r = hint_rect(pos2(60.0, 590.0), size, Some(row), screen);
+        assert!(!r.intersects(row) && r.bottom() <= row.top() && screen.contains_rect(r), "{r:?}");
+        // At the right edge: pulled back inside.
+        let r = hint_rect(pos2(780.0, 300.0), size, None, screen);
+        assert!(screen.contains_rect(r), "{r:?}");
+        // Over no row: beside the pointer, as before.
+        assert_eq!(hint_rect(pos2(100.0, 100.0), size, None, screen).min, pos2(116.0, 114.0));
+    }
+
     use super::*;
 
     /// Real copies through real agents: local -> r1 -> r2 -> local, two

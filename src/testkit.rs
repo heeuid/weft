@@ -17,7 +17,12 @@ pub struct Harness {
     pub size: egui::Vec2,
     /// What the last frame drew: each text and its rect.
     pub texts: Vec<(String, Rect)>,
+    /// The last text weft put on the clipboard.
+    pub copied: Option<String>,
     pointer: Pos2,
+    /// The clock the app is shown: a frame is 1/60 s, and a hand pauses
+    /// before each click or drag (else clicks far apart count as double).
+    now: f64,
     _guard: std::sync::MutexGuard<'static, ()>,
 }
 
@@ -26,6 +31,7 @@ pub fn idle_profile(name: &str) -> Value {
     json!({"name": name, "kind": "custom", "pty": ["python", "-c", "import time; time.sleep(120)"], "agent": ["python", "-c", "0"]})
 }
 
+#[allow(dead_code)]
 impl Harness {
     /// weft with these settings (merged over a quiet default: one idle tab,
     /// no side panel), a window of 1200×800.
@@ -47,7 +53,7 @@ impl Harness {
         let ctx = egui::Context::default();
         crate::theme::install_fonts(&ctx, crate::theme::DEFAULT_FONT, crate::theme::DEFAULT_ICON_FONT);
         let app = App::new(ctx.clone());
-        let mut h = Harness { app, ctx, dir, size: vec2(1200.0, 800.0), texts: Vec::new(), pointer: pos2(600.0, 400.0), _guard: guard };
+        let mut h = Harness { app, ctx, dir, size: vec2(1200.0, 800.0), texts: Vec::new(), copied: None, now: 0.0, pointer: pos2(600.0, 400.0), _guard: guard };
         h.frames(3);
         h
     }
@@ -61,9 +67,15 @@ impl Harness {
                 _ => None,
             })
             .unwrap_or_default();
-        let input = egui::RawInput { events, modifiers, screen_rect: Some(Rect::from_min_size(Pos2::ZERO, self.size)), ..Default::default() };
+        self.now += 1.0 / 60.0;
+        let input = egui::RawInput { events, modifiers, time: Some(self.now), screen_rect: Some(Rect::from_min_size(Pos2::ZERO, self.size)), ..Default::default() };
         let app = &mut self.app;
         let out = self.ctx.run(input, |ctx| app.frame(ctx));
+        for c in &out.platform_output.commands {
+            if let egui::OutputCommand::CopyText(t) = c {
+                self.copied = Some(t.clone());
+            }
+        }
         let mut texts = Vec::new();
         fn collect(s: &egui::Shape, out: &mut Vec<(String, Rect)>) {
             match s {
@@ -105,6 +117,7 @@ impl Harness {
     /// Move there, press and release (over three frames, as a hand does).
     pub fn click(&mut self, pos: Pos2) {
         self.pointer = pos;
+        self.now += 1.0;
         self.frame(vec![Event::PointerMoved(pos)]);
         self.frame(vec![self.button(pos, egui::PointerButton::Primary, true)]);
         self.frame(vec![self.button(pos, egui::PointerButton::Primary, false)]);
@@ -117,6 +130,7 @@ impl Harness {
     }
 
     pub fn right_click(&mut self, pos: Pos2) {
+        self.now += 1.0;
         self.frame(vec![Event::PointerMoved(pos)]);
         self.frame(vec![self.button(pos, egui::PointerButton::Secondary, true)]);
         self.frame(vec![self.button(pos, egui::PointerButton::Secondary, false)]);
@@ -124,6 +138,7 @@ impl Harness {
     }
 
     pub fn double_click(&mut self, pos: Pos2) {
+        self.now += 1.0;
         self.frame(vec![Event::PointerMoved(pos)]);
         for _ in 0..2 {
             self.frame(vec![self.button(pos, egui::PointerButton::Primary, true)]);
@@ -134,6 +149,7 @@ impl Harness {
 
     /// Press at `from`, move to `to` in steps, release there.
     pub fn drag(&mut self, from: Pos2, to: Pos2) {
+        self.now += 1.0;
         self.frame(vec![Event::PointerMoved(from)]);
         self.frame(vec![self.button(from, egui::PointerButton::Primary, true)]);
         for k in 1..=8 {
