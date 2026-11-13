@@ -4051,6 +4051,47 @@ mod tests {
         assert_eq!(memo_title(&"가".repeat(30)), format!("{}…", "가".repeat(24)));
     }
 
+    /// A memo edited, saved by itself, edited and saved again: never "changed
+    /// on disk, overwrite?" (its own write used to look like someone else's).
+    #[test]
+    fn memos_never_conflict_with_their_own_saves() {
+        let dir = std::env::temp_dir().join(format!("weft-memo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let _guard = crate::app::TEST_APP.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("WEFT_DATA_DIR", &dir);
+        let mut app = crate::app::App::new(egui::Context::default());
+        // An existing memo opened from the list (it is read, with its time).
+        let path = format!("{}/memo-test.md", app.memo_dir());
+        std::fs::create_dir_all(app.memo_dir()).unwrap();
+        std::fs::write(&path, "# old").unwrap();
+        app.open_file("local", &path, 1);
+        for _ in 0..5 {
+            app.poll();
+        }
+        let i = app.editor.files.iter().position(|f| f.path == path).unwrap();
+        assert!(app.editor.files[i].mtime.is_some(), "opened with its time");
+        for (k, text) in ["# first", "# first\nmore", "# first\nmore\nand more"].iter().enumerate() {
+            // The file system's clock is coarse: make each write land later.
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            app.editor.files[i].text = text.to_string();
+            app.editor.files[i].dirty = true;
+            if k % 2 == 0 {
+                app.flush_memos();
+            } else {
+                app.save_file(i, false);
+            }
+            for _ in 0..5 {
+                app.poll();
+            }
+            let f = &app.editor.files[i];
+            assert!(!f.conflict && !f.dirty, "write {k}: conflict {} dirty {}", f.conflict, f.dirty);
+            assert_eq!(std::fs::read_to_string(&f.path).unwrap(), *text);
+        }
+        drop(app);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Ctrl+Shift+Z is redo in a text field, the Zoom command elsewhere.
     #[test]
     fn redo_key_stays_with_a_text_field() {

@@ -650,7 +650,7 @@ fn local_hello() -> Value {
     })
 }
 
-fn mtime_of(md: &std::fs::Metadata) -> f64 {
+pub fn mtime_of(md: &std::fs::Metadata) -> f64 {
     md.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs_f64()).unwrap_or(0.0)
 }
 

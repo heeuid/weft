@@ -1992,7 +1992,15 @@ impl App {
         let mut failed = Vec::new();
         for f in self.editor.files.iter_mut().filter(|f| f.dirty && f.host == "local" && f.path.starts_with(&dir)) {
             match std::fs::write(&f.path, &f.text) {
-                Ok(()) => f.dirty = false,
+                Ok(()) => {
+                    f.dirty = false;
+                    // Remember the time of this write: with the old one, a later
+                    // save took the memo for changed elsewhere and asked to overwrite.
+                    if let Ok(md) = std::fs::metadata(&f.path) {
+                        f.mtime = Some(crate::host::mtime_of(&md));
+                    }
+                    f.conflict = false;
+                }
                 Err(e) => failed.push(format!("{}: {e}", f.path)),
             }
         }
@@ -2063,6 +2071,11 @@ impl App {
     }
 
     pub fn save_file(&mut self, idx: usize, force: bool) {
+        // Memos save themselves (Ctrl+S on one just does it now).
+        if self.editor.files.get(idx).is_some_and(|f| self.is_memo(f)) {
+            self.flush_memos();
+            return;
+        }
         let Some(f) = self.editor.files.get_mut(idx) else { return };
         if f.scratch || f.binary || f.loading {
             return;
