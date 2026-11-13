@@ -80,6 +80,8 @@ pub(crate) enum Cmd {
     Restart,
     /// Open a serial port (UART) of this PC or a remote host in a tab.
     Serial,
+    /// X11 forwarding on/off for the active tab's ssh host (new tabs).
+    X11,
     FocusLeft,
     FocusRight,
     FocusUp,
@@ -93,6 +95,7 @@ const COMMANDS: &[(Cmd, &str, &str, &[&str])] = &[
     (Cmd::NewTab, "new_tab", "New tab (same host)", &["Ctrl+Shift+T"]),
     (Cmd::Connect, "connect", "Connect to host…", &["Ctrl+Shift+N"]),
     (Cmd::Serial, "serial", "Serial console… (UART: a COM port here or a /dev/tty port on a remote host)", &[]),
+    (Cmd::X11, "x11", "X11 forwarding on/off for this host (GUI programs there show here; new tabs)", &[]),
     (Cmd::SplitRight, "split_right", "Split right", &["Ctrl+Shift+D"]),
     (Cmd::SplitDown, "split_down", "Split down", &["Ctrl+Shift+E"]),
     (Cmd::ClosePane, "close_pane", "Close pane", &["Ctrl+Shift+W"]),
@@ -205,6 +208,29 @@ impl App {
             Cmd::Sidebar => self.settings.sidebar = !self.settings.sidebar,
             Cmd::Restart => self.restart(),
             Cmd::Serial => self.open_serial_dialog(),
+            Cmd::X11 => {
+                let host = self.active_host();
+                let now = match self.settings.profiles.iter_mut().find(|p| p.name == host).map(|p| &mut p.kind) {
+                    Some(HostKind::Ssh { x11, .. }) => {
+                        *x11 = !*x11;
+                        Some(*x11)
+                    }
+                    _ => None,
+                };
+                match now {
+                    Some(on) => {
+                        self.save_settings();
+                        let what = if on { "on: GUI programs started there show here (new tabs; an X server runs here, VcXsrv or X410)" } else { "off (new tabs)" };
+                        self.toast(format!("X11 forwarding for {host} {what}"), ToastKind::Info);
+                        if on {
+                            if let Err(e) = crate::x11::ensure_server() {
+                                self.toast(e, ToastKind::Error);
+                            }
+                        }
+                    }
+                    None => self.toast(format!("{host}: X11 forwarding is for ssh hosts"), ToastKind::Info),
+                }
+            }
             Cmd::PanelSplit(region, right) => {
                 let focus = if region == Region::Side { self.side_focus } else { self.editor_focus };
                 let all = self.panels_of(region);
@@ -3793,6 +3819,7 @@ fn group(c: Cmd) -> &'static str {
         Cmd::NewTab
         | Cmd::Connect
         | Cmd::Serial
+        | Cmd::X11
         | Cmd::SplitRight
         | Cmd::SplitDown
         | Cmd::ClosePane

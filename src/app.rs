@@ -795,6 +795,8 @@ pub struct InlineWidget {
 }
 
 pub struct Pane {
+    /// Synchronized output (DEC 2026) held until its update is whole.
+    pub sync: crate::term::SyncOutput,
     /// The remote shell's process (from the bootstrap), for its directory
     /// when the shell has no integration.
     pub shell_pid: Option<u64>,
@@ -837,6 +839,7 @@ pub struct Pane {
 impl Pane {
     fn new(id: usize, host: &str, cwd: Option<String>) -> Pane {
         Pane {
+            sync: Default::default(),
             shell_pid: None,
             injected: false,
             id,
@@ -1543,6 +1546,15 @@ impl App {
         move || ctx.request_repaint()
     }
 
+    /// For terminal output: draw a few ms later, so what arrives in several
+    /// reads (a line cleared, then written again; a character, then the
+    /// cursor moved back) shows once, whole, instead of flickering through
+    /// its steps (as kitty's input delay does).
+    fn wake_term(&self) -> impl Fn() + Send + Clone + 'static {
+        let ctx = self.ctx.clone();
+        move || ctx.request_repaint_after(std::time::Duration::from_millis(4))
+    }
+
     pub fn ensure_conn(&mut self, host: &str) {
         if !self.conns.contains_key(host) {
             let secret = self.secrets.get(host).map(|s| s.to_string());
@@ -1606,6 +1618,18 @@ impl App {
             argv = a;
             env.extend(e);
         }
+        // X11 forwarding: ssh sends the GUI to the X server here (started if
+        // installed and not running); DISPLAY last, so it wins over askpass's.
+        if matches!(prof.kind, host::HostKind::Ssh { x11: true, .. }) {
+            if cfg!(windows) {
+                env.push(("DISPLAY".into(), crate::x11::DISPLAY.into()));
+            }
+            match crate::x11::ensure_server() {
+                Ok(Some(name)) => self.toast(format!("started {name} for X11: GUI programs on {} show here", pane.host), ToastKind::Info),
+                Ok(None) => {}
+                Err(e) => self.toast(e, ToastKind::Error),
+            }
+        }
         let local_cwd = if prof.is_local() { pane.initial_cwd.clone() } else { None };
         let shown: Vec<String> =
             argv.iter().map(|a| if a.len() > 120 { format!("{}…({} bytes)", &a[..60], a.len()) } else { a.clone() }).collect();
@@ -1616,7 +1640,7 @@ impl App {
         pane.parser = vte::Parser::new();
         pane.widgets.clear();
         pane.hist_seen = 0;
-        match Pty::spawn(&argv, local_cwd.as_deref(), &env, pane.term.cols as u16, pane.term.rows as u16, self.wake()) {
+        match Pty::spawn(&argv, local_cwd.as_deref(), &env, pane.term.cols as u16, pane.term.rows as u16, self.wake_term()) {
             Ok(p) => {
                 pane.pty = Some(p);
                 pane.exited = false;
@@ -1642,7 +1666,7 @@ impl App {
         pane.hist_seen = 0;
         let result = if via == "local" {
             self.data.log(&format!("pane {} serial {port} at {baud}", pane.id));
-            Pty::serial(port, baud, self.wake()).map_err(|e| {
+            Pty::serial(port, baud, self.wake_term()).map_err(|e| {
                 // Is it one of ours?
                 let ours = self.panes.values().find(|p| p.id != pane.id && p.host == pane.host && !p.exited).map(|p| p.title());
                 match ours {
@@ -1659,7 +1683,7 @@ impl App {
             if argv.is_empty() {
                 Err(format!("{via}: serial consoles go through ssh or a custom transport"))
             } else {
-                Pty::spawn(&argv, None, &env, pane.term.cols as u16, pane.term.rows as u16, self.wake())
+                Pty::spawn(&argv, None, &env, pane.term.cols as u16, pane.term.rows as u16, self.wake_term())
             }
         };
         match result {
@@ -2252,7 +2276,12 @@ impl App {
             // output settles, so look again shortly even without new output.
             guessing |= pane.term.tick();
             if let Some(pty) = pane.pty.as_mut() {
-                let bytes = pty.read();
+                // An app's synchronized update (DEC 2026) comes in whole.
+                let now = Instant::now();
+                let bytes = pane.sync.push(&pty.read(), now);
+                if let Some(d) = pane.sync.due(now) {
+                    self.ctx.request_repaint_after(d);
+                }
                 if !bytes.is_empty() {
                     let before = pane.term.end_line();
                     pane.term.feed(&mut pane.parser, &bytes);

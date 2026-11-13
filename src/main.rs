@@ -29,6 +29,7 @@ mod transfer;
 mod ui_panels;
 mod ui_term;
 mod widgets;
+mod x11;
 
 use app::App;
 use std::sync::OnceLock;

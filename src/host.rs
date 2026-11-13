@@ -107,6 +107,9 @@ pub enum HostKind {
         target: String,
         #[serde(default)]
         args: Vec<String>,
+        /// X11 forwarding: GUI programs run there show here (see x11.rs).
+        #[serde(default)]
+        x11: bool,
     },
     /// Any command that behaves like `ssh HOST CMD` (receives the remote
     /// command string as its last argument), e.g. `["wsl", "-e", "sh", "-c"]`.
@@ -146,7 +149,7 @@ impl Profile {
     pub fn ssh(target: &str) -> Profile {
         let mut parts = target.split_whitespace().map(String::from);
         let host = parts.next().unwrap_or_default();
-        Profile { name: host.clone(), kind: HostKind::Ssh { target: host, args: parts.collect() } }
+        Profile { name: host.clone(), kind: HostKind::Ssh { target: host, args: parts.collect(), x11: false } }
     }
 
     pub fn is_local(&self) -> bool {
@@ -158,10 +161,14 @@ impl Profile {
     pub fn pty_argv(&self, cwd: Option<&str>, password: bool) -> Vec<String> {
         match &self.kind {
             HostKind::Local => local_shell(LocalShell::Auto).0,
-            HostKind::Ssh { target, args } => {
+            HostKind::Ssh { target, args, x11 } => {
                 let mut v = vec!["ssh".to_string(), "-tt".to_string()];
                 if password {
                     v.extend(["-o".to_string(), "NumberOfPasswordPrompts=1".to_string()]);
+                }
+                // GUI programs show here (trusted forwarding: with -X many fail).
+                if *x11 {
+                    v.push("-Y".to_string());
                 }
                 v.extend(args.iter().cloned());
                 v.push(target.clone());
@@ -183,7 +190,7 @@ impl Profile {
     pub fn serial_argv(&self, port: &str, baud: u32, password: bool) -> Vec<String> {
         let cmd = serial_command(port, baud);
         match &self.kind {
-            HostKind::Ssh { target, args } => {
+            HostKind::Ssh { target, args, .. } => {
                 let mut v = vec!["ssh".to_string(), "-tt".to_string()];
                 if password {
                     v.extend(["-o".to_string(), "NumberOfPasswordPrompts=1".to_string()]);
@@ -209,7 +216,7 @@ impl Profile {
         match &self.kind {
             // A serial console has no file system of its own: served locally.
             HostKind::Local | HostKind::Serial { .. } => None,
-            HostKind::Ssh { target, args } => {
+            HostKind::Ssh { target, args, .. } => {
                 let auth = if password { "NumberOfPasswordPrompts=1" } else { "BatchMode=yes" };
                 let mut v: Vec<String> = ["ssh", "-T", "-o", auth, "-o", "ConnectTimeout=10"].iter().map(|s| s.to_string()).collect();
                 v.extend(args.iter().cloned());

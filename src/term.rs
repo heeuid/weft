@@ -1349,6 +1349,20 @@ impl Perform for Term {
         };
         let private = intermediates.first() == Some(&b'?');
         match (action, intermediates) {
+            // DECRQM: is a private mode known, and set? 1 set, 2 reset, 0 unknown.
+            // Apps ask before using synchronized output (2026, see SyncOutput).
+            ('p', [b'?', b'$']) => {
+                let mode = ps.first().copied().unwrap_or(0);
+                let state = match mode {
+                    2026 => 2,
+                    25 => if self.cursor_visible { 1 } else { 2 },
+                    1049 | 47 | 1047 => if self.alt_active { 1 } else { 2 },
+                    2004 => if self.bracketed_paste { 1 } else { 2 },
+                    1 => if self.app_cursor { 1 } else { 2 },
+                    _ => 0,
+                };
+                self.replies.extend(format!("\x1b[?{mode};{state}$y").into_bytes());
+            }
             ('h', _) => self.set_mode(private, params, true),
             ('l', _) => self.set_mode(private, params, false),
             ('m', []) => self.sgr(params),
@@ -1640,6 +1654,99 @@ impl Perform for Term {
 
 fn hex_encode(b: &[u8]) -> String {
     b.iter().map(|c| format!("{c:02X}")).collect()
+}
+
+/// Synchronized output (DEC mode 2026): an app starts an update with
+/// `ESC[?2026h` and ends it with `ESC[?2026l`; what comes between is fed to
+/// the terminal at once, so a frame never shows it half done (lines cleared
+/// and not yet redrawn flickered as they came in separate reads). An update
+/// that never ends is let through after `LIMIT`.
+#[derive(Default)]
+pub struct SyncOutput {
+    held: Vec<u8>,
+    since: Option<Instant>,
+}
+
+impl SyncOutput {
+    const BEGIN: &'static [u8] = b"\x1b[?2026h";
+    const END: &'static [u8] = b"\x1b[?2026l";
+    pub const LIMIT: std::time::Duration = std::time::Duration::from_millis(150);
+
+    /// New output in; what can be fed now out.
+    pub fn push(&mut self, bytes: &[u8], now: Instant) -> Vec<u8> {
+        self.held.extend_from_slice(bytes);
+        let mut out = Vec::new();
+        loop {
+            match self.since {
+                None => match find(&self.held, Self::BEGIN) {
+                    Some(i) => {
+                        out.extend(self.held.drain(..i + Self::BEGIN.len()));
+                        self.since = Some(now);
+                    }
+                    None => {
+                        // A begin cut between two reads waits for the rest.
+                        let keep = (1..Self::BEGIN.len()).rev().find(|&k| self.held.ends_with(&Self::BEGIN[..k])).unwrap_or(0);
+                        let n = self.held.len() - keep;
+                        out.extend(self.held.drain(..n));
+                        return out;
+                    }
+                },
+                Some(at) => match find(&self.held, Self::END) {
+                    Some(i) => {
+                        out.extend(self.held.drain(..i + Self::END.len()));
+                        self.since = None;
+                    }
+                    None => {
+                        if now.duration_since(at) >= Self::LIMIT {
+                            out.append(&mut self.held);
+                            self.since = None;
+                        }
+                        return out;
+                    }
+                },
+            }
+        }
+    }
+
+    /// While an update is held: when to look again (it may time out).
+    pub fn due(&self, now: Instant) -> Option<std::time::Duration> {
+        self.since.map(|at| Self::LIMIT.saturating_sub(now.duration_since(at)))
+    }
+}
+
+fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    hay.windows(needle.len()).position(|w| w == needle)
+}
+
+#[cfg(test)]
+mod sync_tests {
+    use super::*;
+
+    #[test]
+    fn an_update_comes_in_whole() {
+        let mut s = SyncOutput::default();
+        let t = Instant::now();
+        // Before an update: through at once.
+        assert_eq!(s.push(b"plain", t), b"plain");
+        // Begun: the clear is held until the redraw has come too.
+        assert_eq!(s.push(b"\x1b[?2026h\x1b[2K", t), b"\x1b[?2026h");
+        assert_eq!(s.push(b"new line", t), b"");
+        assert_eq!(s.push(b"\x1b[?2026lafter", t), b"\x1b[2Knew line\x1b[?2026lafter");
+        // A begin split between reads waits for its end.
+        assert_eq!(s.push(b"x\x1b[?20", t), b"x");
+        assert_eq!(s.push(b"26hy", t), b"\x1b[?2026h");
+        // Never ended: let through after the limit.
+        assert_eq!(s.push(b"", t + SyncOutput::LIMIT), b"y");
+        assert_eq!(s.due(t), None);
+    }
+
+    #[test]
+    fn apps_can_ask_for_it() {
+        let mut t = Term::new(20, 4);
+        let mut p = vte::Parser::new();
+        t.feed(&mut p, b"\x1b[?2026$p");
+        assert_eq!(t.replies, b"\x1b[?2026;2$y");
+    }
 }
 
 #[cfg(test)]
