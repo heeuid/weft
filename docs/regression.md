@@ -116,6 +116,11 @@ What the numbers don't show:
 | A closed terminal's console host goes too (it stayed for good, using a core) | `pty::tests::a_dropped_terminal_is_closed_before_the_end`, `cursor_reports_are_told_from_other_input`, `the_first_cursor_report_fits_the_screen_it_was_opened_with` |
 | Shell events become widgets in the terminal: table (sort), progress (updated in place), choice (types its number), file list (open, show in Files), a note | `regress::shell_events_become_widgets` |
 | What weft types reaches the program: the composer's line, typing, a paste | `regress::what_weft_types_reaches_the_program` |
+| The mouse in a terminal: wheel scrolls back and stops at the end; drag selects characters (over lines too), double click a word, triple click a line, Alt+drag a block; a click drops the selection; Ctrl+click opens a path at its line, not a plain word; the menu's Copy selection and Split right | `regress::the_mouse_in_a_terminal` |
+| A command block: found from the shell's marks with its exit code; its buttons copy the command, copy the output, fold and unfold, edit in the composer, run again, open the output in the editor; fold all, unfold all, previous and next command, clear scrollback | `regress::a_command_block_has_its_buttons` |
+| Folding or unfolding while scrolled back leaves the command where it is (it slid from under the pointer, or off the screen) | `regress::a_command_block_has_its_buttons` |
+| Find in scrollback: the count, Enter and Shift+Enter step and wrap and bring the hit into view, the arrow, Aa for case, × closes | `regress::find_in_scrollback_steps_through_the_hits` |
+| Find: the first Enter after typing goes to the first hit (it went to the second) | `regress::find_in_scrollback_steps_through_the_hits` |
 | Serial console: bridge, command, missing port | `host::tests::serial_bridge_and_command`, `regress::serial_tab_explains_a_missing_port` |
 | X11 forwarding (-Y, DISPLAY, old settings) | `x11::tests::*` |
 | Block characters drawn, not from the font (no black band) | `ui_term::tests::blocks_fill_their_cells`, `a_full_block_hides_its_background` |
@@ -148,6 +153,11 @@ What the numbers don't show:
 | A restart brings back what was open | `regress::a_restart_brings_back_what_was_open` |
 | The timed save writes settings.json only when something changed | `regress::the_timed_save_writes_only_changes` |
 | Keyboard shortcuts: rows hold still on remove | `regress::keys_window_rows_hold_still` |
+| Keyboard shortcuts: + takes the next key (Esc: none, and the window stays), the key then runs the command, ↺ and Reset all go back; the changed filter, search by key, the clash count | `regress::a_key_is_bound_by_pressing_it` |
+| The tab bar: click switches, drag moves (the dragged tab stays active), + opens one on the same host, × and middle click close, the menu closes the others | `regress::the_tab_bar_switches_moves_and_closes` |
+| The buttons right of the tabs: editor, side panel, split right and down, palette, ?, Aa, theme, and the ☰ menu of every command with its keys | `regress::the_top_bar_buttons` |
+| Commands one by one: focus mode, cursor shape, font and UI size with their limits, hidden files, markdown breaks, theme: system, local shell, zoom, focus left/right/up/down, history, memos, privacy, features, open memo, theme, fonts, settings.json | `regress::commands_do_what_they_say` |
+| The status bar: text size and UI scale buttons, the terminal's size, an agent that is not there with reconnect and password… | `regress::the_status_bar` |
 | Dialogs fit a small window | `regress::dialogs_fit_a_small_window` |
 | Esc closes every dialog, menu and picker; it goes to what has the keyboard (the shell, a composer or the palette on top) | `regress::every_dialog_closes_on_escape`, `regress::escape_goes_to_what_has_the_keyboard` |
 | The composer sends on Enter; Tab completes | `regress::the_composer_sends_on_enter`, `app::tests::completion_lcp_then_cycle` |

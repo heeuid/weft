@@ -174,6 +174,31 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
     }
 }
 
+thread_local! {
+    /// The icon buttons drawn since `watch` (their tips and where): an icon
+    /// has no text to find it by, so the screen tests ask here. Off unless
+    /// asked for: the app itself only pays the check.
+    static SEEN: std::cell::RefCell<Option<Vec<(String, Rect)>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// From now on, on this thread, remember each icon button drawn.
+pub fn watch() {
+    SEEN.with(|s| *s.borrow_mut() = Some(Vec::new()));
+}
+
+/// The icon buttons drawn since the last call (when watching).
+pub fn seen() -> Vec<(String, Rect)> {
+    SEEN.with(|s| s.borrow_mut().as_mut().map(std::mem::take).unwrap_or_default())
+}
+
+fn note(tip: &str, rect: Rect) {
+    SEEN.with(|s| {
+        if let Some(v) = s.borrow_mut().as_mut() {
+            v.push((tip.to_string(), rect));
+        }
+    });
+}
+
 /// Small square icon button with hover background and a tooltip.
 pub fn button(ui: &mut Ui, icon: Icon, tip: &str) -> Response {
     button_colored(ui, icon, tip, theme::text_dim())
@@ -183,6 +208,7 @@ pub fn button_colored(ui: &mut Ui, icon: Icon, tip: &str, color: Color32) -> Res
     let size = vec2(22.0, 22.0);
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
     if ui.is_rect_visible(rect) {
+        note(tip, rect);
         let hovered = resp.hovered();
         if hovered {
             ui.painter().rect_filled(rect, CornerRadius::same(5), theme::bg_hover());
@@ -206,6 +232,7 @@ pub fn overlay_button(ui: &mut Ui, rect: Rect, id: egui::Id, icon: Icon, tip: &s
 /// they cannot be mistaken for the buttons next to them.
 pub fn overlay_button_styled(ui: &mut Ui, rect: Rect, id: egui::Id, icon: Icon, tip: &str, danger: bool) -> Response {
     let resp = ui.interact(rect, id, Sense::click());
+    note(tip, rect);
     let hot = resp.hovered();
     let bg = match (hot, danger) {
         (true, true) => theme::error(),

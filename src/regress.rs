@@ -1198,7 +1198,17 @@ fn script_harness(body: &str, more: serde_json::Value) -> (Harness, std::path::P
     }
     let mut h = Harness::new(settings);
     assert!(h.wait_for(30.0, |h| h.texts.iter().map(|t| t.0.as_str()).collect::<String>().contains("ready-marker")), "the script's output is on screen");
-    h.frames(3);
+    // … and all of it: the line's end can come a moment after its text,
+    // and moves every row up by one.
+    let pane = h.app.active_pane_id().unwrap();
+    let mut seen = (h.app.panes[&pane].term.generation, std::time::Instant::now());
+    h.wait_for(10.0, |h| {
+        let now = h.app.panes[&pane].term.generation;
+        if now != seen.0 {
+            seen = (now, std::time::Instant::now());
+        }
+        seen.1.elapsed().as_millis() > 400
+    });
     (h, received)
 }
 
@@ -1296,4 +1306,570 @@ fn what_weft_types_reaches_the_program() {
     h.frame(vec![Event::Paste("pasted text".into())]);
     h.key(Key::Enter, Modifiers::NONE);
     assert!(h.wait_for(20.0, |_| received(&file).contains("pasted text")), "a paste: {:?}", received(&file));
+}
+
+/// The icon button with this tip on the row of the text `row`.
+fn icon_on_row(h: &Harness, tip: &str, row: &str) -> egui::Pos2 {
+    let y = h.at(row).y;
+    h.icons.iter().find(|(t, r)| t.contains(tip) && (r.center().y - y).abs() < 12.0).unwrap_or_else(|| panic!("no \"{tip}\" on the row of \"{row}\"")).1.center()
+}
+
+/// Keyboard shortcuts: + takes the next key pressed as a key of that
+/// command (Esc: none after all), the key then runs it, ↺ and Reset all
+/// go back to the defaults.
+#[test]
+fn a_key_is_bound_by_pressing_it() {
+    const CTRL_ALT: Modifiers = Modifiers { alt: true, ctrl: true, shift: false, mac_cmd: false, command: true };
+    let mut h = Harness::new(json!({}));
+    h.command("keys");
+    h.frames(2);
+    let row = "New tab (same host)";
+    // + then Esc: nothing bound, and the window stays.
+    let plus = icon_on_row(&h, "add a key", row);
+    h.click(plus);
+    assert_eq!(h.app.keys_window.as_ref().and_then(|w| w.capture), Some("new_tab"));
+    assert!(h.shows("press keys"), "the row says it is waiting");
+    h.key(Key::Escape, Modifiers::NONE);
+    assert!(h.app.keys_window.as_ref().is_some_and(|w| w.capture.is_none()), "Esc ends the waiting, not the window");
+    assert!(!h.app.settings.keys.contains_key("new_tab"));
+    // + then Ctrl+Alt+K: bound beside the default; nothing reached the terminal.
+    let plus = icon_on_row(&h, "add a key", row);
+    h.click(plus);
+    h.key(Key::K, CTRL_ALT);
+    assert_eq!(h.app.settings.keys.get("new_tab").map(|k| k.as_slice()), Some(&["Ctrl+Shift+T".to_string(), "Ctrl+Alt+K".to_string()][..]));
+    assert!(h.shows("changed (1)"));
+    assert_eq!(h.app.tabs.len(), 1, "binding it did not run it");
+    // The filter: only the changed ones.
+    h.click_text("changed (1)");
+    assert!(h.shows(row) && !h.shows("Split right"), "only the changed command is listed");
+    h.click_text("changed (1)");
+    // The search field finds commands by key.
+    h.click_text("search commands or keys");
+    h.type_text("ctrl+alt+k");
+    assert!(h.shows(row) && !h.shows("Split right"), "found by its key");
+    h.key(Key::A, Modifiers::COMMAND);
+    h.key(Key::Backspace, Modifiers::NONE);
+    // The new key works once the window is closed.
+    h.key(Key::Escape, Modifiers::NONE);
+    h.key(Key::Escape, Modifiers::NONE);
+    assert!(h.app.keys_window.is_none(), "Esc closes the window");
+    h.key(Key::K, CTRL_ALT);
+    assert_eq!(h.app.tabs.len(), 2, "Ctrl+Alt+K opens a tab");
+    // ↺: back to the default; the key no longer does it.
+    h.command("keys");
+    h.frames(2);
+    let back = icon_on_row(&h, "back to the default", row);
+    h.click(back);
+    assert!(!h.app.settings.keys.contains_key("new_tab"));
+    h.key(Key::Escape, Modifiers::NONE);
+    h.key(Key::K, CTRL_ALT);
+    assert_eq!(h.app.tabs.len(), 2, "the key is no longer bound");
+    // A key two commands share is counted as a clash; Reset all clears it.
+    h.command("keys");
+    h.frames(2);
+    let plus = icon_on_row(&h, "add a key", row);
+    h.click(plus);
+    h.key(Key::D, CTRL_SHIFT);
+    assert!(h.shows("clashes (2)"), "New tab and Split right share Ctrl+Shift+D");
+    h.click_text("Reset all");
+    assert!(h.app.settings.keys.is_empty());
+    assert!(h.shows("clashes (0)") && h.shows("changed (0)"));
+}
+
+fn tab_hosts(h: &Harness) -> Vec<String> {
+    h.app.tabs.iter().map(|t| h.app.panes[&t.active].host.clone()).collect()
+}
+
+/// Where the tab with this title is (the status bar names the host too).
+fn tab_at(h: &Harness, title: &str) -> egui::Pos2 {
+    h.texts.iter().find(|(t, r)| t == title && r.top() < 40.0).unwrap_or_else(|| panic!("no tab \"{title}\"")).1.center()
+}
+
+/// The tab bar: a click switches, a drag moves the tab, + opens one, a
+/// tab's × and a middle click close it, the menu closes the others.
+#[test]
+fn the_tab_bar_switches_moves_and_closes() {
+    let mut profiles = Vec::new();
+    let mut session = Vec::new();
+    for name in ["aa", "bb", "cc"] {
+        profiles.push(crate::testkit::idle_profile(name));
+        session.push(json!({"t": "Pane", "host": name, "cwd": null}));
+    }
+    let mut h = Harness::new(json!({"profiles": profiles, "session": session, "confirm_running": false}));
+    assert_eq!(tab_hosts(&h), ["aa", "bb", "cc"]);
+    // A click switches.
+    let b = tab_at(&h, "bb");
+    h.click(b);
+    assert_eq!(h.app.active_tab, 1);
+    // A drag past the last tab moves it there; it stays the active one.
+    let (a, c) = (tab_at(&h, "aa"), tab_at(&h, "cc"));
+    h.drag(a, c + egui::vec2(70.0, 0.0));
+    assert_eq!(tab_hosts(&h), ["bb", "cc", "aa"]);
+    assert_eq!(h.app.active_tab, 2, "the dragged tab is the active one");
+    // … and back in front of the first.
+    let (a, b) = (tab_at(&h, "aa"), tab_at(&h, "bb"));
+    h.drag(a, b - egui::vec2(30.0, 0.0));
+    assert_eq!(tab_hosts(&h), ["aa", "bb", "cc"]);
+    // + opens a tab on the active tab's host, and shows it.
+    h.click_icon("new tab on the same host");
+    assert_eq!(tab_hosts(&h), ["aa", "bb", "cc", "aa"]);
+    assert_eq!(h.app.active_tab, 3);
+    // The active tab's ×.
+    let last = h.texts.iter().filter(|(t, r)| t == "aa" && r.top() < 40.0).map(|(_, r)| *r).fold(None, |m: Option<egui::Rect>, r| Some(m.map_or(r, |m| if r.left() > m.left() { r } else { m }))).unwrap();
+    h.click(egui::pos2(last.left() - 22.0 + 110.0 - 15.0, last.center().y));
+    assert_eq!(tab_hosts(&h), ["aa", "bb", "cc"], "the × closed it");
+    // A middle click closes a tab that is not the active one.
+    let b = tab_at(&h, "bb");
+    let active_before = h.app.panes[&h.app.tabs[h.app.active_tab].active].host.clone();
+    h.frame(vec![Event::PointerMoved(b)]);
+    h.frame(vec![Event::PointerButton { pos: b, button: egui::PointerButton::Middle, pressed: true, modifiers: Modifiers::NONE }]);
+    h.frame(vec![Event::PointerButton { pos: b, button: egui::PointerButton::Middle, pressed: false, modifiers: Modifiers::NONE }]);
+    h.frames(2);
+    assert_eq!(tab_hosts(&h), ["aa", "cc"]);
+    assert_eq!(h.app.panes[&h.app.tabs[h.app.active_tab].active].host, active_before, "the active tab is still the same one");
+    // The menu: with two tabs, "Close to the left" of the first has nothing to close.
+    h.command("new_tab");
+    let n = h.app.tabs.len();
+    let c = tab_at(&h, "cc");
+    h.right_click(c);
+    assert!(h.shows("Close others") && h.shows("Close to the right") && h.shows("Close to the left") && h.shows("Close all"));
+    h.click_text("Close others");
+    h.frames(2);
+    assert_eq!(tab_hosts(&h), ["cc"], "of {n} tabs only the clicked one is left");
+}
+
+/// The buttons at the right of the tab bar do what their tips say.
+#[test]
+fn the_top_bar_buttons() {
+    let mut h = Harness::new(json!({}));
+    assert!(!h.app.editor.visible && !h.app.settings.sidebar);
+    h.click_icon("editor (");
+    assert!(h.app.editor.visible);
+    h.click_icon("editor (");
+    assert!(!h.app.editor.visible);
+    h.click_icon("side panel (");
+    assert!(h.app.settings.sidebar);
+    h.click_icon("side panel (");
+    assert!(!h.app.settings.sidebar);
+    h.click_icon("split right");
+    assert_eq!(h.app.panes.len(), 2);
+    h.click_icon("split down");
+    assert_eq!(h.app.panes.len(), 3);
+    h.click_icon("command palette");
+    assert!(h.app.palette.is_some());
+    h.key(Key::Escape, Modifiers::NONE);
+    assert!(h.app.palette.is_none());
+    let help = h.at_exact("?");
+    h.click(help);
+    assert!(h.app.help.is_some());
+    h.key(Key::Escape, Modifiers::NONE);
+    assert!(h.app.help.is_none());
+    let fonts = h.at_exact("Aa");
+    h.click(fonts);
+    assert!(h.app.font_menu.is_some());
+    h.key(Key::Escape, Modifiers::NONE);
+    assert!(h.app.font_menu.is_none());
+    h.click_icon("theme");
+    assert!(h.app.theme_menu.is_some());
+    h.click_icon("theme");
+    assert!(h.app.theme_menu.is_none());
+    // The ☰ menu lists every command with its keys; a click runs it.
+    let menu = h.at_exact("\u{2630}");
+    h.click(menu);
+    assert!(h.shows("New tab (same host)") && h.shows("Ctrl+Shift+T"), "commands and their keys");
+    h.click_text("Zoom / restore pane");
+    h.frames(2);
+    assert!(h.app.tabs[0].zoomed, "the menu ran the command");
+    assert!(!h.shows("New tab (same host)"), "and closed");
+}
+
+/// Commands that change a setting or the layout, one by one.
+#[test]
+fn commands_do_what_they_say() {
+    use crate::app::CursorStyle;
+    let mut h = Harness::new(json!({"sidebar": true}));
+    let toast = |h: &Harness, text: &str| h.app.toasts.iter().any(|t| t.text.contains(text));
+    // Focus mode hides the side panel and the editor, and brings them back.
+    h.command("editor");
+    assert!(h.app.editor.visible && h.app.settings.sidebar);
+    h.command("focus_mode");
+    assert!(!h.app.editor.visible && !h.app.settings.sidebar);
+    h.command("focus_mode");
+    assert!(h.app.editor.visible && h.app.settings.sidebar, "as they were");
+    h.command("editor");
+    // The cursor goes round its three shapes.
+    assert_eq!(h.app.settings.cursor_style, CursorStyle::Block);
+    h.command("cursor_style");
+    assert_eq!(h.app.settings.cursor_style, CursorStyle::Bar);
+    assert!(toast(&h, "cursor: bar"));
+    h.command("cursor_style");
+    assert_eq!(h.app.settings.cursor_style, CursorStyle::Underline);
+    h.command("cursor_style");
+    assert_eq!(h.app.settings.cursor_style, CursorStyle::Block);
+    // Font and UI size: a step each way, the default, and their ends.
+    let size = h.app.settings.font_size;
+    h.command("font_bigger");
+    assert_eq!(h.app.settings.font_size, size + 1.0);
+    h.command("font_smaller");
+    h.command("font_smaller");
+    assert_eq!(h.app.settings.font_size, size - 1.0);
+    for _ in 0..40 {
+        h.app.run_command_id("font_smaller");
+    }
+    assert_eq!(h.app.settings.font_size, 8.0, "no smaller than 8");
+    for _ in 0..40 {
+        h.app.run_command_id("font_bigger");
+    }
+    assert_eq!(h.app.settings.font_size, 32.0, "no bigger than 32");
+    h.command("font_default");
+    assert_eq!(h.app.settings.font_size, 14.0);
+    h.command("ui_bigger");
+    assert_eq!(h.app.settings.ui_scale, 1.1);
+    h.command("ui_smaller");
+    h.command("ui_smaller");
+    assert_eq!(h.app.settings.ui_scale, 0.9);
+    for _ in 0..40 {
+        h.app.run_command_id("ui_smaller");
+    }
+    assert_eq!(h.app.settings.ui_scale, 0.6);
+    for _ in 0..40 {
+        h.app.run_command_id("ui_bigger");
+    }
+    assert_eq!(h.app.settings.ui_scale, 2.5);
+    h.command("ui_default");
+    assert_eq!(h.app.settings.ui_scale, 1.0);
+    // Switches.
+    let hidden = h.app.settings.show_hidden;
+    h.command("hidden_files");
+    assert_eq!(h.app.settings.show_hidden, !hidden);
+    let breaks = h.app.settings.markdown_breaks;
+    h.command("markdown_breaks");
+    assert_eq!(h.app.settings.markdown_breaks, !breaks);
+    assert!(toast(&h, "Markdown:"));
+    h.command("theme_system");
+    assert_eq!(h.app.settings.theme, "system");
+    h.command("shell_cmd");
+    assert_eq!(h.app.settings.local_shell, crate::host::LocalShell::Cmd);
+    assert!(toast(&h, "local shell: "));
+    // Zoom needs a split; then it shows one pane, and both again.
+    h.command("zoom");
+    assert!(toast(&h, "zoom needs a split tab"));
+    assert!(!h.app.tabs[0].zoomed);
+    h.command("split_right");
+    let (left, right) = {
+        let mut ids: Vec<usize> = h.app.panes.keys().copied().collect();
+        ids.sort();
+        (ids[0], ids[1])
+    };
+    assert_eq!(h.app.active_pane_id(), Some(right), "the new pane has the keyboard");
+    h.command("zoom");
+    assert!(h.app.tabs[0].zoomed);
+    h.command("zoom");
+    assert!(!h.app.tabs[0].zoomed);
+    // Focus moves between the panes of a split.
+    h.command("focus_left");
+    assert_eq!(h.app.active_pane_id(), Some(left));
+    h.command("focus_left");
+    assert_eq!(h.app.active_pane_id(), Some(left), "nothing further left");
+    h.command("focus_right");
+    assert_eq!(h.app.active_pane_id(), Some(right));
+    h.command("split_down");
+    let below = h.app.active_pane_id().unwrap();
+    h.command("focus_up");
+    assert_eq!(h.app.active_pane_id(), Some(right));
+    h.command("focus_down");
+    assert_eq!(h.app.active_pane_id(), Some(below));
+    // Memos shows the memo folder in Files; History its tab; Privacy, Help,
+    // Features and the pickers their windows.
+    h.command("history");
+    assert!(h.app.side.tab == crate::app::SideTab::History);
+    h.command("memos");
+    assert!(h.app.side.tab == crate::app::SideTab::Files);
+    assert!(h.app.side.root.as_ref().is_some_and(|(host, dir)| host == "local" && dir.contains("memo")), "{:?}", h.app.side.root);
+    h.command("privacy");
+    assert!(h.app.records_window.is_some());
+    h.key(Key::Escape, Modifiers::NONE);
+    h.command("features");
+    assert!(h.app.help.as_ref().is_some_and(|w| w.features));
+    h.key(Key::Escape, Modifiers::NONE);
+    h.command("open_memo");
+    assert!(h.app.memo_picker);
+    h.key(Key::Escape, Modifiers::NONE);
+    assert!(!h.app.memo_picker);
+    h.command("theme");
+    assert!(h.app.theme_menu.is_some());
+    h.command("fonts");
+    assert!(h.app.font_menu.is_some());
+    // settings.json opens in the editor, as it is on disk.
+    h.command("settings_file");
+    assert!(h.wait_for(20.0, |h| h.app.editor.files.iter().any(|f| f.path.ends_with("settings.json") && !f.loading)), "settings.json is open");
+    assert!(h.app.editor.visible);
+}
+
+/// A terminal with two commands run in it as a shell with marks would show
+/// them (`echo hi`, then `seq` with a hundred lines of output), a few lines
+/// before them and a path after.
+fn shell_harness() -> (Harness, std::path::PathBuf) {
+    // (A pause after each mark: see shell_events_become_widgets.)
+    let body = r#"
+def mark(s):
+    sys.stdout.write(E + ']133;' + s + chr(7))
+    sys.stdout.flush()
+    time.sleep(0.25)
+def say(s):
+    sys.stdout.write(s)
+    sys.stdout.flush()
+    time.sleep(0.25)
+say('motd-1\r\nmotd-2\r\nmotd-3\r\n')
+mark('A'); say('$ '); mark('B'); say('echo hi\r\n'); mark('C'); say('hi\r\nthere\r\n'); mark('D;0')
+mark('A'); say('$ '); mark('B'); say('seq\r\n'); mark('C')
+say(''.join('line-%02d word-%02d\r\n' % (i, i) for i in range(100)))
+mark('D;3')
+say('see /proj/src/main.rs:12:3 for it\r\n')
+mark('A'); say('$ '); mark('B')
+"#;
+    script_harness(body, json!({}))
+}
+
+/// The middle of the character cell where `needle` starts, in the terminal
+/// row that shows it.
+fn cell(h: &Harness, needle: &str) -> egui::Pos2 {
+    let (text, rect) = h.texts.iter().find(|(t, _)| t.contains(needle)).unwrap_or_else(|| panic!("\"{needle}\" is not on screen"));
+    let at = text[..text.find(needle).unwrap()].chars().count();
+    let cw = rect.width() / text.chars().count() as f32;
+    egui::pos2(rect.left() + (at as f32 + 0.5) * cw, rect.center().y)
+}
+
+/// The terminal's "Copy selection": what is selected, as text.
+fn copy_selection(h: &mut Harness, at: egui::Pos2) -> String {
+    h.copied = None;
+    h.right_click(at);
+    h.click_text("Copy selection");
+    h.frames(2);
+    h.copied.clone().unwrap_or_default()
+}
+
+/// The mouse in a terminal: the wheel scrolls back, a drag selects
+/// characters, a double click a word, a triple click a line, Alt+drag a
+/// block of columns; a click drops the selection; Ctrl+click opens a path.
+#[test]
+fn the_mouse_in_a_terminal() {
+    const CTRL: Modifiers = Modifiers { alt: false, ctrl: true, shift: false, mac_cmd: false, command: true };
+    let (mut h, _file) = shell_harness();
+    let pane = h.app.active_pane_id().unwrap();
+    let scroll = |h: &Harness| h.app.panes[&pane].scroll;
+    // The wheel: back into what scrolled off, and down again to the end.
+    let mid = egui::pos2(400.0, 400.0);
+    assert_eq!(scroll(&h), 0);
+    assert!(!h.shows("line-00"), "the first lines have scrolled off");
+    h.wheel(mid, 3.0, Modifiers::NONE);
+    let up = scroll(&h);
+    assert!(up > 0, "scrolled back");
+    h.wheel(mid, 3.0, Modifiers::NONE);
+    assert!(scroll(&h) > up, "and further");
+    h.wheel(mid, -1000.0, Modifiers::NONE);
+    assert_eq!(scroll(&h), 0, "down stops at the end");
+    assert!(h.shows("line-99"));
+    // A double click: the word.
+    let w = cell(&h, "word-98");
+    h.clicks(w, 2);
+    assert!(h.app.panes[&pane].sel.is_some(), "the word stays selected");
+    assert_eq!(copy_selection(&mut h, w), "word-98");
+    // A triple click: the line.
+    let l = cell(&h, "line-97");
+    h.clicks(l, 3);
+    assert_eq!(copy_selection(&mut h, l), "line-97 word-97");
+    // A drag: the characters from where it began to where it ended.
+    let (a, b) = (cell(&h, "line-96"), cell(&h, "word-96"));
+    h.drag(a, b);
+    assert_eq!(copy_selection(&mut h, a), "line-96 w");
+    // Over two lines: the rest of the first and the start of the second.
+    let (a, b) = (cell(&h, "word-95"), cell(&h, "line-96"));
+    h.drag(a, b + egui::vec2((b.x - cell(&h, "ine-96").x).abs() * 3.0, 0.0));
+    assert_eq!(copy_selection(&mut h, a), "word-95\nline");
+    // Alt+drag: a block of columns.
+    let (a, b) = (cell(&h, "line-94"), cell(&h, "ne-96"));
+    h.held = Modifiers::ALT;
+    h.drag(a, b);
+    h.held = Modifiers::NONE;
+    assert_eq!(copy_selection(&mut h, a), "lin\nlin\nlin");
+    // A plain click drops the selection.
+    h.click(mid);
+    assert!(h.app.panes[&pane].sel.is_none());
+    // Ctrl+click on a path with a line number opens it there.
+    let path = cell(&h, "/proj/src/main.rs");
+    h.click_with(path + egui::vec2(20.0, 0.0), CTRL);
+    h.frames(2);
+    assert!(h.app.editor.files.iter().any(|f| f.host == "t" && f.path == "/proj/src/main.rs"), "opened: {:?}", h.app.editor.files.iter().map(|f| &f.path).collect::<Vec<_>>());
+    // A plain word is not a path: a Ctrl+click on it opens nothing.
+    let n = h.app.editor.files.len();
+    let word = cell(&h, "see ");
+    h.click_with(word, CTRL);
+    h.frames(2);
+    assert_eq!(h.app.editor.files.len(), n);
+    // The terminal's menu splits and closes panes.
+    h.command("editor");
+    h.right_click(mid);
+    h.click_text("Split right");
+    h.frames(2);
+    assert_eq!(h.app.panes.len(), 2);
+}
+
+/// A command and its output are a block: its buttons copy the command or
+/// the output, fold it, run it again, put it in the composer, open the
+/// output in the editor; commands fold them all and jump between them.
+#[test]
+fn a_command_block_has_its_buttons() {
+    use crate::term::BlockState;
+    let (mut h, file) = shell_harness();
+    let pane = h.app.active_pane_id().unwrap();
+    {
+        let blocks = &h.app.panes[&pane].term.blocks;
+        let done: Vec<(&str, Option<i32>)> = blocks.iter().filter(|b| b.state() == BlockState::Done).map(|b| (b.command.as_str(), b.exit)).collect();
+        assert_eq!(done, [("echo hi", Some(0)), ("seq", Some(3))], "two commands, with how they ended");
+    }
+    // The first one has scrolled off: "previous command" goes to it.
+    assert!(!h.shows("echo hi"));
+    h.command("prev_command");
+    h.command("prev_command");
+    assert!(h.shows("echo hi"), "back at the first command");
+    assert!(h.app.panes[&pane].scroll > 0);
+    // Its buttons show when the pointer is on it.
+    let on = cell(&h, "echo hi");
+    h.hover(on);
+    h.click_icon("copy command");
+    assert_eq!(h.copied.as_deref(), Some("echo hi"));
+    h.click_icon("copy output");
+    assert_eq!(h.copied.as_deref().map(|s| s.trim_end()), Some("hi\nthere"));
+    // Folding and unfolding: the command stays where it is on screen
+    // (scrolled back, it used to slide away from under the pointer).
+    h.click_icon("fold output");
+    assert!(h.app.panes[&pane].term.blocks[0].folded);
+    assert!(!h.texts.iter().any(|(t, _)| t.trim_end() == "there"), "the output is folded away");
+    assert_eq!(cell(&h, "echo hi"), on, "folded: the command has not moved");
+    h.hover(on);
+    h.click_icon("unfold output");
+    assert!(!h.app.panes[&pane].term.blocks[0].folded);
+    assert!(h.texts.iter().any(|(t, _)| t.trim_end() == "there"));
+    assert_eq!(cell(&h, "echo hi"), on, "unfolded: nor now");
+    h.hover(on);
+    h.click_icon("edit in composer");
+    assert_eq!(h.app.panes[&pane].composer.as_ref().map(|c| c.text.as_str()), Some("echo hi"));
+    h.key(Key::Escape, Modifiers::NONE);
+    assert!(h.app.panes[&pane].composer.is_none());
+    // (The composer is at the prompt: the terminal went back to its end.)
+    h.command("prev_command");
+    h.command("prev_command");
+    h.hover(cell(&h, "echo hi"));
+    h.click_icon("run again");
+    assert!(h.wait_for(20.0, |_| received(&file).contains("echo hi")), "run again types the command: {:?}", received(&file));
+    // Fold all, unfold all.
+    h.command("fold_all");
+    assert!(h.app.panes[&pane].term.blocks.iter().filter(|b| b.state() == BlockState::Done).all(|b| b.folded));
+    assert!(!h.shows("line-50"));
+    h.command("unfold_all");
+    assert!(h.app.panes[&pane].term.blocks.iter().all(|b| !b.folded));
+    // Next command: on to the second, then to the end.
+    h.command("prev_command");
+    h.command("prev_command");
+    let at_first = h.app.panes[&pane].scroll;
+    h.command("next_command");
+    assert!(h.app.panes[&pane].scroll < at_first, "the second command is further down");
+    h.command("next_command");
+    assert_eq!(h.app.panes[&pane].scroll, 0, "past the last: the end");
+    // The output in the editor, as a file of its own (last: the editor
+    // takes room from the terminal, and the shell draws its screen again).
+    h.command("prev_command");
+    h.command("prev_command");
+    h.hover(cell(&h, "echo hi"));
+    h.click_icon("open output in editor");
+    assert!(h.app.editor.files.iter().any(|f| f.scratch && f.path == "output: echo hi" && f.text.trim_end() == "hi\nthere"), "the output as a scratch file");
+    // Clear scrollback: what scrolled off is gone.
+    h.command("clear_scrollback");
+    h.wheel(egui::pos2(400.0, 400.0), 50.0, Modifiers::NONE);
+    assert!(!h.shows("motd-1") && !h.shows("line-00"), "nothing to scroll back to");
+    assert_eq!(h.app.panes[&pane].scroll, 0);
+}
+
+/// Find in scrollback: the count, Enter and Shift+Enter step through the
+/// hits (and bring them into view), Aa is case, × closes.
+#[test]
+fn find_in_scrollback_steps_through_the_hits() {
+    let (mut h, _file) = shell_harness();
+    let pane = h.app.active_pane_id().unwrap();
+    let cur = |h: &Harness| h.app.panes[&pane].search.as_ref().map(|s| (s.cur, s.hits.len()));
+    h.command("find");
+    h.type_text("LINE-0");
+    h.frames(2);
+    assert_eq!(cur(&h), Some((9, 10)), "line-00 to line-09, any case; the last is the current one");
+    assert!(h.shows("10/10"));
+    assert!(!h.shows("line-00"));
+    h.key(Key::Enter, Modifiers::NONE);
+    assert_eq!(cur(&h), Some((0, 10)), "Enter: the first hit");
+    assert!(h.shows("1/10"));
+    assert!(h.shows("line-00"), "brought into view");
+    h.key(Key::Enter, Modifiers::NONE);
+    assert_eq!(cur(&h), Some((1, 10)));
+    h.key(Key::Enter, Modifiers::SHIFT);
+    assert_eq!(cur(&h), Some((0, 10)), "Shift+Enter: back");
+    h.key(Key::Enter, Modifiers::SHIFT);
+    assert_eq!(cur(&h), Some((9, 10)), "and round to the last");
+    h.click_icon("next (Enter)");
+    assert_eq!(cur(&h), Some((0, 10)), "the arrow steps too");
+    // Aa: the case counts, and LINE-0 is nowhere.
+    let aa = h.texts.iter().filter(|(t, _)| t == "Aa").map(|(_, r)| r.center()).max_by(|a, b| a.y.total_cmp(&b.y)).unwrap();
+    h.click(aa);
+    h.frames(2);
+    assert_eq!(cur(&h).map(|c| c.1), Some(0));
+    assert!(h.shows("0/0"));
+    h.click_icon("close (Esc)");
+    assert!(h.app.panes[&pane].search.is_none());
+}
+
+/// The status bar: the text and UI size buttons, and for a host whose agent
+/// is not there, what is wrong and a way to try again.
+#[test]
+fn the_status_bar() {
+    let mut h = Harness::new(json!({}));
+    let low = |h: &Harness, text: &str| h.texts.iter().find(|(t, r)| t == text && r.top() > 700.0).unwrap_or_else(|| panic!("no \"{text}\" in the status bar")).1.center();
+    let p = low(&h, "A+");
+    h.click(p);
+    assert_eq!(h.app.settings.font_size, 15.0);
+    let p = low(&h, "A\u{2212}");
+    h.click(p);
+    h.click(p);
+    assert_eq!(h.app.settings.font_size, 13.0);
+    let p = low(&h, "13");
+    h.click(p);
+    assert_eq!(h.app.settings.font_size, 14.0, "a click on the size: the default");
+    // (The bar is at the bottom whatever the scale: found again each time.)
+    let low = |h: &Harness, text: &str| h.texts.iter().filter(|(t, _)| t == text).map(|(_, r)| r.center()).max_by(|a, b| a.y.total_cmp(&b.y)).unwrap_or_else(|| panic!("no \"{text}\" in the status bar"));
+    let p = low(&h, "+");
+    h.click(p);
+    h.frames(3);
+    assert_eq!(h.app.settings.ui_scale, 1.1);
+    let p = low(&h, "110%");
+    h.click(p);
+    h.frames(3);
+    assert_eq!(h.app.settings.ui_scale, 1.0);
+    let p = low(&h, "\u{2212}");
+    h.click(p);
+    h.frames(3);
+    assert_eq!(h.app.settings.ui_scale, 0.9);
+    h.command("ui_default");
+    h.frames(3);
+    // The size of the terminal, in characters.
+    let pane = h.app.active_pane_id().unwrap();
+    let (cols, rows) = (h.app.panes[&pane].term.cols, h.app.panes[&pane].term.rows);
+    assert!(h.shows(&format!("{cols}\u{00d7}{rows}")));
+    // The agent of this host ends at once: said, with a way to try again
+    // and to give a password.
+    assert!(h.wait_for(20.0, |h| h.shows("agent offline")), "the agent's state");
+    h.click_text("password\u{2026}");
+    assert!(h.app.auth_prompt.as_ref().is_some_and(|a| a.0 == "t"), "asks for this host's password");
+    h.key(Key::Escape, Modifiers::NONE);
+    h.app.auth_prompt = None;
+    h.frames(2);
+    h.click_text("reconnect");
+    assert!(h.wait_for(20.0, |h| h.shows("agent connecting")) || h.shows("agent offline"), "it tried again");
 }

@@ -1878,8 +1878,13 @@ impl App {
                 s.focus = false;
             }
             if r.changed() {
-                s.seen_generation = u64::MAX;
-                s.cur = s.hits.len();
+                // The new hits at once, the last of them the current one:
+                // Enter then goes to the first. (Counted from the hits of
+                // the text before, the first Enter after the first text
+                // typed went to the second hit.)
+                s.hits = p.term.search(&s.query, s.icase);
+                s.seen_generation = p.term.generation;
+                s.cur = s.hits.len().saturating_sub(1);
             }
             let label = if s.hits.is_empty() { "0/0".to_string() } else { format!("{}/{}", s.cur + 1, s.hits.len()) };
             ui.label(egui::RichText::new(label).size(11.5).color(theme::text_dim()));

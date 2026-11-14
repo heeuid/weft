@@ -18,6 +18,8 @@ pub struct Harness {
     pub size: egui::Vec2,
     /// What the last frame drew: each text and its rect.
     pub texts: Vec<(String, Rect)>,
+    /// The icon buttons the last frame drew: each one's tip and its rect.
+    pub icons: Vec<(String, Rect)>,
     /// The last frame's shapes and scale, and the textures so far: what
     /// `shot` draws from.
     shapes: Vec<egui::epaint::ClippedShape>,
@@ -30,6 +32,8 @@ pub struct Harness {
     pub window: Vec<egui::ViewportCommand>,
     pub window_log: Vec<egui::ViewportCommand>,
     close_window: bool,
+    /// The modifier keys held down across frames (Alt for an Alt+drag).
+    pub held: Modifiers,
     pointer: Pos2,
     /// The clock the app is shown: a frame is 1/60 s, and a hand pauses
     /// before each click or drag (else clicks far apart count as double).
@@ -60,10 +64,11 @@ impl Harness {
         std::fs::write(dir.join("settings.json"), base.to_string()).unwrap();
         let ctx = egui::Context::default();
         crate::theme::install_fonts(&ctx, crate::theme::DEFAULT_FONT, crate::theme::DEFAULT_ICON_FONT);
+        crate::icons::watch();
         let mut app = App::new_in(ctx.clone(), crate::host::DataDir::at(&dir));
         // As main does: the fonts the settings name (not only the default).
         app.apply_fonts();
-        let mut h = Harness { app, ctx, dir, size: vec2(1200.0, 800.0), texts: Vec::new(), shapes: Vec::new(), scale: 1.0, textures: Default::default(), copied: None, window: Vec::new(), window_log: Vec::new(), close_window: false, now: 0.0, pointer: pos2(600.0, 400.0) };
+        let mut h = Harness { app, ctx, dir, size: vec2(1200.0, 800.0), texts: Vec::new(), icons: Vec::new(), shapes: Vec::new(), scale: 1.0, textures: Default::default(), copied: None, window: Vec::new(), window_log: Vec::new(), close_window: false, held: Modifiers::NONE, now: 0.0, pointer: pos2(600.0, 400.0) };
         h.frames(3);
         h
     }
@@ -93,14 +98,16 @@ impl Harness {
                 Event::Key { modifiers, .. } | Event::PointerButton { modifiers, .. } => Some(*modifiers),
                 _ => None,
             })
-            .unwrap_or_default();
+            .unwrap_or(self.held);
         self.now += 1.0 / 60.0;
         let mut input = egui::RawInput { events, modifiers, time: Some(self.now), screen_rect: Some(Rect::from_min_size(Pos2::ZERO, self.size)), ..Default::default() };
         if std::mem::take(&mut self.close_window) {
             input.viewports.entry(egui::ViewportId::ROOT).or_default().events.push(egui::ViewportEvent::Close);
         }
         let app = &mut self.app;
+        crate::icons::seen();
         let out = self.ctx.run(input, |ctx| app.frame(ctx));
+        self.icons = crate::icons::seen();
         self.window = out.viewport_output.get(&egui::ViewportId::ROOT).map(|v| v.commands.clone()).unwrap_or_default();
         self.window_log.extend(self.window.iter().cloned());
         for c in &out.platform_output.commands {
@@ -172,7 +179,7 @@ impl Harness {
     }
 
     fn button(&self, pos: Pos2, button: egui::PointerButton, pressed: bool) -> Event {
-        Event::PointerButton { pos, button, pressed, modifiers: Modifiers::default() }
+        Event::PointerButton { pos, button, pressed, modifiers: self.held }
     }
 
     /// Move there, press and release (over three frames, as a hand does).
@@ -188,6 +195,50 @@ impl Harness {
     pub fn click_text(&mut self, needle: &str) {
         let p = self.at(needle);
         self.click(p);
+    }
+
+    /// Where the icon button whose tip contains `tip` is.
+    pub fn icon(&self, tip: &str) -> Pos2 {
+        self.icons.iter().find(|(t, _)| t.contains(tip)).unwrap_or_else(|| panic!("no icon button \"{tip}\"; drawn: {:?}", self.icons.iter().map(|t| &t.0).collect::<Vec<_>>())).1.center()
+    }
+
+    pub fn click_icon(&mut self, tip: &str) {
+        let p = self.icon(tip);
+        self.click(p);
+    }
+
+    /// Turn the wheel at `pos` by `lines` (down is negative, as egui has it).
+    pub fn wheel(&mut self, pos: Pos2, lines: f32, modifiers: Modifiers) {
+        self.frame(vec![Event::PointerMoved(pos)]);
+        self.frame(vec![Event::MouseWheel { unit: egui::MouseWheelUnit::Line, delta: vec2(0.0, lines), modifiers }]);
+        self.frames(2);
+    }
+
+    /// A click with modifier keys held (Ctrl+click, Shift+click).
+    pub fn click_with(&mut self, pos: Pos2, modifiers: Modifiers) {
+        self.now += 1.0;
+        self.frame(vec![Event::PointerMoved(pos)]);
+        self.frame(vec![Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers }]);
+        self.frame(vec![Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers }]);
+        self.frames(1);
+    }
+
+    /// Put the pointer there and let a frame or two see it.
+    pub fn hover(&mut self, pos: Pos2) {
+        self.pointer = pos;
+        self.frame(vec![Event::PointerMoved(pos)]);
+        self.frames(2);
+    }
+
+    /// Press and release `times` in a row at one spot (2: a word, 3: a line).
+    pub fn clicks(&mut self, pos: Pos2, times: usize) {
+        self.now += 1.0;
+        self.frame(vec![Event::PointerMoved(pos)]);
+        for _ in 0..times {
+            self.frame(vec![self.button(pos, egui::PointerButton::Primary, true)]);
+            self.frame(vec![self.button(pos, egui::PointerButton::Primary, false)]);
+        }
+        self.frames(1);
     }
 
     pub fn right_click(&mut self, pos: Pos2) {

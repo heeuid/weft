@@ -2953,8 +2953,19 @@ impl App {
                     self.focus_term = true;
                 }
                 Action::ToggleFold(id, bid) => {
-                    if let Some(b) = self.panes.get_mut(&id).and_then(|p| p.term.blocks.iter_mut().find(|b| b.id == bid)) {
-                        b.folded = !b.folded;
+                    if let Some(p) = self.panes.get_mut(&id) {
+                        let before = crate::ui_term::visual_rows(&p.term).len();
+                        if let Some(b) = p.term.blocks.iter_mut().find(|b| b.id == bid) {
+                            b.folded = !b.folded;
+                        }
+                        // Scrolled back, what is above the fold stays where
+                        // it is: the view is counted from the end, which the
+                        // fold has just moved (the command clicked on slid
+                        // away from under the pointer, or off the screen).
+                        if p.scroll > 0 {
+                            let after = crate::ui_term::visual_rows(&p.term).len();
+                            p.scroll = (p.scroll + after).saturating_sub(before);
+                        }
                     }
                 }
                 Action::ComposerOpen(id, text) => {
