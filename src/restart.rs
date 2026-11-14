@@ -37,7 +37,7 @@ impl App {
             return;
         }
         self.update_checked = Instant::now();
-        let newer = update_source().and_then(|p| modified(&p)).is_some_and(|m| m > self.started_at + Duration::from_secs(2));
+        let newer = self.newer_weft_at.clone().or_else(update_source).and_then(|p| modified(&p)).is_some_and(|m| m > self.started_at + Duration::from_secs(2));
         if newer {
             self.update_ready = true;
             self.data.log("a newer weft is there: offering a restart");

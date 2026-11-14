@@ -309,10 +309,6 @@ impl Layout {
     }
 }
 
-/// Tests that build an App (it reads WEFT_DATA_DIR) take turns.
-#[cfg(test)]
-pub static TEST_APP: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 #[cfg(test)]
 mod node_tests {
     use super::*;
@@ -1385,6 +1381,9 @@ pub struct App {
     pub update_checked: Instant,
     /// The "Serial console…" dialog, while open.
     pub serial_dialog: Option<crate::serial_ui::SerialDialog>,
+    /// Where a newer weft would appear, when not where `restart` looks by
+    /// itself (tests: the environment is one for the whole process).
+    pub newer_weft_at: Option<std::path::PathBuf>,
     /// New folder / new file / rename / delete, while its dialog is open.
     pub file_op: Option<crate::fileops::FileOp>,
     /// A question before something is lost (confirm.rs), while it is asked;
@@ -1461,7 +1460,11 @@ pub fn parent(path: &str) -> String {
 
 impl App {
     pub fn new(ctx: egui::Context) -> App {
-        let data = DataDir::locate();
+        App::new_in(ctx, DataDir::locate())
+    }
+
+    /// weft on this data folder (settings, memos, logs).
+    pub fn new_in(ctx: egui::Context, data: DataDir) -> App {
         let mut settings: Settings = std::fs::read_to_string(data.path("settings.json"))
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
@@ -1535,6 +1538,7 @@ impl App {
             update_ready: false,
             update_checked: Instant::now(),
             serial_dialog: None,
+            newer_weft_at: None,
             file_op: None,
             confirm: None,
             after_save: None,

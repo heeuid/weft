@@ -193,8 +193,18 @@ struct KeptGalley {
     atlas: Option<Arc<egui::mutex::Mutex<egui::epaint::TextureAtlas>>>,
 }
 
-/// How often an editor's text was laid out again (tests: not once a frame).
-pub static EDITOR_LAYOUTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+thread_local! {
+    /// How often an editor's text was laid out again on this thread (each
+    /// test draws on its own: not once a frame).
+    static EDITOR_LAYOUTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How often an editor's text has been laid out on this thread.
+#[cfg(test)]
+pub fn editor_layouts() -> usize {
+    EDITOR_LAYOUTS.with(|n| n.get())
+}
 
 impl KeptGalley {
     /// The galley kept under `id`, if it is for `key` and these fonts.
@@ -209,7 +219,8 @@ impl KeptGalley {
 
     /// Lay `job` out and keep the result under `id` for `key`.
     fn lay_out(ui: &Ui, id: Id, key: u64, job: LayoutJob) -> Arc<egui::Galley> {
-        EDITOR_LAYOUTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        #[cfg(test)]
+        EDITOR_LAYOUTS.with(|n| n.set(n.get() + 1));
         let (galley, atlas) = ui.fonts(|f| (f.layout_job(job), f.texture_atlas()));
         ui.ctx().memory_mut(|m| m.data.insert_temp(id, KeptGalley { key, galley: Some(galley.clone()), atlas: Some(atlas) }));
         galley
@@ -4629,9 +4640,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("weft-memo-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let _guard = crate::app::TEST_APP.lock().unwrap_or_else(|e| e.into_inner());
-        std::env::set_var("WEFT_DATA_DIR", &dir);
-        let mut app = crate::app::App::new(egui::Context::default());
+        let mut app = crate::app::App::new_in(egui::Context::default(), crate::host::DataDir::at(&dir));
         // An existing memo opened from the list (it is read, with its time).
         let path = format!("{}/memo-test.md", app.memo_dir());
         std::fs::create_dir_all(app.memo_dir()).unwrap();
@@ -4674,11 +4683,9 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("weft-follow-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let _guard = crate::app::TEST_APP.lock().unwrap_or_else(|e| e.into_inner());
-        std::env::set_var("WEFT_DATA_DIR", &dir);
         let ctx = egui::Context::default();
         crate::theme::install_fonts(&ctx, crate::theme::DEFAULT_FONT, crate::theme::DEFAULT_ICON_FONT);
-        let mut app = crate::app::App::new(ctx.clone());
+        let mut app = crate::app::App::new_in(ctx.clone(), crate::host::DataDir::at(&dir));
         app.settings.sidebar = true;
         app.side.follow = true;
         app.set_root("local", "C:/start");
@@ -4710,10 +4717,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("weft-redo-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let _guard = crate::app::TEST_APP.lock().unwrap_or_else(|e| e.into_inner());
-        std::env::set_var("WEFT_DATA_DIR", &dir);
         let ctx = egui::Context::default();
-        let mut app = crate::app::App::new(ctx.clone());
+        let mut app = crate::app::App::new_in(ctx.clone(), crate::host::DataDir::at(&dir));
         let mut text = String::from("abc");
         let field = egui::Id::new("a text field");
         let key = egui::Event::Key { key: egui::Key::Z, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers { ctrl: true, shift: true, ..Default::default() } };

@@ -409,6 +409,13 @@ impl DataDir {
                 .and_then(|p| p.parent().map(|d| d.join("data")))
                 .unwrap_or_else(|| PathBuf::from("data"))
         });
+        DataDir::at(root)
+    }
+
+    /// This folder as the data folder (tests each have their own: the
+    /// environment is one for the whole process).
+    pub fn at(root: impl AsRef<Path>) -> DataDir {
+        let root = root.as_ref().to_path_buf();
         for sub in ["", "logs", "history"] {
             let _ = std::fs::create_dir_all(root.join(sub));
         }

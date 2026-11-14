@@ -2,8 +2,9 @@
 //! window runs, fed pointer and key events frame by frame, checked by its
 //! state and by what it drew (the texts on screen and where).
 //!
-//! Each harness has its own data folder (settings, memos) and holds
-//! `TEST_APP` while it lives, since WEFT_DATA_DIR is process-wide.
+//! Each harness has its own data folder (settings, memos), handed to its
+//! App: nothing is shared through the process's environment, so the tests
+//! run side by side.
 
 use crate::app::App;
 use egui::{pos2, vec2, Event, Key, Modifiers, Pos2, Rect};
@@ -28,7 +29,6 @@ pub struct Harness {
     /// The clock the app is shown: a frame is 1/60 s, and a hand pauses
     /// before each click or drag (else clicks far apart count as double).
     now: f64,
-    _guard: std::sync::MutexGuard<'static, ()>,
 }
 
 /// A terminal that just sits there (python), so no real shell is needed.
@@ -41,7 +41,6 @@ impl Harness {
     /// weft with these settings (merged over a quiet default: one idle tab,
     /// no side panel), a window of 1200×800.
     pub fn new(settings: Value) -> Harness {
-        let guard = crate::app::TEST_APP.lock().unwrap_or_else(|e| e.into_inner());
         static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let n = N.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let dir = std::env::temp_dir().join(format!("weft-kit-{}-{n}", std::process::id()));
@@ -54,11 +53,10 @@ impl Harness {
             }
         }
         std::fs::write(dir.join("settings.json"), base.to_string()).unwrap();
-        std::env::set_var("WEFT_DATA_DIR", &dir);
         let ctx = egui::Context::default();
         crate::theme::install_fonts(&ctx, crate::theme::DEFAULT_FONT, crate::theme::DEFAULT_ICON_FONT);
-        let app = App::new(ctx.clone());
-        let mut h = Harness { app, ctx, dir, size: vec2(1200.0, 800.0), texts: Vec::new(), copied: None, window: Vec::new(), window_log: Vec::new(), close_window: false, now: 0.0, pointer: pos2(600.0, 400.0), _guard: guard };
+        let app = App::new_in(ctx.clone(), crate::host::DataDir::at(&dir));
+        let mut h = Harness { app, ctx, dir, size: vec2(1200.0, 800.0), texts: Vec::new(), copied: None, window: Vec::new(), window_log: Vec::new(), close_window: false, now: 0.0, pointer: pos2(600.0, 400.0) };
         h.frames(3);
         h
     }
@@ -75,7 +73,7 @@ impl Harness {
         // As the window's × does: weft saves on its way out, by itself.
         self.close_window();
         assert!(!self.window.iter().any(|c| matches!(c, egui::ViewportCommand::CancelClose)), "weft closes without a question");
-        self.app = App::new(self.ctx.clone());
+        self.app = App::new_in(self.ctx.clone(), crate::host::DataDir::at(&self.dir));
         self.frames(3);
     }
 

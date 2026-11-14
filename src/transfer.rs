@@ -612,12 +612,9 @@ mod tests {
         let prof = |name: &str| json!({"name": name, "kind": "custom", "pty": ["python", "-c", "import time; time.sleep(60)"], "agent": ["python", "-u", agent]});
         let settings = json!({"profiles": [prof("r1"), prof("r2")], "sidebar": false});
         std::fs::write(dir.join("data/settings.json"), settings.to_string()).unwrap();
-        // Only tests building an App read WEFT_DATA_DIR; they run one at a time.
-        let _guard = crate::app::TEST_APP.lock().unwrap_or_else(|e| e.into_inner());
-        std::env::set_var("WEFT_DATA_DIR", dir.join("data"));
         let ctx = egui::Context::default();
         crate::theme::install_fonts(&ctx, crate::theme::DEFAULT_FONT, crate::theme::DEFAULT_ICON_FONT);
-        let mut app = App::new(ctx.clone());
+        let mut app = App::new_in(ctx.clone(), crate::host::DataDir::at(dir.join("data")));
         let p = |s: &str| dir.join(s).display().to_string().replace('\\', "/");
         let run = |app: &mut App, src_host: &str, src: &str, dst_host: &str, dst: &str| {
             app.start_transfer(src_host, src, dst_host, dst);

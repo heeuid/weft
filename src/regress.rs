@@ -107,11 +107,10 @@ fn a_newer_weft_offers_a_restart() {
     let mut h = Harness::new(json!({}));
     let built = h.dir.join("weft-new.exe");
     std::fs::write(&built, b"new").unwrap();
-    std::env::set_var("WEFT_BUILT", &built);
+    h.app.newer_weft_at = Some(built);
     h.app.started_at = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
     h.app.update_checked = std::time::Instant::now() - std::time::Duration::from_secs(60);
     h.frames(2);
-    std::env::remove_var("WEFT_BUILT");
     assert!(h.app.update_ready);
     assert!(h.shows("new weft"), "the status bar button");
 }
@@ -462,8 +461,9 @@ fn closing_weft_with_unsaved_files_asks() {
     // Asked again the next time; saving closes it.
     h.close_window();
     h.frames(2);
-    h.click_text("Save and close");
+    // (The save can be done within the click's own frames.)
     h.window_log.clear();
+    h.click_text("Save and close");
     assert!(h.wait_for(20.0, |h| h.app.quit_confirmed), "saved");
     h.frames(2);
     assert!(h.window_log.iter().any(|c| matches!(c, egui::ViewportCommand::Close)), "weft asks its window to close once saved");
@@ -821,8 +821,7 @@ fn frame_times() {
 /// lay it out again: what was kept points into the old font atlas.
 #[test]
 fn the_editor_lays_a_file_out_once() {
-    use crate::ui_panels::EDITOR_LAYOUTS;
-    use std::sync::atomic::Ordering::Relaxed;
+    use crate::ui_panels::editor_layouts;
     let mut h = Harness::new(json!({}));
     for (name, text) in [("big.rs", "fn main() {\n    let x = 1;\n}\n".repeat(400)), ("big.md", "# Title\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\ntext\n".repeat(60))] {
         let file = h.dir.join(name);
@@ -831,23 +830,31 @@ fn the_editor_lays_a_file_out_once() {
         h.app.open_file("local", &path, 1);
         assert!(h.wait_for(20.0, |h| h.app.editor.files.iter().all(|f| !f.loading)), "opened");
         // Let the highlighting and the table widths settle.
-        std::thread::sleep(std::time::Duration::from_millis(400));
-        h.frames(10);
-        let settled = EDITOR_LAYOUTS.load(Relaxed);
-        h.frames(30);
-        assert_eq!(EDITOR_LAYOUTS.load(Relaxed), settled, "{name}: 30 frames with nothing changed lay nothing out");
+        // (The colours arrive from a thread all tests share: wait until a
+        // stretch of frames passes without them changing anything.)
+        let mut settled = usize::MAX;
+        for _ in 0..40 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            h.frames(10);
+            settled = editor_layouts();
+            h.frames(30);
+            if editor_layouts() == settled {
+                break;
+            }
+        }
+        assert_eq!(editor_layouts(), settled, "{name}: 30 frames with nothing changed lay nothing out");
         // A change is laid out, and shows.
         let i = h.app.editor.files.iter().position(|f| f.path == path).unwrap();
         h.app.editor.files[i].text.insert_str(0, "changed_here ");
         h.frames(3);
-        let edited = EDITOR_LAYOUTS.load(Relaxed);
+        let edited = editor_layouts();
         assert!(edited > settled, "{name}: an edit is laid out");
         assert!(h.shows("changed_here"), "{name}: and drawn");
         // New fonts: laid out again.
         let scale = h.ctx.pixels_per_point();
         h.ctx.set_pixels_per_point(scale * 1.25);
         h.frames(3);
-        assert!(EDITOR_LAYOUTS.load(Relaxed) > edited, "{name}: new fonts, a new layout");
+        assert!(editor_layouts() > edited, "{name}: new fonts, a new layout");
         h.ctx.set_pixels_per_point(scale);
         h.frames(3);
         h.app.close_files(i, crate::app::CloseWhich::This);
