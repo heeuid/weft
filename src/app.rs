@@ -895,6 +895,11 @@ pub struct Pane {
     pub preedit: String,
     /// Caret position last reported to the IME (kept while composing).
     pub ime_rect: Option<Rect>,
+    /// Where the terminal's cursor was drawn in the last frame (None: it
+    /// was not), and where and when the program last had it shown: a
+    /// cursor the program hides stays for `CURSOR_HOLD`.
+    pub cursor_drawn: Option<Rect>,
+    pub cursor_held: Option<(Rect, Option<char>, Instant)>,
     /// A new size waiting to settle (splitter drag) before it is applied.
     pub pending_size: Option<((usize, usize), Instant)>,
     /// The first size was applied (the first layout applies immediately).
@@ -931,6 +936,8 @@ impl Pane {
             bell_at: None,
             preedit: String::new(),
             ime_rect: None,
+            cursor_drawn: None,
+            cursor_held: None,
             pending_size: None,
             sized: false,
             hist_seen: 0,
@@ -1917,6 +1924,7 @@ impl App {
         self.tabs.push(Tab { root: Node::Leaf(id), active: id, zoomed: false });
         self.active_tab = self.tabs.len() - 1;
         self.focus_term = true;
+        self.on_active_changed();
     }
 
     pub fn split(&mut self, vertical: bool) {
@@ -1990,6 +1998,8 @@ impl App {
             self.new_tab("local", None);
         }
         self.focus_term = true;
+        // Another terminal has the keyboard now: Files goes with it.
+        self.on_active_changed();
     }
 
     /// Close terminal tabs around tab `at` (tab context menu). The tab that
@@ -2080,7 +2090,8 @@ impl App {
     pub fn on_active_changed(&mut self) {
         if let Some(p) = self.active_pane() {
             let host = p.host.clone();
-            if let Some(cwd) = p.term.cwd.clone() {
+            // (A shell that has not said where it is yet is where it was started.)
+            if let Some(cwd) = p.term.cwd.clone().or(p.initial_cwd.clone()) {
                 self.follow_terminal(&host, &cwd);
             }
         }
@@ -2089,18 +2100,27 @@ impl App {
     /// The terminal moved to `host:cwd`: every side panel following it goes
     /// there, whichever was clicked last (only that one used to, so a click
     /// in a second side panel that stays put stopped the first following).
+    ///
+    /// The focused panel's view is kept twice: in `side`, and in
+    /// `side_views` as it was when the frame began, which `side` is set
+    /// back to when the panels have been drawn. Both are changed here: a
+    /// click on a tab comes while the panels are being drawn, and what was
+    /// only put in `side` was undone at the end of that frame (Files stayed
+    /// in the folder of the tab before).
     pub fn follow_terminal(&mut self, host: &str, cwd: &str) {
         let new = Some((host.to_string(), cwd.to_string()));
         let mut list = false;
-        for (n, v) in self.side_views.iter_mut() {
-            if v.follow && v.root != new && *n != self.side_focus {
+        for v in self.side_views.values_mut() {
+            if v.follow && v.root != new {
                 v.root = new.clone();
                 list = true;
             }
         }
-        if self.side.follow {
-            self.set_root(host, cwd);
-        } else if list {
+        if self.side.follow && self.side.root != new {
+            self.side.root = new;
+            list = true;
+        }
+        if list {
             self.list_dir(host, cwd);
         }
     }

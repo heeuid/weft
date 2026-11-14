@@ -2134,7 +2134,9 @@ impl App {
         if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
             self.actions.push(Action::Grep);
         }
-        ui.horizontal(|ui| {
+        // Wrapped: in a panel as narrow as it starts out the Search button
+        // was cut off at the edge.
+        ui.horizontal_wrapped(|ui| {
             egui::ComboBox::from_id_salt("grep-mode").width(62.0).selected_text(RichText::new(self.side.grep_mode.label()).size(12.0)).show_ui(ui, |ui| {
                 for m in editfind::MatchMode::ALL {
                     ui.selectable_value(&mut self.side.grep_mode, m, m.label()).on_hover_text(m.hint());

@@ -37,7 +37,7 @@ pub struct Harness {
     pointer: Pos2,
     /// The clock the app is shown: a frame is 1/60 s, and a hand pauses
     /// before each click or drag (else clicks far apart count as double).
-    now: f64,
+    pub now: f64,
 }
 
 /// A terminal that just sits there (python), so no real shell is needed.

@@ -5,6 +5,28 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.3.4
+
+Fixed
+- **The cursor flickered while a program was working** (Claude Code's
+  spinner, any program that redraws part of its screen many times a
+  second). Such a program hides the cursor, draws, and shows it again
+  where it was; a frame weft drew in between had no cursor. In a test
+  that redraws forty times a second it was off in four frames of ten.
+  A cursor the program hides now stays where it was for 150 ms; shown
+  again within that, it never went. One that stays hidden goes, 150 ms
+  later than before. weft's cursor does not blink: it is on or off.
+- **Files did not follow the terminal when you went to another tab**
+  (with "follow the terminal's directory" on): a click on a tab, Alt+1…9
+  or Alt+Shift+←/→ left Files in the folder of the tab before; only a
+  `cd` moved it. A tab click is handled while the panels are being
+  drawn, and what it changed was undone at the end of that frame. Files
+  now also goes to the terminal that has the keyboard after a tab or
+  pane is closed, and to a new tab's folder; a shell that has not said
+  where it is yet counts as being where it was started.
+- **The Search tab's button was cut off** at the edge of a side panel as
+  narrow as it starts out ("Se"). The row goes on to a second line.
+
 ## 0.3.3
 
 Fixed

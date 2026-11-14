@@ -747,6 +747,10 @@ fn classify_token(tok: &str, cwd: Option<&str>, home: Option<&str>) -> Option<(b
     Some((false, abs, line))
 }
 
+/// How long a cursor the program has hidden stays on screen (see where
+/// it is drawn): longer than a redraw takes to arrive, too short to see.
+pub const CURSOR_HOLD: Duration = Duration::from_millis(150);
+
 type SplitHandle = (Vec<bool>, Rect, bool, Rect);
 
 /// Pane rects and splitter handles for a tab. Returns true when zoomed: only
@@ -1494,13 +1498,34 @@ impl App {
 
         // Cursor + IME.
         let mut cursor_rect = None;
+        // What is drawn as the cursor this frame (and the character under
+        // it), where, and what to remember for the frames after.
+        let mut cursor_now: Option<(Rect, Option<char>)> = None;
+        let mut drawn: Option<Rect> = None;
+        let mut held_next = None;
         let show_cursor = t.cursor_visible && (t.alt_active || p.scroll == 0);
         let ci = if t.alt_active { Some(t.cy) } else { vis_index(t.cursor_abs()) };
         if let Some(i) = ci {
             let wide = t.screen.get(t.cy).and_then(|r| r.cells.get(t.cx)).map(|c| c.wide == WIDE_LEAD).unwrap_or(false);
             let r = Rect::from_min_size(pos2(inner.left() + t.cx as f32 * cw, row_y(i)), vec2(if wide { 2.0 * cw } else { cw }, ch));
             cursor_rect = Some(r);
-            if show_cursor && p.composer.is_none() {
+            let under = t.screen.get(t.cy).and_then(|r| r.cells.get(t.cx)).map(|c| c.ch).filter(|c| *c != ' ');
+            // A program hides the cursor while it redraws and shows it
+            // again when done (through Windows' pseudo console every
+            // update comes that way). A frame drawn in between had no
+            // cursor: it flickered at the rate the program redrew, a
+            // spinner's say. A hidden cursor stays where it was for a
+            // moment; one that is still hidden after that goes.
+            let held = p.cursor_held.filter(|h| !t.cursor_visible && (t.alt_active || p.scroll == 0) && h.2.elapsed() < CURSOR_HOLD);
+            if show_cursor {
+                cursor_now = Some((r, under));
+            } else if let Some((at, ch_under, since)) = held {
+                cursor_now = Some((at, ch_under));
+                ui.ctx().request_repaint_after(CURSOR_HOLD.saturating_sub(since.elapsed()) + Duration::from_millis(5));
+            }
+            let shown_here = show_cursor;
+            if let (Some((r, under)), true) = (cursor_now, p.composer.is_none()) {
+                drawn = Some(r);
                 if focused {
                     match self.settings.cursor_style {
                         // Thin bar / underline: the character stays fully visible.
@@ -1514,17 +1539,20 @@ impl App {
                         }
                         CursorStyle::Block => {
                             painter.rect_filled(r, CornerRadius::same(1), theme::cursor());
-                            if let Some(c) = t.screen.get(t.cy).and_then(|r| r.cells.get(t.cx)) {
-                                if c.ch != ' ' {
-                                    let g = painter.layout_no_wrap(c.ch.to_string(), font.clone(), theme::bg_term());
-                                    painter.galley(pos2(r.left() + (r.width() - g.size().x) / 2.0, r.top() + (ch - g.size().y) / 2.0), g, theme::bg_term());
-                                }
+                            if let Some(c) = under {
+                                let g = painter.layout_no_wrap(c.to_string(), font.clone(), theme::bg_term());
+                                painter.galley(pos2(r.left() + (r.width() - g.size().x) / 2.0, r.top() + (ch - g.size().y) / 2.0), g, theme::bg_term());
                             }
                         }
                     }
                 } else {
                     painter.rect_stroke(r.shrink(0.5), CornerRadius::same(1), Stroke::new(1.0_f32, theme::text_dim()), StrokeKind::Inside);
                 }
+            }
+            if shown_here {
+                held_next = Some((r, under, std::time::Instant::now()));
+            } else {
+                held_next = held;
             }
             if focused && !p.preedit.is_empty() {
                 let g = painter.layout_no_wrap(p.preedit.clone(), font.clone(), theme::text());
@@ -1667,6 +1695,11 @@ impl App {
         // makes egui disable the IME, and Windows then commits the syllable being
         // composed ("돼" typed as "ㄷ" + "ㅙ"). While composing, the position stays
         // put even if the app redraws and moves the cursor around.
+        {
+            let pm = self.panes.get_mut(&id).unwrap();
+            pm.cursor_drawn = drawn;
+            pm.cursor_held = held_next;
+        }
         if focused {
             let pm = self.panes.get_mut(&id).unwrap();
             let fallback = Rect::from_min_size(inner.min, vec2(cw, ch));

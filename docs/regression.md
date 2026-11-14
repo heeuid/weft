@@ -120,6 +120,7 @@ What the numbers don't show:
 | Shell events become widgets in the terminal: table (sort), progress (updated in place), choice (types its number), file list (open, show in Files), a note | `regress::shell_events_become_widgets` |
 | Several widgets shown by one program in one go are one below the other (on Windows they were drawn on top of each other: only the last could be seen); each takes its clicks | `regress::widgets_printed_in_one_go_each_get_their_lines`, `app::tests::a_widget_goes_below_one_whose_text_has_not_come` |
 | What weft types reaches the program: the composer's line, typing, a paste | `regress::what_weft_types_reaches_the_program` |
+| The cursor stays on, in its place, while a program redraws many times a second (hide, draw, show: it was off in four frames of ten, and flickered); one hidden for good goes | `regress::the_cursor_holds_still_while_a_program_redraws` |
 | The mouse in a terminal: wheel scrolls back and stops at the end; drag selects characters (over lines too), double click a word, triple click a line, Alt+drag a block; a click drops the selection; Ctrl+click opens a path at its line, not a plain word; the menu's Copy selection and Split right | `regress::the_mouse_in_a_terminal` |
 | A command block: found from the shell's marks with its exit code; its buttons copy the command, copy the output, fold and unfold, edit in the composer, run again, open the output in the editor; fold all, unfold all, previous and next command, clear scrollback | `regress::a_command_block_has_its_buttons` |
 | Folding or unfolding while scrolled back leaves the command where it is (it slid from under the pointer, or off the screen) | `regress::a_command_block_has_its_buttons` |
@@ -176,6 +177,7 @@ What the numbers don't show:
 | Panels move anywhere; junctions; hidden keep place | `app::layout_tests::*`, `app::tests::layout_split_and_remove` |
 | Split side panels / editors; old settings load | `app::layout_tests::a_second_editor_beside_the_first`, `settings_from_before_split_panels_still_load`, `ui_term::tests::dragging_a_pane_header_moves_the_pane` (second editor by its grip) |
 | Side panels following the terminal | `ui_panels::tests::side_panels_that_follow_the_terminal_follow_it` |
+| Files follows the terminal that has the keyboard: a click on a tab, Alt+number, Alt+Shift+arrow, the tab left after one is closed, a click in a pane of a split; switched on it goes there at once, switched off it stays (a tab click left it in the folder of the tab before) | `regress::files_follow_the_terminal_that_has_the_keyboard` |
 | Side panels and editors split, without overlapping | `regress::panels_split` |
 
 ## Files, search, transfer
@@ -192,6 +194,7 @@ What the numbers don't show:
 | History search | `ui_panels::tests::history_search` |
 | The Files filter: fuzzy and regex (said when it can't be read), a click selects, a double click or Enter opens, the menu copies the path and shows the file in the tree | `regress::the_files_filter_finds_names` |
 | The Search tab (from the » menu of a narrow panel): matches by file, ignore case, a click opens at the line, the menus copy path:line and the line, and show the file in Files | `regress::the_search_tab_finds_text_in_files` |
+| The Search tab's controls are inside a narrow side panel (the Search button was cut off at its edge) | `regress::the_search_tab_finds_text_in_files` |
 | The Commands tab: newest first, how each ended, a click goes to it, copy command and output. History: what was recorded, found by text, in the output when asked, opened with its output; Records… | `regress::the_commands_and_history_tabs` |
 | New folder, new file, rename, delete (this PC) | `host::tests::file_operations`, `fileops::tests::parents_and_names` |
 | The same as the remote agent does them (agent.py, run by python) | `host::tests::agent_file_operations_match_the_local_ones` |

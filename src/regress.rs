@@ -1965,6 +1965,24 @@ fn the_files_filter_finds_names() {
     assert!(h.wait_for(20.0, |h| h.has("guide.md") && h.has("readme.md")), "the tree again, with docs open");
 }
 
+/// The menu of the text `on` (one containing it), opened by a right click:
+/// `item` is then on screen. Once in some tens of runs of the whole suite
+/// the first right click in the Search tab opens nothing (not seen when
+/// the test runs alone, and not yet explained): it is said, and tried
+/// once more, the place looked up again.
+fn menu_on(h: &mut Harness, on: &str, item: &str) {
+    for attempt in 0..2 {
+        let at = h.at(on);
+        h.right_click(at);
+        if h.shows(item) {
+            return;
+        }
+        eprintln!("NOTE menu_on: no menu on \"{on}\" at {at:?} (attempt {attempt}); it is now at {:?}", h.find(on));
+        h.frames(3);
+    }
+    panic!("no menu with \"{item}\" on \"{on}\"");
+}
+
 /// The Search tab finds text in the files under the folder: the matches by
 /// file, a click opens at the line, the menu copies or shows in Files;
 /// ignore case counts.
@@ -1974,6 +1992,14 @@ fn the_search_tab_finds_text_in_files() {
     side_tab(&mut h, "Search");
     assert!(h.app.side.tab == crate::app::SideTab::Search, "from the » menu: the panel is too narrow for five tabs");
     assert!(h.shows(&format!("in local:{dir}")));
+    // Every control of the tab is inside the panel, narrow as it is (the
+    // Search button was cut off at its edge).
+    let tab = h.at_exact("Search");
+    let button = h.texts.iter().filter(|(t, _)| t == "Search").map(|(_, r)| *r).max_by(|a, b| a.top().total_cmp(&b.top())).unwrap();
+    let hidden = h.find("hidden").unwrap();
+    let edge = h.app.panel_rects.values().find(|r| r.contains(tab)).expect("the side panel").right();
+    assert!(button.top() > tab.y + 20.0, "the button, not the tab");
+    assert!(button.right() <= edge && hidden.right() <= edge, "Search {button:?} and hidden {hidden:?} are within the panel, which ends at {edge}");
     let field = h.at("(Enter)");
     h.click(field);
     h.type_text("needle");
@@ -1994,18 +2020,18 @@ fn the_search_tab_finds_text_in_files() {
     h.click(line);
     assert!(h.wait_for(20.0, |h| h.app.editor.files.iter().any(|f| f.host == "local" && f.path.ends_with("src/main.rs"))), "opened");
     // The menu of a line.
-    h.right_click(line);
+    menu_on(&mut h, "needle here", "Open at this line");
     assert!(h.shows("Open at this line") && h.shows("cd terminal to its folder"));
     h.click_text("Copy path:line");
     h.frames(2);
     assert_eq!(h.copied.as_deref(), Some(format!("{dir}/src/main.rs:2").as_str()));
-    h.right_click(line);
-    h.click_text("Copy line text");
+    menu_on(&mut h, "needle here", "Copy line text");
+    let item = h.at("Copy line text");
+    h.click(item);
     h.frames(2);
-    assert_eq!(h.copied.as_deref(), Some("println!(\"needle here\");"));
+    assert_eq!(h.copied.as_deref(), Some("println!(\"needle here\");"), "clicked at {item:?}; said: {:?}; menu still there: {}", h.app.toasts.iter().map(|t| &t.text).collect::<Vec<_>>(), h.shows("Copy line text"));
     // The menu of a file: show it in Files.
-    let file = h.at_exact("src/main.rs");
-    h.right_click(file);
+    menu_on(&mut h, "src/main.rs", "Show in Files");
     h.click_text("Show in Files");
     h.frames(2);
     assert!(h.app.side.tab == crate::app::SideTab::Files);
@@ -2437,4 +2463,145 @@ weft(t="widget", id="p1", kind="progress", rows=1, pct=60, label="copying")
     let opt = h.at_exact("no-thanks");
     h.click(opt);
     assert!(h.wait_for(20.0, |_| received(&file).lines().any(|l| l.trim() == "2")), "the program was sent \"2\": {:?}", received(&file));
+}
+
+/// A program that redraws part of its screen many times a second (a
+/// spinner while it works) hides the cursor, draws, and shows it again
+/// where it was: the cursor stays on, in its place, all the while. It
+/// went off in every frame drawn between the two, and flickered. A
+/// cursor the program hides for good does go.
+#[test]
+fn the_cursor_holds_still_while_a_program_redraws() {
+    // Forty redraws, 25 ms apart; each comes in two parts, as a slow
+    // program's (or the pseudo console's) does.
+    let body = r#"
+def put(s):
+    sys.stdout.write(s)
+    sys.stdout.flush()
+put('working\r\n> ')
+def after(line):
+    if line.strip() == 'hide':
+        put(E + '[?25l')
+        return
+    for i in range(40):
+        put(E + '[?25l' + E + '[1;9H' + '|/-\\'[i % 4])
+        time.sleep(0.006)
+        put(E + '[2;3H' + E + '[?25h')
+        time.sleep(0.02)
+    put(E + '[1;12Hdone' + E + '[2;3H')
+"#;
+    let (mut h, _file) = script_harness(body, json!({}));
+    let pane = h.app.active_pane_id().unwrap();
+    h.click(egui::pos2(300.0, 500.0));
+    assert!(h.app.panes[&pane].cursor_drawn.is_some(), "the cursor is drawn");
+    // Start the redraws, and look at every frame until they are over.
+    h.type_text("go");
+    h.key(Key::Enter, Modifiers::NONE);
+    // "Off" is a frame without the cursor though the program had it shown
+    // less than the hold ago (on a busy PC the script itself can be held
+    // up between hiding and showing for longer than that: then it goes,
+    // as it should; the hidden frames are counted to show the test bites).
+    let hold = crate::ui_term::CURSOR_HOLD;
+    let (mut frames, mut off, mut elsewhere, mut hidden) = (0, 0, 0, 0);
+    let mut shown_at = std::time::Instant::now();
+    let mut spun = false;
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while std::time::Instant::now() < end && !h.shows("done") {
+        h.frames(1);
+        spun |= ["|", "/", "-", "\\"].iter().any(|s| h.shows(&format!("working {s}")));
+        if h.app.panes[&pane].term.cursor_visible {
+            shown_at = std::time::Instant::now();
+        } else if spun {
+            hidden += 1;
+        }
+        if spun {
+            frames += 1;
+            match h.app.panes[&pane].cursor_drawn {
+                None if shown_at.elapsed() + std::time::Duration::from_millis(30) < hold => off += 1,
+                None => {}
+                // On the spinner's line: where the program drew, not where it keeps the cursor.
+                Some(r) if (r.center().y - h.at("working").y).abs() < r.height() / 2.0 => elsewhere += 1,
+                Some(_) => {}
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert!(h.shows("done") && frames > 50, "the redraws were seen ({frames} frames)");
+    assert!(hidden > 0, "some frames were drawn while the program had the cursor hidden");
+    assert_eq!((off, elsewhere), (0, 0), "of {frames} frames, the cursor was off in {off} and up at the spinner in {elsewhere}");
+    // Hidden for good: gone, a moment later.
+    h.type_text("hide");
+    h.key(Key::Enter, Modifiers::NONE);
+    assert!(h.wait_for(10.0, |h| !h.app.panes[&pane].term.cursor_visible), "the program hid it");
+    assert!(h.wait_for(5.0, |h| h.app.panes[&pane].cursor_drawn.is_none()), "and it is no longer drawn");
+}
+
+/// A terminal that says which folder it is in (as a shell's prompt does),
+/// then sits there.
+fn cwd_profile(name: &str, dir: Option<&str>) -> serde_json::Value {
+    let say = match dir {
+        Some(d) => format!("import sys, time; sys.stdout.write(chr(27) + ']7;file://h{d}' + chr(7) + 'in {d}'); sys.stdout.flush(); time.sleep(120)"),
+        None => "import time; print('nowhere', flush=True); time.sleep(120)".to_string(),
+    };
+    json!({"name": name, "kind": "custom", "pty": ["python", "-u", "-c", say], "agent": ["python", "-c", "0"]})
+}
+
+/// Files follows the terminal: the folder of the tab or pane that has the
+/// keyboard, whichever way it got it (a click on a tab, a key, a click in
+/// a pane, the tab before it closed). Switched on, it goes there at once;
+/// switched off, it stays.
+#[test]
+fn files_follow_the_terminal_that_has_the_keyboard() {
+    let profiles = vec![cwd_profile("aa", Some("/home/aa")), cwd_profile("bb", Some("/srv/bb")), cwd_profile("cc", Some("/var/cc"))];
+    let session: Vec<_> = ["aa", "bb", "cc"].iter().map(|n| json!({"t": "Pane", "host": n, "cwd": null})).collect();
+    let mut h = Harness::new(json!({"profiles": profiles, "session": session, "sidebar": true, "follow_cwd": true, "confirm_running": false}));
+    let root = |h: &Harness| h.app.side.root.clone().map(|(host, dir)| format!("{host}:{dir}"));
+    let cwd_of = |h: &Harness, host: &str| h.app.panes.values().find(|p| p.host == host).and_then(|p| p.term.cwd.clone());
+    assert!(h.wait_for(30.0, |h| ["aa", "bb", "cc"].iter().all(|n| cwd_of(h, n).is_some())), "each terminal said where it is");
+    let active = h.app.panes[&h.app.tabs[h.app.active_tab].active].host.clone();
+    assert!(h.wait_for(10.0, |h| root(h).is_some_and(|r| r.starts_with(&format!("{active}:")))), "Files shows the active tab's folder: {:?} (active {active})", root(&h));
+    // A click on a tab.
+    let b = tab_at(&h, "bb \u{00b7} bb");
+    h.click(b);
+    assert_eq!(root(&h).as_deref(), Some("bb:/srv/bb"), "a click on the tab of bb");
+    let a = tab_at(&h, "aa \u{00b7} aa");
+    h.click(a);
+    assert_eq!(root(&h).as_deref(), Some("aa:/home/aa"), "a click on the tab of aa");
+    // The keys.
+    h.key(Key::Num3, ALT);
+    assert_eq!(root(&h).as_deref(), Some("cc:/var/cc"), "Alt+3");
+    h.key(Key::ArrowLeft, ALT_SHIFT);
+    assert_eq!(root(&h).as_deref(), Some("bb:/srv/bb"), "Alt+Shift+Left");
+    // The tab closed: the one that has the keyboard now.
+    h.command("close_pane");
+    h.frames(3);
+    let now = h.app.panes[&h.app.tabs[h.app.active_tab].active].host.clone();
+    assert_ne!(now, "bb");
+    assert!(root(&h).is_some_and(|r| r.starts_with(&format!("{now}:"))), "after closing bb, Files shows {now}'s folder: {:?}", root(&h));
+    // Switched off it stays; switched on again it goes to the terminal at once.
+    h.click_icon("follow the terminal's directory");
+    assert!(!h.app.side.follow);
+    let stays = root(&h);
+    let other = if now == "aa" { "cc" } else { "aa" };
+    let t = h.texts.iter().find(|(t, r)| t.starts_with(other) && r.top() < 40.0).map(|(_, r)| r.center()).unwrap();
+    h.click(t);
+    assert_eq!(root(&h), stays, "not following: the folder stays");
+    h.click_icon("follow the terminal's directory");
+    assert!(h.app.side.follow);
+    assert!(root(&h).is_some_and(|r| r.starts_with(&format!("{other}:"))), "following again: {other}'s folder at once, {:?}", root(&h));
+    // A split: the pane clicked on.
+    h.command("split_right");
+    h.frames(3);
+    let panes: Vec<(usize, egui::Rect)> = h.app.pane_rects.clone();
+    let (left, right) = {
+        let mut v: Vec<_> = panes.iter().filter(|(id, _)| h.app.panes[id].host == other).cloned().collect();
+        v.sort_by(|a, b| a.1.left().total_cmp(&b.1.left()));
+        (v[0], v[1])
+    };
+    // (The new pane starts where the old one is; say it went somewhere else.)
+    h.app.panes.get_mut(&right.0).unwrap().term.cwd = Some("/tmp/right".into());
+    h.click(left.1.center());
+    assert!(root(&h).is_some_and(|r| !r.ends_with("/tmp/right")), "the left pane's folder: {:?}", root(&h));
+    h.click(right.1.center());
+    assert_eq!(root(&h), Some(format!("{other}:/tmp/right")), "a click in the right pane");
 }
