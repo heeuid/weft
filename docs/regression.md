@@ -28,60 +28,60 @@ cargo check --workspace --all-targets --target aarch64-apple-darwin       # and 
 ## In numbers
 
 <!-- numbers:begin -->
-Measured 2026-11-14 at commit b878b9d by `python tools/testdoc.py` (it rewrites this part).
+Measured 2026-11-14 at commit 054064c by `python tools/testdoc.py` (it rewrites this part).
 
 **How many tests**
 
 | Kind | the app | weft-core | weft-draw | together |
 |---|--:|--:|--:|--:|
-| Unit | 58 | 60 | 31 | 149 |
-| Screen (the whole app, no window) | 43 | 0 | 0 | 43 |
+| Unit | 58 | 64 | 31 | 153 |
+| Screen (the whole app, no window) | 63 | 0 | 0 | 63 |
 | Integration (real shells, the agent; run with `--ignored`) | 1 | 13 | 1 | 15 |
-| **All** | 102 | 73 | 32 | **207** |
+| **All** | 122 | 77 | 32 | **231** |
 
 **How much of the code they run** (lines run / lines there are; test code itself left out)
 
 | Crate | lines | unit | screen | integration | all together |
 |---|--:|--:|--:|--:|--:|
-| weft (the app) | 11282 | 33 % | 55 % | 1 % | 68 % |
-| weft-core | 4331 | 73 % | 36 % | 28 % | 86 % |
-| weft-draw | 2220 | 81 % | 44 % | 7 % | 88 % |
-| **everything** | 17833 | **49 %** | **49 %** | **8 %** | **75 %** |
+| weft (the app) | 11301 | 33 % | 71 % | 1 % | 83 % |
+| weft-core | 4476 | 75 % | 43 % | 28 % | 88 % |
+| weft-draw | 2238 | 82 % | 49 % | 7 % | 93 % |
+| **everything** | 18015 | **50 %** | **61 %** | **8 %** | **85 %** |
 
 By file (all kinds together), least covered first:
 
 | File | lines | run | not run |
 |---|--:|--:|--:|
 | `src/main.rs` | 135 | 2 % | 132 |
-| `src/widgets.rs` | 412 | 28 % | 298 |
 | `src/x11.rs` | 49 | 47 % | 26 |
 | `src/restart.rs` | 61 | 48 % | 32 |
 | `src/mermaid.rs` | 326 | 54 % | 151 |
 | `src/media.rs` | 254 | 59 % | 104 |
 | `src/serial_ui.rs` | 174 | 65 % | 61 |
-| `src/ui_panels.rs` | 4333 | 66 % | 1468 |
-| `src/ui_term.rs` | 2000 | 71 % | 585 |
-| `crates/weft-draw/src/theme.rs` | 441 | 74 % | 113 |
-| `src/app.rs` | 2118 | 74 % | 542 |
-| `src/transfer.rs` | 509 | 78 % | 111 |
-| `crates/weft-core/src/term.rs` | 1525 | 79 % | 320 |
-| `crates/weft-core/src/pty.rs` | 295 | 80 % | 58 |
-| `crates/weft-draw/src/icons.rs` | 165 | 81 % | 32 |
-| `src/confirm.rs` | 233 | 84 % | 37 |
-| `crates/weft-core/src/host.rs` | 1613 | 88 % | 196 |
-| `crates/weft-draw/src/highlight.rs` | 428 | 88 % | 51 |
+| `src/transfer.rs` | 509 | 79 % | 106 |
+| `src/ui_term.rs` | 2005 | 83 % | 337 |
+| `crates/weft-core/src/pty.rs` | 375 | 84 % | 60 |
+| `crates/weft-core/src/term.rs` | 1590 | 84 % | 254 |
+| `src/ui_panels.rs` | 4334 | 86 % | 603 |
+| `src/app.rs` | 2130 | 86 % | 294 |
+| `src/widgets.rs` | 412 | 87 % | 55 |
+| `crates/weft-draw/src/theme.rs` | 441 | 88 % | 52 |
+| `crates/weft-core/src/host.rs` | 1613 | 88 % | 189 |
+| `src/confirm.rs` | 233 | 88 % | 27 |
 | `src/copymode.rs` | 211 | 89 % | 24 |
-| `crates/weft-core/src/find.rs` | 186 | 92 % | 14 |
+| `crates/weft-draw/src/highlight.rs` | 428 | 91 % | 40 |
 | `src/fileops.rs` | 179 | 93 % | 13 |
 | `crates/weft-draw/src/md.rs` | 960 | 94 % | 62 |
-| `crates/weft-core/src/records.rs` | 257 | 94 % | 16 |
+| `crates/weft-core/src/find.rs` | 186 | 95 % | 10 |
 | `crates/weft-core/src/secret.rs` | 274 | 95 % | 14 |
-| `crates/weft-core/src/editfind.rs` | 181 | 96 % | 8 |
-| `src/frame.rs` | 61 | 97 % | 2 |
-| `crates/weft-draw/src/keys.rs` | 112 | 97 % | 3 |
+| `crates/weft-draw/src/icons.rs` | 183 | 95 % | 9 |
+| `crates/weft-core/src/records.rs` | 257 | 96 % | 9 |
+| `crates/weft-core/src/editfind.rs` | 181 | 97 % | 6 |
+| `crates/weft-draw/src/keys.rs` | 112 | 98 % | 2 |
 | `src/doccheck.rs` | 59 | 98 % | 1 |
 | `crates/weft-draw/src/fontfix.rs` | 114 | 99 % | 1 |
-| `src/display_test.rs` | 148 | 100 % | 0 |
+| `src/display_test.rs` | 149 | 100 % | 0 |
+| `src/frame.rs` | 61 | 100 % | 0 |
 | `src/version.rs` | 20 | 100 % | 0 |
 <!-- numbers:end -->
 
@@ -104,6 +104,9 @@ What the numbers don't show:
 | OSC 133 blocks; guessed without it | `term::tests::osc133_blocks_capture_command_and_exit`, `term::guess_tests::*` |
 | OSC 7 / 9;9 directory, OSC 7777 events, OSC 52 | `term::tests::osc7777_base64_event_and_osc7`, `osc_9_9_is_the_current_directory`, `clipboard_support_is_reported` |
 | Leading space keeps a command out of history | `term::tests::leading_space_makes_a_command_private` |
+| Plain escapes: save and restore the cursor, index, next line, reverse index (the lines move down at the top, in a region only its lines), CSI T, the line drawing set, reset | `term::tests::plain_escapes_move_the_cursor_and_the_lines` |
+| The word under the pointer: up to a space, quote or bracket, without the full stop or colon after it; Hangul by either cell; nothing on a space | `term::tests::the_word_under_the_pointer` |
+| The empty space right of a scrollback line is not its last word (a Ctrl+click there opened the path the line ended with) | `term::tests::the_word_under_the_pointer` |
 | Synchronized output (DEC 2026), DECRQM | `term::sync_tests::*` |
 | Typing flicker: output drawn 4 ms later | none (timing; the 2026 part is tested) |
 | Selection modes (char, word, line, block); words and paths under the pointer | `ui_term::tests::selection_modes`, `tokens` |
@@ -186,6 +189,9 @@ What the numbers don't show:
 | Tree like the agent | `host::tests::tree_lists_names_like_the_agent` |
 | Transfer ops; any host to any host; no overwrite | `host::tests::transfer_ops_copy_a_folder_in_chunks`, `transfer::tests::*` |
 | History search | `ui_panels::tests::history_search` |
+| The Files filter: fuzzy and regex (said when it can't be read), a click selects, a double click or Enter opens, the menu copies the path and shows the file in the tree | `regress::the_files_filter_finds_names` |
+| The Search tab (from the » menu of a narrow panel): matches by file, ignore case, a click opens at the line, the menus copy path:line and the line, and show the file in Files | `regress::the_search_tab_finds_text_in_files` |
+| The Commands tab: newest first, how each ended, a click goes to it, copy command and output. History: what was recorded, found by text, in the output when asked, opened with its output; Records… | `regress::the_commands_and_history_tabs` |
 | New folder, new file, rename, delete (this PC) | `host::tests::file_operations`, `fileops::tests::parents_and_names` |
 | The same as the remote agent does them (agent.py, run by python) | `host::tests::agent_file_operations_match_the_local_ones` |
 | A file dragged onto a folder is copied; Send to the other Files panel | `regress::dragging_a_file_onto_a_folder_copies_it`, `regress::send_to_the_other_files_panel` |
@@ -220,6 +226,12 @@ What the numbers don't show:
 | Typed on while a save was on its way: still unsaved when the answer comes | `app::tests::a_save_answered_after_more_typing_leaves_the_file_unsaved` |
 | A few laid-out files are kept, not every one ever opened | `regress::laid_out_files_are_not_kept_for_ever` |
 | Esc closes the find bar | `regress::escape_closes_composer_search_and_find` |
+| Find in the editor: the count with and without the case, Enter / Shift+Enter / F3 / Shift+F3 / the arrows step and go round, replace one and all (the file is then unsaved), a regex with groups, one that can't be read, no match | `regress::find_and_replace_in_the_editor` |
+| Shift+F3 goes to the match before (it went to the next) | `regress::find_and_replace_in_the_editor` |
+| The find bar fits a narrow editor: its × is inside the window, on the bar's line (it was past the edge) | `regress::find_and_replace_in_the_editor` |
+| A file changed on disk since it was opened is not written over: Reload takes what is there, Overwrite what is here | `regress::a_file_changed_on_disk_is_not_written_over` |
+| The editor's tabs: a click shows the file, × and a middle click close it, the menu closes to the right, the others, all | `regress::the_editor_tabs_switch_and_close` |
+| Open memo…: by first line, found by text, opened by a click, deleted from the menu, New memo | `regress::the_memo_picker_lists_finds_and_deletes` |
 | Table resize settles after 150 ms | none |
 
 ## Fonts, theme, security, records
@@ -231,6 +243,9 @@ What the numbers don't show:
 | A font that can't be read falls back; only regular faces are offered; themes keep text readable; which theme a setting means | `theme::tests::unreadable_fonts_fall_back_to_the_default`, `only_regular_faces_are_offered`, `themes_keep_body_text_readable`, `resolve_choices` |
 | Passwords in memory | `secret::tests::*`, `host::tests::askpass_answers`, `password_switches_agent_off_batch_mode` |
 | Records and history limits | `records::tests::*` |
+| The theme menu: every theme offered, a click picks one, Follow system, closed by ×, Esc and a click elsewhere | `regress::the_theme_menu_picks_a_theme` |
+| The Fonts window: built-in fonts, the filter, the terminal font and the icon font each from its tab, a file that is no font is said and the built-in one used | `regress::the_font_window_sets_fonts` |
+| Privacy: what is kept and where, a rule switched off and on, Delete all commands, the passwords switch, Esc | `regress::the_privacy_window_keeps_and_deletes` |
 
 ## The test tools themselves
 

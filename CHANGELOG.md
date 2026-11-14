@@ -5,6 +5,44 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.3.2
+
+Fixed (each found by a new test, and held by it)
+- **Find in scrollback**: the first Enter after typing went to the second
+  hit. It goes to the first.
+- **Find in the editor**: Shift+F3 went to the next match. It goes to the
+  one before, as its button says.
+- **The editor's find bar in a narrow editor** ran on past the edge of
+  the window, and its × with it. The field gives way first, and what
+  still has no room goes on the next line.
+- **Folding or unfolding a command while scrolled back** moved that
+  command from under the pointer, or off the screen. What is above the
+  fold now stays where it is. (At the end of the terminal nothing
+  changes.)
+- **Ctrl+click in the empty space right of a scrollback line** opened
+  the path the line ended with. Nothing is there, and nothing opens.
+
+Tests
+- Twenty new screen tests and two unit tests, for parts no test reached:
+  the Keyboard shortcuts window (binding a key by pressing it), the tab
+  bar, the buttons beside it and the ☰ menu, the commands one by one,
+  the status bar, the mouse in a terminal (wheel, selection by
+  character, word, line and block, Ctrl+click), command blocks and their
+  buttons, find in scrollback, widgets from the shell, what weft types
+  into a terminal, the Files filter, the Search, Commands and History
+  tabs, the memo picker, the theme menu, the Fonts and Privacy windows,
+  find and replace in the editor, a file changed on disk, the editor's
+  tabs, the terminal's plain escapes and the word under the pointer.
+- The test harness finds an icon button by its tip, holds modifier
+  keys, hovers, turns the wheel; a test terminal can run a script that
+  behaves like a shell and writes down what it is sent.
+- docs/regression.md: each of them listed; the numbers measured again.
+
+Known, not changed
+- Windows: several widgets printed by one program in one burst land on
+  one line (the pseudo console hands events on before the text). One
+  widget per command, as the helpers print them, is placed right.
+
 ## 0.3.1
 
 Changed

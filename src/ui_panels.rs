@@ -3153,13 +3153,18 @@ impl App {
             let mut rep_one = false;
             let mut rep_all = false;
             let shift = ui.input(|i| i.modifiers.shift);
-            if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F3)) {
-                nav = 1;
-            } else if ui.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::F3)) {
+            // Shift+F3 first: a key with Shift held also counts as the key
+            // alone for egui, and F3 took it (Shift+F3 went forward).
+            if ui.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::F3)) {
                 nav = -1;
+            } else if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F3)) {
+                nav = 1;
             }
-            ui.horizontal(|ui| {
-                let q = ui.add(TextEdit::singleline(&mut bar.query).id(Id::new("editor-find-q")).hint_text("find…").desired_width(220.0));
+            // In a narrow editor the bar ran on past the edge, and its ×
+            // with it: the field gives way first (the rest needs about 300),
+            // and what still has no room goes on the next line.
+            ui.horizontal_wrapped(|ui| {
+                let q = ui.add(TextEdit::singleline(&mut bar.query).id(Id::new("editor-find-q")).hint_text("find…").desired_width((ui.available_width() - 300.0).clamp(100.0, 220.0)));
                 if bar.focus {
                     q.request_focus();
                     bar.focus = false;
@@ -3209,9 +3214,9 @@ impl App {
                 }
             });
             if bar.replacing {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     let hint = if bar.mode == editfind::MatchMode::Regex { "replace with… ($1, $2: groups)" } else { "replace with…" };
-                    ui.add(TextEdit::singleline(&mut bar.replace).id(Id::new("editor-find-r")).hint_text(hint).desired_width(220.0));
+                    ui.add(TextEdit::singleline(&mut bar.replace).id(Id::new("editor-find-r")).hint_text(hint).desired_width((ui.available_width() - 300.0).clamp(100.0, 220.0)));
                     if ui.add_enabled(count > 0 && !f.loading, egui::Button::new("Replace")).on_hover_text("this match, then on to the next").clicked() {
                         rep_one = true;
                     }

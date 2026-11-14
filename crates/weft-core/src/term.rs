@@ -367,6 +367,13 @@ impl Term {
         let row = self.line(abs)?;
         let chars = row.chars_with_cols();
         let idx = chars.iter().rposition(|&(_, c)| c <= col)?;
+        // Past the end of the line there is nothing (a line in the
+        // scrollback ends at its last character; one cell more is the
+        // second half of a wide one): the empty space to the right of a
+        // path used to be the path.
+        if idx + 1 == chars.len() && col > chars[idx].1 + 1 {
+            return None;
+        }
         let delim = |c: char| c.is_whitespace() || "\"'`<>()[]{}|;,".contains(c);
         if delim(chars[idx].0) {
             return None;
@@ -2027,5 +2034,90 @@ mod tests {
         assert_eq!(t.history.len(), 2);
         assert_eq!(t.screen[1].text(), "4");
         assert_eq!(t.cy, 1);
+    }
+
+    /// The plain escapes: save and restore the cursor, index, next line,
+    /// reverse index (at the top of the region the lines move down), the
+    /// line drawing set, reset.
+    #[test]
+    fn plain_escapes_move_the_cursor_and_the_lines() {
+        let rows = |t: &Term| t.screen.iter().map(|r| r.text()).collect::<Vec<_>>();
+        let mut t = Term::new(10, 4);
+        run(&mut t, "a\r\nb\r\nc\r\nd");
+        // ESC 7 remembers where the cursor is, ESC 8 goes back there.
+        run(&mut t, "\x1b[1;1H\x1b7\x1b[3;5H\x1b8X");
+        assert_eq!(rows(&t), ["X", "b", "c", "d"]);
+        // ESC D: a line down, the column kept. ESC E: the start of the next.
+        run(&mut t, "\x1b[1;4H\x1bD");
+        assert_eq!((t.cy, t.cx), (1, 3));
+        run(&mut t, "\x1bE");
+        assert_eq!((t.cy, t.cx), (2, 0));
+        // ESC M: a line up…
+        run(&mut t, "\x1bM");
+        assert_eq!(t.cy, 1);
+        // … and at the top the lines move down: the last one is lost, an
+        // empty one comes in, nothing goes to the scrollback.
+        run(&mut t, "\x1b[1;1H\x1bM");
+        assert_eq!(rows(&t), ["", "X", "b", "c"]);
+        assert!(t.history.is_empty());
+        // In a scroll region only its lines move.
+        run(&mut t, "\x1b[2;3r\x1b[2;1H\x1bM");
+        assert_eq!(rows(&t), ["", "", "X", "c"]);
+        // Several at once (CSI T), no more than the region has.
+        run(&mut t, "\x1b[r\x1b[1;1Htop\x1b[9T");
+        assert_eq!(rows(&t), ["", "", "", ""]);
+        // The line drawing set: q is a horizontal line until ESC ( B.
+        run(&mut t, "\x1b[1;1H\x1b(0q\x1b(Bq");
+        assert_eq!(rows(&t)[0], "\u{2500}q");
+        // ESC c: everything as at the start.
+        run(&mut t, "\x1b[?1h\x1b[2;3r\x1b(0\x1bc");
+        assert_eq!(rows(&t), ["", "", "", ""]);
+        assert_eq!((t.cy, t.cx, t.top, t.bot), (0, 0, 0, 3));
+        assert!(!t.app_cursor && !t.line_drawing);
+        run(&mut t, "q");
+        assert_eq!(rows(&t)[0], "q");
+    }
+
+    /// The word under the pointer, for Ctrl+click: up to a space, a quote
+    /// or a bracket, without the full stop or colon after it; nothing on
+    /// a space, and nothing past the end of the line.
+    #[test]
+    fn the_word_under_the_pointer() {
+        let mut t = Term::new(70, 3);
+        let line = "see (src/main.rs:12:3), or \"~/notes.md\". Then a.txt: 한글/파일.txt";
+        run(&mut t, line);
+        let abs = t.cursor_abs();
+        let col = |s: &str| line.find(s).map(|b| line[..b].chars().count()).unwrap();
+        let tok = |c: usize| t.token_at(abs, c);
+        // Anywhere in the word gives the whole word and where it is.
+        let path = col("src/");
+        for c in [path, path + 7, path + 15] {
+            assert_eq!(tok(c), Some(("src/main.rs:12:3".into(), path, path + 16)));
+        }
+        assert_eq!(tok(col("see")), Some(("see".into(), 0, 3)));
+        // Not on a space, a bracket, a comma or a quote.
+        for c in [3, col("("), col(")"), col(","), col("\"")] {
+            assert_eq!(tok(c), None, "column {c}");
+        }
+        // Quotes are not part of it, nor the full stop or the colon after.
+        let notes = col("~/");
+        assert_eq!(tok(notes + 2), Some(("~/notes.md".into(), notes, notes + 10)));
+        let a = col("a.txt");
+        assert_eq!(tok(a), Some(("a.txt".into(), a, a + 5)));
+        assert_eq!(tok(a + 5), Some(("a.txt".into(), a, a + 5)), "on the colon: still the word before it");
+        // Hangul is two cells a letter: either cell is the letter.
+        let h = col("한글");
+        for c in [h, h + 1, h + 4, h + 12] {
+            assert_eq!(tok(c), Some(("한글/파일.txt".into(), h, h + 13)), "column {c}");
+        }
+        // A line in the scrollback ends at its last letter: to the right
+        // of it is nothing (it was the last word).
+        let mut t = Term::new(30, 2);
+        run(&mut t, "see /a/b.txt\r\nx\r\ny");
+        assert_eq!(t.history[0].text(), "see /a/b.txt");
+        assert_eq!(t.token_at(0, 11), Some(("/a/b.txt".into(), 4, 12)));
+        assert_eq!(t.token_at(0, 13), None);
+        assert_eq!(t.token_at(0, 25), None);
+        assert_eq!(t.token_at(7, 0), None, "no such line");
     }
 }

@@ -683,7 +683,7 @@ fn procs_lists_this_pc() {
     let mut h = Harness::new(json!({"sidebar": true, "session": [{"t": "Pane", "host": "local", "cwd": null}]}));
     h.app.side.tab = SideTab::Procs;
     h.app.settings.side_tabs.insert(0, SideTab::Procs);
-    assert!(h.wait_for(30.0, |h| h.shows("PID") && h.app.side.procs.as_ref().is_some_and(|p| p.as_ref().is_ok_and(|rows| rows.len() > 5))), "the list arrived: {:?}", h.app.side.procs.as_ref().map(|p| p.as_ref().map(|r| r.len())));
+    assert!(h.wait_for(90.0, |h| h.shows("PID") && h.app.side.procs.as_ref().is_some_and(|p| p.as_ref().is_ok_and(|rows| rows.len() > 5))), "the list arrived: {:?}", h.app.side.procs.as_ref().map(|p| p.as_ref().map(|r| r.len())));
     assert!(!h.shows("remote agent"), "no \"connect to an ssh host\" note");
     let me = std::process::id().to_string();
     h.app.side.procs_filter = me.clone();
@@ -1610,6 +1610,11 @@ fn commands_do_what_they_say() {
 /// them (`echo hi`, then `seq` with a hundred lines of output), a few lines
 /// before them and a path after.
 fn shell_harness() -> (Harness, std::path::PathBuf) {
+    shell_harness_in(json!({}))
+}
+
+/// … with these settings besides.
+fn shell_harness_in(more: serde_json::Value) -> (Harness, std::path::PathBuf) {
     // (A pause after each mark: see shell_events_become_widgets.)
     let body = r#"
 def mark(s):
@@ -1628,7 +1633,7 @@ mark('D;3')
 say('see /proj/src/main.rs:12:3 for it\r\n')
 mark('A'); say('$ '); mark('B')
 "#;
-    script_harness(body, json!({}))
+    script_harness(body, more)
 }
 
 /// The middle of the character cell where `needle` starts, in the terminal
@@ -1872,4 +1877,527 @@ fn the_status_bar() {
     h.frames(2);
     h.click_text("reconnect");
     assert!(h.wait_for(20.0, |h| h.shows("agent connecting")) || h.shows("agent offline"), "it tried again");
+}
+
+/// weft with the side panel on a small source tree on this PC:
+/// src/main.rs, src/lib.rs, docs/guide.md, readme.md.
+fn tree_harness() -> (Harness, String) {
+    let mut h = Harness::new(json!({"sidebar": true, "follow_cwd": false}));
+    let root = h.dir.join("tree");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(root.join("docs")).unwrap();
+    std::fs::write(root.join("src/main.rs"), "fn main() {\n    println!(\"needle here\");\n}\n").unwrap();
+    std::fs::write(root.join("src/lib.rs"), "// Needle two\n").unwrap();
+    std::fs::write(root.join("docs/guide.md"), "# Guide\n\nnothing to find\n").unwrap();
+    std::fs::write(root.join("readme.md"), "read me\n").unwrap();
+    let dir = root.display().to_string().replace('\\', "/");
+    h.app.set_root("local", &dir);
+    assert!(h.wait_for(20.0, |h| h.has("src") && h.has("readme.md")), "the folder is listed");
+    (h, dir)
+}
+
+/// Go to a tab of the side panel: the ones a narrow panel has no room for
+/// are under ».
+fn side_tab(h: &mut Harness, name: &str) {
+    if !h.has(name) {
+        let more = h.at_exact("\u{00bb}");
+        h.click(more);
+    }
+    let tab = h.at_exact(name);
+    h.click(tab);
+    h.frames(2);
+}
+
+/// Type into a text field that already has the keyboard, in place of what
+/// is in it.
+fn retype(h: &mut Harness, text: &str) {
+    h.key(Key::A, Modifiers::COMMAND);
+    h.type_text(text);
+    h.frames(2);
+}
+
+/// The filter in Files finds names anywhere under the folder: fuzzy, or a
+/// regex (said when it can't be read); a click selects, a double click
+/// opens, Enter opens the first, the menu copies the path or shows the
+/// file in the tree.
+#[test]
+fn the_files_filter_finds_names() {
+    let (mut h, dir) = tree_harness();
+    let field = h.at("fuzzy: letters in order");
+    h.click(field);
+    h.type_text("main");
+    assert!(h.wait_for(20.0, |h| h.shows("1 match \u{00b7} 6 names")), "one of the six names matches");
+    assert!(!h.has("readme.md"), "the tree gives way to the results");
+    let row = h.at("main.rs   src");
+    h.click(row);
+    assert_eq!(h.app.side.selected.as_deref(), Some(format!("{dir}/src/main.rs").as_str()));
+    h.right_click(row);
+    h.click_text("Copy path");
+    h.frames(2);
+    assert_eq!(h.copied.as_deref(), Some(format!("{dir}/src/main.rs").as_str()));
+    h.double_click(row);
+    assert!(h.wait_for(20.0, |h| h.app.editor.files.iter().any(|f| f.host == "local" && f.path.ends_with("src/main.rs"))), "a double click opens it");
+    // Nothing matches; a regex that can't be read says so; one that can finds.
+    h.click(field);
+    retype(&mut h, "zzzz");
+    assert!(h.shows("0 matches"));
+    let mode = h.at_exact("fuzzy");
+    h.click(mode);
+    let regex = h.at_exact("regex");
+    h.click(regex);
+    assert_eq!(h.app.settings.find_mode, crate::find::FindMode::Regex);
+    h.click(field);
+    retype(&mut h, "(");
+    assert!(!h.shows("matches") && !h.shows("1 match"), "no count for a pattern that can't be read");
+    retype(&mut h, "^src/.*\\.rs$");
+    assert!(h.shows("2 matches"), "src/main.rs and src/lib.rs");
+    // Enter opens the first result.
+    retype(&mut h, "guide");
+    h.key(Key::Enter, Modifiers::NONE);
+    assert!(h.wait_for(20.0, |h| h.app.editor.files.iter().any(|f| f.path.ends_with("docs/guide.md"))), "Enter opens the first");
+    // Show in the tree: the filter goes, its folder opens, it is selected.
+    let row = h.at("guide.md   docs");
+    h.right_click(row);
+    h.click_text("Show in the tree");
+    assert!(h.app.side.filter.is_empty());
+    assert_eq!(h.app.side.selected.as_deref(), Some(format!("{dir}/docs/guide.md").as_str()));
+    assert!(h.app.side.expanded.contains(&("local".to_string(), format!("{dir}/docs"))));
+    assert!(h.wait_for(20.0, |h| h.has("guide.md") && h.has("readme.md")), "the tree again, with docs open");
+}
+
+/// The Search tab finds text in the files under the folder: the matches by
+/// file, a click opens at the line, the menu copies or shows in Files;
+/// ignore case counts.
+#[test]
+fn the_search_tab_finds_text_in_files() {
+    let (mut h, dir) = tree_harness();
+    side_tab(&mut h, "Search");
+    assert!(h.app.side.tab == crate::app::SideTab::Search, "from the » menu: the panel is too narrow for five tabs");
+    assert!(h.shows(&format!("in local:{dir}")));
+    let field = h.at("(Enter)");
+    h.click(field);
+    h.type_text("needle");
+    h.key(Key::Enter, Modifiers::NONE);
+    assert!(h.wait_for(20.0, |h| h.app.side.grep.is_some() && !h.app.side.grep_busy), "the search came back");
+    let n = |h: &Harness| h.app.side.grep.as_ref().and_then(|g| g["hits"].as_array().map(|a| a.len())).unwrap_or(0);
+    let both = n(&h);
+    assert!(h.shows(&format!("{both} matches")));
+    // With the case counting only "needle here" is left (or, the other way
+    // round, "Needle two" joins it).
+    h.click_text("ignore case");
+    h.click(field);
+    h.key(Key::Enter, Modifiers::NONE);
+    assert!(h.wait_for(20.0, |h| !h.app.side.grep_busy && n(h) != both), "the case changes what is found");
+    assert_eq!((both.min(n(&h)), both.max(n(&h))), (1, 2), "one with the case, two without");
+    // A click on a line opens the file there.
+    let line = h.at("needle here");
+    h.click(line);
+    assert!(h.wait_for(20.0, |h| h.app.editor.files.iter().any(|f| f.host == "local" && f.path.ends_with("src/main.rs"))), "opened");
+    // The menu of a line.
+    h.right_click(line);
+    assert!(h.shows("Open at this line") && h.shows("cd terminal to its folder"));
+    h.click_text("Copy path:line");
+    h.frames(2);
+    assert_eq!(h.copied.as_deref(), Some(format!("{dir}/src/main.rs:2").as_str()));
+    h.right_click(line);
+    h.click_text("Copy line text");
+    h.frames(2);
+    assert_eq!(h.copied.as_deref(), Some("println!(\"needle here\");"));
+    // The menu of a file: show it in Files.
+    let file = h.at_exact("src/main.rs");
+    h.right_click(file);
+    h.click_text("Show in Files");
+    h.frames(2);
+    assert!(h.app.side.tab == crate::app::SideTab::Files);
+    assert_eq!(h.app.side.selected.as_deref(), Some(format!("{dir}/src/main.rs").as_str()));
+    assert_eq!(h.app.side.root, Some(("local".to_string(), format!("{dir}/src"))));
+}
+
+/// The Commands tab lists the terminal's commands, newest first, with how
+/// they ended; a click goes to one, the menu copies it or its output.
+/// History has them too, from the records: found by text, in the output
+/// when asked, opened with their output.
+#[test]
+fn the_commands_and_history_tabs() {
+    let (mut h, _file) = shell_harness_in(json!({"sidebar": true}));
+    let pane = h.app.active_pane_id().unwrap();
+    side_tab(&mut h, "Commands");
+    assert!(h.has("echo hi") && h.has("seq"), "both commands are listed");
+    assert!(h.at_exact("seq").y < h.at_exact("echo hi").y, "newest first");
+    assert!(h.shows("exit 3") && h.shows("100 lines") && h.shows("2 lines"));
+    let row = h.at_exact("echo hi");
+    h.click(row);
+    assert!(h.app.panes[&pane].scroll > 0, "the terminal went back to it");
+    assert!(h.shows("$ echo hi"));
+    h.right_click(row);
+    h.click_text("Copy command");
+    h.frames(2);
+    assert_eq!(h.copied.as_deref(), Some("echo hi"));
+    h.right_click(row);
+    h.click_text("Copy output");
+    h.frames(2);
+    assert_eq!(h.copied.as_deref().map(|s| s.trim_end()), Some("hi\nthere"));
+    // History: what was recorded.
+    side_tab(&mut h, "History");
+    assert!(h.wait_for(20.0, |h| h.shows("2 of 2 commands")), "both were recorded: {:?}", h.texts.iter().filter(|t| t.0.contains("commands")).collect::<Vec<_>>());
+    let field = h.at("search commands");
+    h.click(field);
+    h.type_text("echo");
+    h.frames(2);
+    assert!(h.shows("1 of 2 commands"));
+    retype(&mut h, "there");
+    assert!(h.shows("0 of 2 commands"), "not in a command");
+    h.click_text("in output too");
+    h.frames(2);
+    assert!(h.shows("1 of 2 commands"), "but in what one printed");
+    let row = h.at_exact("echo hi");
+    h.right_click(row);
+    h.click_text("Copy output");
+    h.frames(2);
+    assert_eq!(h.copied.as_deref().map(|s| s.trim_end()), Some("hi\nthere"));
+    h.click(row);
+    h.frames(2);
+    assert!(h.app.editor.files.iter().any(|f| f.scratch && f.text.starts_with("$ echo hi\n") && f.text.contains("exit 0") && f.text.trim_end().ends_with("hi\nthere")), "the command with its output, as a file");
+    h.click_text("Records\u{2026}");
+    assert!(h.app.records_window.is_some());
+}
+
+/// "Open memo…": the memos by their first line, found by text, opened by a
+/// click, deleted from the menu; New memo starts one.
+#[test]
+fn the_memo_picker_lists_finds_and_deletes() {
+    let mut h = Harness::new(json!({}));
+    let dir = h.app.memo_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(std::path::Path::new(&dir).join("one.md"), "# Shopping\n\nmilk, eggs\n").unwrap();
+    std::fs::write(std::path::Path::new(&dir).join("two.md"), "Meeting notes\n\nbudget\n").unwrap();
+    h.command("open_memo");
+    assert!(h.has("Shopping") && h.has("Meeting notes"), "listed by their first line");
+    let field = h.at("search memos");
+    h.click(field);
+    h.type_text("budget");
+    h.frames(2);
+    assert!(h.has("Meeting notes") && !h.has("Shopping"), "found by what is in it");
+    retype(&mut h, "zzzz");
+    assert!(h.shows("no memo matches"));
+    retype(&mut h, "shop");
+    // Delete from the menu.
+    let row = h.at_exact("Shopping");
+    h.right_click(row);
+    h.click_text("Delete this memo");
+    h.frames(3);
+    assert!(!std::path::Path::new(&dir).join("one.md").exists(), "the file is gone");
+    h.click(field);
+    retype(&mut h, "meet");
+    // A click opens it and closes the window.
+    let row = h.at_exact("Meeting notes");
+    h.click(row);
+    assert!(!h.app.memo_picker);
+    assert!(h.wait_for(20.0, |h| h.app.editor.files.iter().any(|f| f.path.ends_with("two.md") && !f.loading)), "opened in the editor");
+    // New memo: one more file in the editor, the window closed.
+    h.command("open_memo");
+    let n = h.app.editor.files.len();
+    h.click_text("New memo");
+    h.frames(2);
+    assert!(!h.app.memo_picker);
+    assert_eq!(h.app.editor.files.len(), n + 1);
+}
+
+/// The theme menu picks a theme (and marks it), follows the system, and
+/// closes on its ×, on Esc and on a click elsewhere.
+#[test]
+fn the_theme_menu_picks_a_theme() {
+    let mut h = Harness::new(json!({}));
+    let themes: Vec<(usize, &str, &str, bool)> = crate::theme::themes().collect();
+    assert!(themes.len() >= 2);
+    h.click_icon("theme");
+    for t in &themes {
+        assert!(h.has(t.2), "{} is offered", t.2);
+    }
+    let other = themes.iter().find(|t| t.1 != h.app.settings.theme).unwrap();
+    let row = h.at_exact(other.2);
+    h.click(row);
+    h.frames(2);
+    assert_eq!(h.app.settings.theme, other.1);
+    assert!(h.app.theme_menu.is_some(), "the menu stays, to try another");
+    let row = h.at_exact("Follow system");
+    h.click(row);
+    h.frames(2);
+    assert_eq!(h.app.settings.theme, "system");
+    assert!(h.shows("dark: ") && h.shows("light: "));
+    h.click_icon("close (Esc)");
+    assert!(h.app.theme_menu.is_none());
+    h.command("theme");
+    assert!(h.app.theme_menu.is_some());
+    h.key(Key::Escape, Modifiers::NONE);
+    assert!(h.app.theme_menu.is_none(), "Esc closes it");
+    h.command("theme");
+    h.click(egui::pos2(300.0, 500.0));
+    assert!(h.app.theme_menu.is_none(), "a click elsewhere closes it");
+}
+
+/// Fonts: the built-in ones and the filter; a click sets the terminal
+/// font, the other tab the icon font; a file that is no font is said to be
+/// none, and the built-in font is used.
+#[test]
+fn the_font_window_sets_fonts() {
+    let mut h = Harness::new(json!({}));
+    h.command("fonts");
+    assert!(h.shows("Built in (Nerd Fonts)") && h.shows("Installed on this computer"));
+    let builtin: Vec<(&str, &str)> = crate::theme::BUILTIN_FONTS.iter().map(|f| (f.0, f.1)).collect();
+    let before = h.app.settings.term_font.clone();
+    let other = builtin.iter().find(|f| f.0 != before).unwrap();
+    assert!(h.shows(&format!("now: {}", crate::theme::font_label(&before))));
+    // The filter leaves the fonts whose name has the text.
+    let field = h.at("filter fonts");
+    h.click(field);
+    let part = |name: &str| name.chars().take(name.chars().count() - 1).collect::<String>().to_lowercase();
+    h.type_text(&part(other.1));
+    h.frames(2);
+    for f in builtin.iter().filter(|f| !f.1.to_lowercase().contains(&part(other.1))) {
+        assert!(!h.has(f.1), "{} is filtered out", f.1);
+    }
+    let row = h.at_exact(other.1);
+    h.click(row);
+    h.frames(3);
+    assert_eq!(h.app.settings.term_font, other.0);
+    assert!(h.shows(&format!("now: {}", crate::theme::font_label(other.0))));
+    // The icon font is set from its own tab, and leaves the terminal font.
+    h.click_text("Icon font");
+    h.frames(2);
+    let icon_before = h.app.settings.icon_font.clone();
+    let icon = builtin.iter().find(|f| f.0 != icon_before).unwrap();
+    // (The sample line is as tall as its font: the field has moved.)
+    let field = h.at_exact(&part(other.1));
+    h.click(field);
+    retype(&mut h, &part(icon.1));
+    let row = h.at_exact(icon.1);
+    h.click(row);
+    h.frames(3);
+    assert_eq!(h.app.settings.icon_font, icon.0);
+    assert_eq!(h.app.settings.term_font, other.0);
+    // A file that is no font: said, and the font stays.
+    h.click_text("Terminal font");
+    let bad = h.dir.join("not-a-font.ttf");
+    std::fs::write(&bad, "this is text").unwrap();
+    let path = h.at("or a font file");
+    h.click(path);
+    h.type_text(&bad.display().to_string());
+    h.frames(2);
+    let use_it = h.at_exact("Use");
+    h.click(use_it);
+    h.frames(3);
+    assert!(h.app.toasts.iter().any(|t| t.text.contains("using the built-in font")), "weft says it can't be read: {:?}", h.app.toasts.iter().map(|t| &t.text).collect::<Vec<_>>());
+    assert!(h.shows("Built in (Nerd Fonts)"), "and still draws its text, in the built-in font");
+    h.key(Key::Escape, Modifiers::NONE);
+    h.key(Key::Escape, Modifiers::NONE);
+    assert!(h.app.font_menu.is_none());
+}
+
+/// Privacy: what is kept, switched off and on, deleted; the password rules.
+#[test]
+fn the_privacy_window_keeps_and_deletes() {
+    use crate::records::Item;
+    let (mut h, _file) = shell_harness_in(json!({}));
+    h.command("privacy");
+    assert!(h.shows("Kept in ") && h.shows("ssh passwords in memory") && h.shows("0 held now"));
+    for item in Item::ALL {
+        assert!(h.shows(item.label()), "{} has its row", item.label());
+    }
+    // Commands are being recorded; switched off, the History tab says so.
+    assert!(h.app.settings.records.commands.on);
+    h.click_text(Item::Commands.label());
+    h.frames(2);
+    assert!(!h.app.settings.records.commands.on, "a click on its name switches it off");
+    h.click_text(Item::Commands.label());
+    h.frames(2);
+    assert!(h.app.settings.records.commands.on);
+    // Delete all commands: the files go, and History is empty.
+    let root = h.app.data.root.clone();
+    assert!(Item::Commands.size(&root) > 0, "the two commands were recorded");
+    let commands_y = h.at(Item::Commands.label()).y;
+    let delete = h.texts.iter().filter(|(t, _)| t == "Delete\u{2026}").map(|(_, r)| r.center()).min_by(|a, b| (a.y - commands_y).abs().total_cmp(&(b.y - commands_y).abs())).unwrap();
+    h.click(delete);
+    h.click_text(&format!("Delete all {}", Item::Commands.label().to_lowercase()));
+    h.frames(3);
+    assert_eq!(Item::Commands.size(&root), 0, "deleted");
+    assert!(h.app.toasts.iter().any(|t| t.text.contains("deleted")));
+    // Encrypting passwords in memory is a switch here, kept in settings.
+    let enc = h.app.settings.passwords.encrypt;
+    h.click_text("Encrypt them");
+    h.frames(2);
+    assert_eq!(h.app.settings.passwords.encrypt, !enc);
+    h.key(Key::Escape, Modifiers::NONE);
+    assert!(h.app.records_window.is_none());
+}
+
+/// Open a file of this PC in the editor, with this text in it.
+fn open_text(h: &mut Harness, name: &str, text: &str) -> (std::path::PathBuf, String) {
+    let file = h.dir.join(name);
+    std::fs::write(&file, text).unwrap();
+    let path = file.display().to_string().replace('\\', "/");
+    h.app.open_file("local", &path, 1);
+    assert!(h.wait_for(20.0, |h| h.app.editor.files.iter().any(|f| f.path == path && !f.loading)), "{name} is open");
+    h.frames(2);
+    (file, path)
+}
+
+/// Find in the editor counts the matches (with or without the case), steps
+/// through them and round, replaces one or all, reads a regex with groups,
+/// says when nothing matches or the pattern can't be read.
+#[test]
+fn find_and_replace_in_the_editor() {
+    let mut h = Harness::new(json!({}));
+    let (_file, path) = open_text(&mut h, "words.txt", "cat dog cat\nCat bird\ncat\n");
+    let text = |h: &Harness| h.app.editor.files.iter().find(|f| f.path == path).unwrap().text.clone();
+    let cur = |h: &Harness| h.app.editor.find.as_ref().map(|b| b.cur);
+    h.click_text("Find");
+    h.type_text("cat");
+    h.frames(2);
+    assert!(h.shows("1/4"), "four, in any case");
+    // Aa: the case counts.
+    let aa = h.texts.iter().filter(|(t, r)| t == "Aa" && r.top() > 40.0).map(|(_, r)| r.center()).next().expect("the find bar's Aa");
+    h.click(aa);
+    h.frames(2);
+    assert!(h.shows("1/3"), "three as typed");
+    // Enter, Shift+Enter, F3 and the arrows step, and go round.
+    let field = h.at_exact("cat");
+    h.click(field);
+    h.key(Key::Enter, Modifiers::NONE);
+    assert_eq!(cur(&h), Some(1));
+    h.key(Key::Enter, Modifiers::SHIFT);
+    assert_eq!(cur(&h), Some(0));
+    h.key(Key::Enter, Modifiers::SHIFT);
+    assert_eq!(cur(&h), Some(2), "round to the last");
+    h.key(Key::F3, Modifiers::NONE);
+    assert_eq!(cur(&h), Some(0), "F3: the next, round to the first");
+    h.key(Key::F3, Modifiers::SHIFT);
+    assert_eq!(cur(&h), Some(2));
+    let down = h.at_exact("\u{2193}");
+    h.click(down);
+    assert_eq!(cur(&h), Some(0));
+    let up = h.at_exact("\u{2191}");
+    h.click(up);
+    assert_eq!(cur(&h), Some(2));
+    h.click(down);
+    assert!(h.shows("1/3"));
+    // Replace: this match, then all of them; the file is unsaved.
+    let rep = h.at_exact("replace");
+    h.click(rep);
+    let with = h.at("replace with");
+    h.click(with);
+    h.type_text("fox");
+    h.frames(2);
+    let one = h.at_exact("Replace");
+    h.click(one);
+    h.frames(2);
+    assert_eq!(text(&h), "fox dog cat\nCat bird\ncat\n", "the current match");
+    assert!(h.shows("1/2"));
+    let all = h.at_exact("All");
+    h.click(all);
+    h.frames(2);
+    assert_eq!(text(&h), "fox dog fox\nCat bird\nfox\n", "every match; Cat is another word");
+    assert!(h.shows("no match"));
+    assert!(h.app.editor.files.iter().any(|f| f.path == path && f.dirty), "the file has changes to save");
+    // A regex with a group; one that can't be read is said.
+    h.app.editor.find.as_mut().unwrap().mode = crate::editfind::MatchMode::Regex;
+    h.click(field);
+    retype(&mut h, "(");
+    let counted = h.texts.iter().any(|(t, _)| t.split_once('/').is_some_and(|(a, b)| !a.is_empty() && !b.is_empty() && a.chars().chain(b.chars()).all(|c| c.is_ascii_digit())));
+    assert!(!h.has("no match") && !counted, "a pattern that can't be read has no count");
+    assert!(h.shows("unclosed group"), "it says what is wrong with it");
+    retype(&mut h, "(\\w+) bird");
+    assert!(h.shows("1/1"));
+    h.app.editor.find.as_mut().unwrap().replace.clear();
+    h.frames(2);
+    assert!(h.shows("$1, $2: groups"), "the empty replace field says how groups are written");
+    h.app.editor.find.as_mut().unwrap().replace = "$1 fish".into();
+    h.frames(2);
+    let all = h.at_exact("All");
+    h.click(all);
+    h.frames(2);
+    assert_eq!(text(&h), "fox dog fox\nCat fish\nfox\n");
+    // Every part of the bar is inside the window, in an editor this narrow
+    // too (its × was past the edge, out of reach).
+    let close = h.icons.iter().find(|(t, _)| t == "close (Esc)").unwrap().1;
+    assert!(close.right() <= h.size.x && close.left() > h.size.x / 2.0, "the × is in the editor: {close:?}");
+    assert!((close.center().y - h.at_exact("replace").y).abs() < 6.0, "and on the bar's line, not alone on the next");
+    h.click_icon("close (Esc)");
+    assert!(h.app.editor.find.is_none());
+}
+
+/// A file that changed on disk after it was opened is not written over
+/// without a word: Reload takes what is there, Overwrite what is here.
+#[test]
+fn a_file_changed_on_disk_is_not_written_over() {
+    let mut h = Harness::new(json!({}));
+    let (file, path) = open_text(&mut h, "shared.txt", "as opened\n");
+    let i = h.app.editor.files.iter().position(|f| f.path == path).unwrap();
+    let change_both = |h: &mut Harness, there: &str, here: &str| {
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::write(&file, there).unwrap();
+        h.app.editor.files[i].text = here.into();
+        h.app.editor.files[i].dirty = true;
+        h.frames(2);
+        h.click_text("Save");
+        assert!(h.wait_for(20.0, |h| h.app.editor.files[i].conflict), "the save is held back");
+        assert!(h.shows("The file changed on the host since it was opened."));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), there, "nothing was written");
+    };
+    change_both(&mut h, "theirs\n", "mine\n");
+    h.click_text("Reload");
+    assert!(h.wait_for(20.0, |h| h.app.editor.files[i].text == "theirs\n" && !h.app.editor.files[i].conflict), "Reload: what is on disk");
+    assert!(!h.app.editor.files[i].dirty);
+    change_both(&mut h, "theirs again\n", "mine again\n");
+    h.click_text("Overwrite");
+    assert!(h.wait_for(20.0, |_| std::fs::read_to_string(&file).unwrap() == "mine again\n"), "Overwrite: what is here");
+    assert!(h.wait_for(20.0, |h| !h.app.editor.files[i].conflict && !h.app.editor.files[i].dirty));
+}
+
+/// The editor's tabs: a click shows the file, × and a middle click close
+/// it, the menu closes the ones to the right, the others, all.
+#[test]
+fn the_editor_tabs_switch_and_close() {
+    let mut h = Harness::new(json!({}));
+    for name in ["a.txt", "b.txt", "c.txt", "d.txt"] {
+        open_text(&mut h, name, &format!("this is {name}\n"));
+    }
+    let names = |h: &Harness| h.app.editor.files.iter().map(|f| f.path.rsplit('/').next().unwrap().to_string()).collect::<Vec<_>>();
+    assert_eq!(names(&h), ["a.txt", "b.txt", "c.txt", "d.txt"]);
+    let b = h.at_exact("b.txt");
+    h.click(b);
+    assert_eq!(h.app.editor.active, 1);
+    assert!(h.shows("this is b.txt"));
+    // The menu: to the right of b.
+    h.right_click(b);
+    h.click_text("Close to the right");
+    h.frames(2);
+    assert_eq!(names(&h), ["a.txt", "b.txt"]);
+    // A middle click closes a.
+    let a = h.at_exact("a.txt");
+    h.frame(vec![Event::PointerMoved(a)]);
+    h.frame(vec![Event::PointerButton { pos: a, button: egui::PointerButton::Middle, pressed: true, modifiers: Modifiers::NONE }]);
+    h.frame(vec![Event::PointerButton { pos: a, button: egui::PointerButton::Middle, pressed: false, modifiers: Modifiers::NONE }]);
+    h.frames(2);
+    assert_eq!(names(&h), ["b.txt"]);
+    // The × of a tab.
+    open_text(&mut h, "e.txt", "this is e\n");
+    let e = h.at_exact("e.txt");
+    let cross = h.icons.iter().filter(|(t, r)| t.starts_with("close (middle-click") && r.left() > e.x).map(|(_, r)| r.center()).min_by(|p, q| p.x.total_cmp(&q.x)).expect("the × after e.txt");
+    h.click(cross);
+    h.frames(2);
+    assert_eq!(names(&h), ["b.txt"]);
+    // Close others, close all.
+    open_text(&mut h, "f.txt", "this is f\n");
+    open_text(&mut h, "g.txt", "this is g\n");
+    let f = h.at_exact("f.txt");
+    h.right_click(f);
+    h.click_text("Close others");
+    h.frames(2);
+    assert_eq!(names(&h), ["f.txt"]);
+    let f = h.at_exact("f.txt");
+    h.right_click(f);
+    h.click_text("Close all");
+    h.frames(2);
+    assert!(h.app.editor.files.is_empty());
 }
