@@ -43,6 +43,7 @@ pub(crate) enum Cmd {
     Find,
     Composer,
     About,
+    DisplayTest,
     ConfirmUnsaved,
     ConfirmRunning,
     PrevBlock,
@@ -162,6 +163,7 @@ const COMMANDS: &[(Cmd, &str, &str, &[&str])] = &[
     (Cmd::LocalShell(crate::host::LocalShell::Nu), "shell_nu", "Local shell: nushell", &[]),
     (Cmd::MarkdownBreaks, "markdown_breaks", "Markdown: toggle line breaks (GitHub PR style / CommonMark)", &[]),
     (Cmd::About, "about", "About weft: which version this is", &[]),
+    (Cmd::DisplayTest, "display_test", "Display test: see how blocks, colours, columns and boxes are drawn", &[]),
     (Cmd::ConfirmUnsaved, "confirm_unsaved", "Ask before closing unsaved files: on / off", &[]),
     (Cmd::ConfirmRunning, "confirm_running", "Ask before ending running commands: on / off", &[]),
     (Cmd::Settings, "settings_file", "Open settings.json", &[]),
@@ -269,6 +271,7 @@ impl App {
                 }
             }
             Cmd::About => self.toast(crate::version::line(), crate::app::ToastKind::Info),
+            Cmd::DisplayTest => self.display_test = Some(0),
             Cmd::ConfirmUnsaved => {
                 self.settings.confirm_unsaved = !self.settings.confirm_unsaved;
                 let how = if self.settings.confirm_unsaved { "weft asks before closing a file with unsaved changes" } else { "files close without asking, unsaved changes are dropped" };
@@ -475,12 +478,12 @@ impl App {
     /// shell gets no Esc for it. (A key being bound has taken its Esc by
     /// now: that cancels the binding, not the window.)
     pub fn escape_closes_windows(&mut self, ctx: &egui::Context) {
-        let open = self.serial_dialog.is_some() || self.font_menu.is_some() || self.memo_picker || self.keys_window.is_some() || self.records_window.is_some() || self.help.is_some();
+        let open = self.display_test.is_some() || self.serial_dialog.is_some() || self.font_menu.is_some() || self.memo_picker || self.keys_window.is_some() || self.records_window.is_some() || self.help.is_some();
         if !open || !ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
             return;
         }
         // One at a time, the smaller ones (opened from the others) first.
-        if self.serial_dialog.take().is_some() || self.font_menu.take().is_some() || std::mem::take(&mut self.memo_picker) || self.keys_window.take().is_some() || self.records_window.take().is_some() {
+        if self.display_test.take().is_some() || self.serial_dialog.take().is_some() || self.font_menu.take().is_some() || std::mem::take(&mut self.memo_picker) || self.keys_window.take().is_some() || self.records_window.take().is_some() {
         } else {
             self.help = None;
         }
@@ -1583,8 +1586,14 @@ impl App {
                 }
                 ui.add(TextEdit::singleline(&mut h.query).hint_text("search help…").desired_width(f32::INFINITY));
             });
-            // Which weft this is (also `weft --version`, and the palette's About).
-            ui.label(RichText::new(crate::version::line()).size(11.5).color(theme::text_faint()));
+            // Which weft this is (also `weft --version`, and the palette's
+            // About), and the test screens to look at with one's own eyes.
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(crate::version::line()).size(11.5).color(theme::text_faint()));
+                if ui.link(RichText::new("Display test\u{2026}").size(11.5)).on_hover_text("test screens: how this font draws blocks, colours, columns and boxes").clicked() {
+                    run = Some(Cmd::DisplayTest);
+                }
+            });
             ui.separator();
             let q = h.query.to_lowercase();
             let hit = |texts: &[&str]| q.is_empty() || texts.iter().any(|t| t.to_lowercase().contains(&q));
@@ -4003,7 +4012,7 @@ fn group(c: Cmd) -> &'static str {
         | Cmd::Fonts
         | Cmd::MarkdownBreaks => GROUPS[3],
         Cmd::Records | Cmd::Settings | Cmd::AgentLog | Cmd::Keys | Cmd::Restart | Cmd::ConfirmUnsaved | Cmd::ConfirmRunning => GROUPS[4],
-        Cmd::Help | Cmd::Features | Cmd::Palette | Cmd::About => GROUPS[5],
+        Cmd::Help | Cmd::Features | Cmd::Palette | Cmd::About | Cmd::DisplayTest => GROUPS[5],
     }
 }
 

@@ -103,7 +103,7 @@ fn cell_colors(a: term::Attr) -> (Color32, Option<Color32>) {
 // Where and how big a row is, eight plain numbers and references: a struct
 // for them would only be filled in at the two calls.
 #[allow(clippy::too_many_arguments)]
-fn paint_row(p: &Painter, row: &Row, x0: f32, y: f32, cw: f32, ch: f32, font: &FontId, cols: usize) {
+pub(crate) fn paint_row(p: &Painter, row: &Row, x0: f32, y: f32, cw: f32, ch: f32, font: &FontId, cols: usize) {
     let n = row.cells.len().min(cols);
     // Backgrounds, merged into runs.
     let mut x = 0;
@@ -164,6 +164,14 @@ fn paint_row(p: &Painter, row: &Row, x0: f32, y: f32, cw: f32, ch: f32, font: &F
                 }
             }
             decorate(p, flags, px, (x - start) as f32 * cw, y, ch, fg);
+        } else if let Some((arms, round)) = box_arms(cell.ch) {
+            // Box drawing is drawn too, for the same reason as the blocks
+            // below: a font's lines stop short of the row above and below,
+            // and frames and trees came out broken.
+            let px = x0 + x as f32 * cw;
+            paint_box(p, arms, round, px, y, cw, ch, fg);
+            decorate(p, flags, px, cw, y, ch, fg);
+            x += 1;
         } else if let Some((rects, count, alpha)) = block_rects(cell.ch) {
             // Block elements are drawn, not set in type: a font's blocks
             // rarely fill the row, and the cell's background showed through
@@ -188,6 +196,193 @@ fn paint_row(p: &Painter, row: &Row, x0: f32, y: f32, cw: f32, ch: f32, font: &F
             p.galley(pos2(gx, gy), galley, fg);
             decorate(p, flags, px, w * cw, y, ch, fg);
             x += 1;
+        }
+    }
+}
+
+/// A box drawing character (U+2500–257F) as the lines leaving the middle of
+/// its cell: left, up, right, down, each none (0), light (1), heavy (2) or
+/// double (3); and whether its corner is rounded. None for the dashed and
+/// diagonal ones, which stay the font's.
+fn box_arms(c: char) -> Option<([u8; 4], bool)> {
+    // Left, up, right, down for U+2500 … U+257F; "----": not drawn here.
+    const ARMS: &str = "\
+1010 2020 0101 0202 ---- ---- ---- ---- ---- ---- ---- ---- 0011 0021 0012 0022 \
+1001 2001 1002 2002 0110 0120 0210 0220 1100 2100 1200 2200 0111 0121 0211 0112 \
+0212 0221 0122 0222 1101 2101 1201 1102 1202 2201 2102 2202 1011 2011 1021 2021 \
+1012 2012 1022 2022 1110 2110 1120 2120 1210 2210 1220 2220 1111 2111 1121 2121 \
+1211 1112 1212 2211 1221 2112 1122 2221 2122 2212 1222 2222 ---- ---- ---- ---- \
+3030 0303 0031 0013 0033 3001 1003 3003 0130 0310 0330 3100 1300 3300 0131 0313 \
+0333 3101 1303 3303 3031 1013 3033 3130 1310 3330 3131 1313 3333 0011 1001 1100 \
+0110 ---- ---- ---- 1000 0100 0010 0001 2000 0200 0020 0002 1020 0102 2010 0201";
+    let cp = c as u32;
+    if !(0x2500..=0x257F).contains(&cp) {
+        return None;
+    }
+    let code = ARMS.split(' ').nth((cp - 0x2500) as usize)?;
+    if code == "----" {
+        return None;
+    }
+    let b = code.as_bytes();
+    Some(([b[0] - b'0', b[1] - b'0', b[2] - b'0', b[3] - b'0'], (0x256D..=0x2570).contains(&cp)))
+}
+
+/// Draw a box drawing character's lines in its cell, to the cell's very
+/// edges (so they join the next cell's), on whole pixels.
+#[allow(clippy::too_many_arguments)]
+fn paint_box(p: &Painter, arms: [u8; 4], round: bool, x: f32, y: f32, cw: f32, ch: f32, color: Color32) {
+    let ppp = p.ctx().pixels_per_point();
+    let px = |v: f32| (v * ppp).round() as i32;
+    let (x0, x1, y0, y1) = (px(x), px(x + cw), px(y), px(y + ch));
+    let (cx, cy) = ((x0 + x1) / 2, (y0 + y1) / 2);
+    // A light line's thickness, a heavy one's, and how far a double line's
+    // two lines are from the middle; in pixels.
+    let t = ((ch * ppp) / 15.0).round().max(1.0) as i32;
+    let heavy = (2 * t).max(t + 1);
+    let d = t + t / 2;
+    let thick = |w: u8| if w == 2 { heavy } else { t };
+    // The pixels a line of thickness `th` around `c` takes: [start, end).
+    let band = |c: i32, th: i32| (c - th / 2, c - th / 2 + th);
+    let fill = |a: i32, b: i32, c: i32, e: i32| {
+        if b > a && e > c {
+            let r = Rect::from_min_max(pos2(a as f32 / ppp, c as f32 / ppp), pos2(b as f32 / ppp, e as f32 / ppp));
+            p.rect_filled(r, CornerRadius::ZERO, color);
+        }
+    };
+    let [l, u, r, dn] = arms;
+
+    if round {
+        // A quarter circle between the two arms, then straight to the edges.
+        let w = t as f32 / ppp;
+        let (mx, my) = ((band(cx, t).0 as f32 + t as f32 / 2.0) / ppp, (band(cy, t).0 as f32 + t as f32 / 2.0) / ppp);
+        let rad = ((x1 - x0).min(y1 - y0) as f32 / 2.0 / ppp).min(cw / 2.0);
+        let (sx, sy) = (if r != 0 { 1.0 } else { -1.0 }, if dn != 0 { 1.0 } else { -1.0 });
+        let centre = pos2(mx + sx * rad, my + sy * rad);
+        let mut pts = vec![pos2(mx, if dn != 0 { y1 as f32 / ppp } else { y0 as f32 / ppp })];
+        for k in 0..=8 {
+            let a = std::f32::consts::FRAC_PI_2 * k as f32 / 8.0;
+            pts.push(pos2(centre.x - sx * rad * a.cos(), centre.y - sy * rad * a.sin()));
+        }
+        pts.push(pos2(if r != 0 { x1 as f32 / ppp } else { x0 as f32 / ppp }, my));
+        p.add(egui::Shape::line(pts, Stroke::new(w, color)));
+        return;
+    }
+
+    let double = |w: u8| w == 3;
+    // Light and heavy arms: from the cell's edge to the middle, where they
+    // cover the crossing line's width (a square corner, a clean T). Beside
+    // a double line they stop at it.
+    let any_h = |w: u8| w == 1 || w == 2;
+    // The wider of two arms that are light or heavy (light if neither is).
+    let wider = |a: u8, b: u8| if any_h(a) || any_h(b) { a.max(b).min(2) } else { 1 };
+    let (hb, vb) = (band(cy, thick(wider(l, r))), band(cx, thick(wider(u, dn))));
+    // Horizontal arms.
+    for (w, right) in [(l, false), (r, true)] {
+        if !any_h(w) {
+            continue;
+        }
+        let (b0, b1) = band(cy, thick(w));
+        let other = if right { l } else { r };
+        // Where it starts near the middle.
+        let near = if double(u) || double(dn) {
+            if any_h(other) {
+                cx // both sides: through the double line
+            } else if double(u) && double(dn) {
+                if right { band(cx + d, t).0 } else { band(cx - d, t).1 }
+            } else if right {
+                band(cx - d, t).0
+            } else {
+                band(cx + d, t).1
+            }
+        } else if right {
+            vb.0
+        } else {
+            vb.1
+        };
+        if right {
+            fill(near, x1, b0, b1);
+        } else {
+            fill(x0, near, b0, b1);
+        }
+    }
+    // Vertical arms.
+    for (w, down) in [(u, false), (dn, true)] {
+        if !any_h(w) {
+            continue;
+        }
+        let (b0, b1) = band(cx, thick(w));
+        let other = if down { u } else { dn };
+        let near = if double(l) || double(r) {
+            if any_h(other) {
+                cy
+            } else if double(l) && double(r) {
+                if down { band(cy + d, t).0 } else { band(cy - d, t).1 }
+            } else if down {
+                band(cy - d, t).0
+            } else {
+                band(cy + d, t).1
+            }
+        } else if down {
+            hb.0
+        } else {
+            hb.1
+        };
+        if down {
+            fill(b0, b1, near, y1);
+        } else {
+            fill(b0, b1, y0, near);
+        }
+    }
+    // Double arms: two lines each. A line on the side where a double arm
+    // turns off stops at that arm's nearer line (the inner corner); on the
+    // other side it runs on to the farther one (the outer corner).
+    let light_half = band(cx, t);
+    // Horizontal double arms; `side` is the vertical arm on the line's side.
+    for (w, right) in [(l, false), (r, true)] {
+        if !double(w) {
+            continue;
+        }
+        let other = if right { l } else { r };
+        for (off, side, far) in [(-d, u, dn), (d, dn, u)] {
+            let (b0, b1) = band(cy + off, t);
+            let near = if double(side) {
+                if right { band(cx + d, t).0 } else { band(cx - d, t).1 }
+            } else if double(far) || other != 0 {
+                if right { band(cx - d, t).0 } else { band(cx + d, t).1 }
+            } else if right {
+                light_half.0
+            } else {
+                light_half.1
+            };
+            if right {
+                fill(near, x1, b0, b1);
+            } else {
+                fill(x0, near, b0, b1);
+            }
+        }
+    }
+    let light_half = band(cy, t);
+    for (w, down) in [(u, false), (dn, true)] {
+        if !double(w) {
+            continue;
+        }
+        let other = if down { u } else { dn };
+        for (off, side, far) in [(-d, l, r), (d, r, l)] {
+            let (b0, b1) = band(cx + off, t);
+            let near = if double(side) {
+                if down { band(cy + d, t).0 } else { band(cy - d, t).1 }
+            } else if double(far) || other != 0 {
+                if down { band(cy - d, t).0 } else { band(cy + d, t).1 }
+            } else if down {
+                light_half.0
+            } else {
+                light_half.1
+            };
+            if down {
+                fill(b0, b1, near, y1);
+            } else {
+                fill(b0, b1, y0, near);
+            }
         }
     }
 }
@@ -1812,6 +2007,23 @@ mod tests {
         assert!(app.settings.layout.contains(first_editor), "the first editor stays");
         drop(app);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn box_drawing_characters_have_their_arms() {
+        // Left, up, right, down.
+        for (c, arms) in [('\u{2500}', [1, 0, 1, 0]), ('\u{2502}', [0, 1, 0, 1]), ('\u{250c}', [0, 0, 1, 1]), ('\u{2510}', [1, 0, 0, 1]), ('\u{2514}', [0, 1, 1, 0]), ('\u{2518}', [1, 1, 0, 0]), ('\u{251c}', [0, 1, 1, 1]), ('\u{2524}', [1, 1, 0, 1]), ('\u{252c}', [1, 0, 1, 1]), ('\u{2534}', [1, 1, 1, 0]), ('\u{253c}', [1, 1, 1, 1]), ('\u{2501}', [2, 0, 2, 0]), ('\u{254b}', [2, 2, 2, 2]), ('\u{2550}', [3, 0, 3, 0]), ('\u{2551}', [0, 3, 0, 3]), ('\u{2554}', [0, 0, 3, 3]), ('\u{255d}', [3, 3, 0, 0]), ('\u{256c}', [3, 3, 3, 3]), ('\u{2574}', [1, 0, 0, 0]), ('\u{257f}', [0, 2, 0, 1])] {
+            assert_eq!(box_arms(c), Some((arms, false)), "{c}");
+        }
+        for (c, arms) in [('\u{256d}', [0, 0, 1, 1]), ('\u{256e}', [1, 0, 0, 1]), ('\u{256f}', [1, 1, 0, 0]), ('\u{2570}', [0, 1, 1, 0])] {
+            assert_eq!(box_arms(c), Some((arms, true)), "{c}: a rounded corner");
+        }
+        // Dashed and diagonal ones stay the font's; other characters aren't boxes.
+        for c in ['\u{2504}', '\u{254c}', '\u{2571}', '\u{2573}', 'a', '\u{2588}', '\u{24ff}', '\u{2580}'] {
+            assert_eq!(box_arms(c), None, "{c}");
+        }
+        // Every character of the block has an entry.
+        assert!((0x2500..=0x257F_u32).all(|cp| char::from_u32(cp).is_some_and(|c| box_arms(c).is_some() || matches!(cp, 0x2504..=0x250B | 0x254C..=0x254F | 0x2571..=0x2573))));
     }
 
     #[test]

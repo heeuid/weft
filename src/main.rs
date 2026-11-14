@@ -8,6 +8,7 @@
 mod app;
 mod confirm;
 mod copymode;
+mod display_test;
 mod help;
 mod fileops;
 mod frame;
@@ -18,7 +19,11 @@ mod regress;
 mod media;
 mod mermaid;
 mod restart;
+#[cfg(test)]
+mod scenes;
 mod serial_ui;
+#[cfg(test)]
+mod shot;
 mod transfer;
 mod ui_panels;
 mod ui_term;

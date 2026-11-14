@@ -551,7 +551,7 @@ fn saving_then_closing_asks_about_what_changed_meanwhile() {
 fn every_dialog_closes_on_escape() {
     use crate::app::App;
     type IsOpen = fn(&App) -> bool;
-    let dialogs: [(&str, IsOpen); 9] = [
+    let dialogs: [(&str, IsOpen); 10] = [
         ("help", |a| a.help.is_some()),
         ("keys", |a| a.keys_window.is_some()),
         ("privacy", |a| a.records_window.is_some()),
@@ -561,6 +561,7 @@ fn every_dialog_closes_on_escape() {
         ("open_memo", |a| a.memo_picker),
         ("fonts", |a| a.font_menu.is_some()),
         ("theme", |a| a.theme_menu.is_some()),
+        ("display_test", |a| a.display_test.is_some()),
     ];
     let mut stayed = Vec::new();
     for (cmd, open) in dialogs {
@@ -902,4 +903,193 @@ fn tables_far_down_a_document_are_drawn_when_reached() {
     h.app.editor.files[i].goto = Some(lines);
     assert!(h.wait_for(20.0, |h| h.has("cell79a") && h.has("cell79b")), "the last table, once scrolled to");
     assert!(!h.has("cell0a"), "and the first is out of view");
+}
+
+/// weft showing what a program printed: Claude Code's logo (orange, its eye
+/// row on a black background), every kind of block character, and lines
+/// whose last `|` must stand in one column.
+fn logo_harness(font: &str) -> Harness {
+    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let script = std::env::temp_dir().join(format!("weft-logo-{}-{}.py", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)));
+    std::fs::write(
+        &script,
+        r#"import time
+E = chr(27)
+O = E + "[38;2;215;119;87m"
+K = E + "[48;2;0;0;0m"
+R = E + "[0m"
+print()
+print(" " + O + chr(0x2590) + K + chr(0x259b) + chr(0x2588) * 3 + chr(0x259c) + R + O + chr(0x258c) + R + "   Claude Code v2.1.312")
+print(O + chr(0x259d) + chr(0x259c) + chr(0x2588) * 5 + chr(0x259b) + chr(0x2598) + R + "  New sessions")
+print(O + "  " + chr(0x2598) * 2 + " " + chr(0x259d) * 2 + R + "    2 awaiting input")
+print()
+print("eighths up   " + "".join(chr(c) for c in range(0x2581, 0x2589)) + "|")
+print("eighths left " + "".join(chr(c) for c in range(0x258f, 0x2587, -1)) + "|")
+print("shades       " + chr(0x2591) * 2 + chr(0x2592) * 2 + chr(0x2593) * 2 + chr(0x2588) * 2 + "|")
+print("bar          " + E + "[48;2;200;0;0m" + chr(0x2588) * 8 + R + "|")
+print("MMMMMMMMMMMMMMMMMMMMM|")
+print("iiiiiiiiiiiiiiiiiiiii|")
+print("0123456789abcdefghijk|")
+print("v2.1.312  a.b,c;d:e!?|")
+print(chr(0xd55c) * 10 + " |")
+print("done", flush=True)
+time.sleep(600)
+"#,
+    )
+    .unwrap();
+    let prof = json!({"name": "t", "kind": "custom", "pty": ["python", "-u", script.display().to_string()], "agent": ["python", "-c", "0"]});
+    let mut h = Harness::new(json!({"profiles": [prof], "term_font": font, "icon_font": "builtin:d2coding"}));
+    // (Letter by letter in a font that isn't fixed-width: joined up.)
+    assert!(h.wait_for(30.0, |h| h.texts.iter().map(|t| t.0.as_str()).collect::<String>().contains("done")), "the program's output is on screen ({font})");
+    h.frames(3);
+    h
+}
+
+fn test_fonts() -> Vec<(&'static str, String)> {
+    let mut fonts = vec![("d2coding", "builtin:d2coding".to_string()), ("hack", "builtin:hack".to_string()), ("jetbrains", "builtin:jetbrains-mono".to_string())];
+    // One that is not fixed-width, where the system has it.
+    for (name, file) in [("arial", "C:/Windows/Fonts/arial.ttf"), ("dejavu", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")] {
+        if std::path::Path::new(file).is_file() {
+            fonts.push((name, file.to_string()));
+        }
+    }
+    fonts
+}
+
+/// In every font: the logo's only black is its two eyes (a quarter of a
+/// cell each), not a band across it; a row of full blocks hides its
+/// background entirely; and the lines' last `|` stand in one column. In
+/// pixels, as a window would show them.
+#[test]
+fn the_logo_and_the_grid_look_right_in_every_font() {
+    for (name, font) in test_fonts() {
+        let h = logo_harness(&font);
+        assert_eq!(h.app.settings.term_font, font, "{name} is the font in use");
+        let img = h.shot();
+        h.save_shot(&format!("logo-{name}"));
+        let (cw, ch) = h.ctx.fonts(|f| (crate::theme::cell_width(f, &crate::theme::term_font(h.app.settings.font_size)), f.row_height(&crate::theme::term_font(h.app.settings.font_size)).ceil()));
+        // Black: the eyes' cells' background, and nothing else on screen.
+        let black: Vec<(u32, u32)> = img.enumerate_pixels().filter(|(_, _, p)| p.0[0] < 12 && p.0[1] < 12 && p.0[2] < 12).map(|(x, y, _)| (x, y)).collect();
+        let quarter = (cw / 2.0) * (ch / 2.0);
+        assert!(!black.is_empty(), "{name}: the eyes are there");
+        let (x0, x1) = (black.iter().map(|p| p.0).min().unwrap(), black.iter().map(|p| p.0).max().unwrap());
+        let (y0, y1) = (black.iter().map(|p| p.1).min().unwrap(), black.iter().map(|p| p.1).max().unwrap());
+        assert!((y1 - y0) as f32 <= ch / 2.0 + 1.0, "{name}: black is half a row high at most (a band was a whole row): {} px, row {ch}", y1 - y0 + 1);
+        assert!((x1 - x0) as f32 <= cw * 4.5 + 1.0, "{name}: from one eye to the other: {} px, cell {cw}", x1 - x0 + 1);
+        let area = black.len() as f32;
+        assert!(area > quarter * 1.5 && area < quarter * 2.5, "{name}: two quarter cells of black, {area} px against {quarter} each");
+        // Between the eyes it is the logo's orange, not black.
+        let mid = img.get_pixel((x0 + x1) / 2, (y0 + y1) / 2).0;
+        assert!(mid[0] > 180 && mid[1] > 80 && mid[2] < 140, "{name}: orange between the eyes: {mid:?}");
+        // The bar's red background is covered completely.
+        let red = img.pixels().filter(|p| p.0[0] > 150 && p.0[1] < 40 && p.0[2] < 40).count();
+        assert_eq!(red, 0, "{name}: no red shows around the full blocks");
+        // The last `|` of each line: one column.
+        // (A run of letters is one text, each letter a cell wide; in a font
+        // that isn't fixed-width every letter is a text of its own.)
+        let bars: Vec<f32> = h.texts.iter().filter(|(t, r)| r.top() > 100.0 && t.contains('|')).map(|(t, r)| r.left() + t.chars().position(|c| c == '|').unwrap() as f32 * cw).collect();
+        assert!(bars.len() >= 8, "{name}: the lines are there: {}", bars.len());
+        let (lo, hi) = (bars.iter().cloned().fold(f32::MAX, f32::min), bars.iter().cloned().fold(f32::MIN, f32::max));
+        assert!(hi - lo <= cw * 0.6, "{name}: the lines end in one column: {lo} to {hi}, cell {cw}");
+    }
+}
+
+/// Display test: the window of test screens. Its first page shows the logo
+/// with only its eyes black, in pixels; the other pages open and show
+/// their lines; Help has a link to it.
+#[test]
+fn the_display_test_window_shows_its_pages() {
+    let mut h = Harness::new(json!({}));
+    h.command("help");
+    h.frames(2);
+    h.click_text("Display test\u{2026}");
+    h.frames(3);
+    assert_eq!(h.app.display_test, Some(0), "opened from Help, on its first page");
+    h.app.help = None;
+    h.frames(3);
+    assert!(h.shows("only the two eyes may be black") && h.shows("font: "));
+    let img = h.shot();
+    h.save_shot("display-test-blocks");
+    let (cw, ch) = h.ctx.fonts(|f| (crate::theme::cell_width(f, &crate::theme::term_font(h.app.settings.font_size)), f.row_height(&crate::theme::term_font(h.app.settings.font_size)).ceil()));
+    let black = img.pixels().filter(|p| p.0[0] < 12 && p.0[1] < 12 && p.0[2] < 12).count() as f32;
+    let quarter = (cw / 2.0) * (ch / 2.0);
+    assert!(black > quarter * 1.5 && black < quarter * 2.5, "two quarter cells of black: {black} px against {quarter} each");
+    assert_eq!(img.pixels().filter(|p| p.0[0] > 150 && p.0[1] < 40 && p.0[2] < 40).count(), 0, "no red around the full blocks");
+    for (page, line) in [("Colours", "256 colours:"), ("Columns", "Every line ends with a bar"), ("Boxes", "a tree:")] {
+        h.click_text(page);
+        h.frames(2);
+        assert!(h.shows(line), "{page} shows its lines");
+        h.save_shot(&format!("display-test-{}", page.to_lowercase()));
+    }
+    // Columns: the last | of every line in one column.
+    h.click_text("Columns");
+    h.frames(2);
+    let bars: Vec<f32> = h.texts.iter().filter(|(t, _)| t.trim_end().ends_with('|')).map(|(t, r)| r.left() + t.chars().position(|c| c == '|').unwrap() as f32 * cw).collect();
+    assert!(bars.len() >= 12, "the lines are there: {}", bars.len());
+    let (lo, hi) = (bars.iter().cloned().fold(f32::MAX, f32::min), bars.iter().cloned().fold(f32::MIN, f32::max));
+    assert!(hi - lo <= cw * 0.6, "one column: {lo} to {hi}, cell {cw}");
+}
+
+/// Frames and trees drawn with box characters are whole, in pixels: a
+/// vertical line runs unbroken through the rows it crosses, a horizontal
+/// one through its cells, corners meet, and a double frame is two closed
+/// lines. (A font's own lines stop short of the row above and below.)
+#[test]
+fn box_drawing_lines_join() {
+    let mut h = Harness::new(json!({}));
+    h.command("display_test");
+    h.frames(2);
+    h.click_text("Boxes");
+    h.frames(3);
+    let img = h.shot();
+    h.save_shot("display-test-boxes");
+    let (cw, ch) = h.ctx.fonts(|f| (crate::theme::cell_width(f, &crate::theme::term_font(h.app.settings.font_size)), f.row_height(&crate::theme::term_font(h.app.settings.font_size)).ceil()));
+    // Where the test terminal starts: its first row's text is drawn at the
+    // first cell's corner.
+    let name = h.texts.iter().find(|(t, _)| t.contains("name")).expect("the table's first row").1;
+    let (x0, row1) = (name.left() - cw, name.top());
+    let ink = |x: f32, y: f32| {
+        let p = img.get_pixel(x.round() as u32, y.round() as u32).0;
+        p[0] as u32 + p[1] as u32 + p[2] as u32 > 300
+    };
+    // Any ink within a pixel or two across a line's width.
+    let on_line_v = |x: f32, y: f32| (-2..=2).any(|dx| ink(x + dx as f32, y));
+    let on_line_h = |x: f32, y: f32| (-2..=2).any(|dy| ink(x, y + dy as f32));
+    // The table's left edge: column 0, from the middle of its top border
+    // row (one above "name") to the middle of its bottom border (row 4).
+    let left = x0 + cw / 2.0;
+    // (To a pixel short of the bottom corner's middle: its line ends there.)
+    let (top, bottom) = (row1 - ch / 2.0, row1 + 3.0 * ch + ch / 2.0 - 1.5);
+    let mut y = top;
+    while y <= bottom {
+        assert!(on_line_v(left, y), "the table's left edge is unbroken at y {y} (top {top}, bottom {bottom})");
+        y += 1.0;
+    }
+    // Its top border: from the first corner to the last (21 cells).
+    let mut x = left;
+    while x <= x0 + 20.0 * cw + cw / 2.0 {
+        assert!(on_line_h(x, top), "the table's top border is unbroken at x {x}");
+        x += 1.0;
+    }
+    // The double frame beside it (columns 23 to 35): its left edge is two
+    // lines with a gap, each unbroken over the rows.
+    // (In the rows of text: where the middle line crosses, the inner line
+    // opens to let it in.)
+    let dx = x0 + 23.0 * cw + cw / 2.0;
+    for row in [row1, row1 + 2.0 * ch] {
+        let mut y = row;
+        while y < row + ch {
+            let cols: Vec<bool> = (-4..=4).map(|o| ink(dx + o as f32, y)).collect();
+            let runs = cols.windows(2).filter(|w| !w[0] && w[1]).count() + cols[0] as usize;
+            assert_eq!(runs, 2, "the double frame's edge is two lines at y {y}: {cols:?}");
+            y += 1.0;
+        }
+    }
+    // And between the rows of text the outer line goes on while the inner
+    // one opens: never no line at all.
+    let mut y = row1;
+    while y < row1 + 3.0 * ch {
+        assert!((-4..=4).any(|o| ink(dx + o as f32, y)), "the double frame's outer edge is unbroken at y {y}");
+        y += 1.0;
+    }
 }

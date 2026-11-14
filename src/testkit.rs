@@ -18,6 +18,11 @@ pub struct Harness {
     pub size: egui::Vec2,
     /// What the last frame drew: each text and its rect.
     pub texts: Vec<(String, Rect)>,
+    /// The last frame's shapes and scale, and the textures so far: what
+    /// `shot` draws from.
+    shapes: Vec<egui::epaint::ClippedShape>,
+    scale: f32,
+    textures: crate::shot::Textures,
     /// The last text weft put on the clipboard.
     pub copied: Option<String>,
     /// What weft asked of its window in the last frame (Close, CancelClose…),
@@ -55,8 +60,10 @@ impl Harness {
         std::fs::write(dir.join("settings.json"), base.to_string()).unwrap();
         let ctx = egui::Context::default();
         crate::theme::install_fonts(&ctx, crate::theme::DEFAULT_FONT, crate::theme::DEFAULT_ICON_FONT);
-        let app = App::new_in(ctx.clone(), crate::host::DataDir::at(&dir));
-        let mut h = Harness { app, ctx, dir, size: vec2(1200.0, 800.0), texts: Vec::new(), copied: None, window: Vec::new(), window_log: Vec::new(), close_window: false, now: 0.0, pointer: pos2(600.0, 400.0) };
+        let mut app = App::new_in(ctx.clone(), crate::host::DataDir::at(&dir));
+        // As main does: the fonts the settings name (not only the default).
+        app.apply_fonts();
+        let mut h = Harness { app, ctx, dir, size: vec2(1200.0, 800.0), texts: Vec::new(), shapes: Vec::new(), scale: 1.0, textures: Default::default(), copied: None, window: Vec::new(), window_log: Vec::new(), close_window: false, now: 0.0, pointer: pos2(600.0, 400.0) };
         h.frames(3);
         h
     }
@@ -74,6 +81,7 @@ impl Harness {
         self.close_window();
         assert!(!self.window.iter().any(|c| matches!(c, egui::ViewportCommand::CancelClose)), "weft closes without a question");
         self.app = App::new_in(self.ctx.clone(), crate::host::DataDir::at(&self.dir));
+        self.app.apply_fonts();
         self.frames(3);
     }
 
@@ -112,6 +120,9 @@ impl Harness {
             collect(&c.shape, &mut texts);
         }
         self.texts = texts;
+        self.textures.update(&out.textures_delta);
+        self.scale = out.pixels_per_point;
+        self.shapes = out.shapes;
     }
 
     pub fn frames(&mut self, n: usize) {
@@ -123,6 +134,21 @@ impl Harness {
     /// Is this text on screen (a drawn text containing it)?
     pub fn shows(&self, needle: &str) -> bool {
         self.texts.iter().any(|(t, _)| t.contains(needle))
+    }
+
+    /// The last frame as an image, pixel for pixel what a window would show.
+    pub fn shot(&self) -> image::RgbaImage {
+        let (w, h) = ((self.size.x * self.scale).round() as usize, (self.size.y * self.scale).round() as usize);
+        self.textures.render(&self.ctx.tessellate(self.shapes.clone(), self.scale), self.scale, w, h)
+    }
+
+    /// The last frame saved as target/shots/<name>.png, to be looked at.
+    pub fn save_shot(&self, name: &str) -> std::path::PathBuf {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("shots");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("{name}.png"));
+        self.shot().save(&path).unwrap();
+        path
     }
 
     /// Is a text drawn that is exactly this (a row's name, say: not a

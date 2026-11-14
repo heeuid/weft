@@ -44,6 +44,7 @@ impl App {
         self.ui_serial_dialog(ctx);
         self.ui_file_op(ctx);
         self.ui_confirm(ctx);
+        self.ui_display_test(ctx);
         self.ui_toasts(ctx);
         self.ui_dock_drop(ctx);
         self.apply_actions();

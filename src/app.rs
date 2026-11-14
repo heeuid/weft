@@ -1381,6 +1381,8 @@ pub struct App {
     pub update_checked: Instant,
     /// The "Serial console…" dialog, while open.
     pub serial_dialog: Option<crate::serial_ui::SerialDialog>,
+    /// The Display test window's page, while it is open (display_test.rs).
+    pub display_test: Option<usize>,
     /// Where a newer weft would appear, when not where `restart` looks by
     /// itself (tests: the environment is one for the whole process).
     pub newer_weft_at: Option<std::path::PathBuf>,
@@ -1538,6 +1540,7 @@ impl App {
             update_ready: false,
             update_checked: Instant::now(),
             serial_dialog: None,
+            display_test: None,
             newer_weft_at: None,
             file_op: None,
             confirm: None,
