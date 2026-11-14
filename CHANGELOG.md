@@ -5,6 +5,18 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.3.3
+
+Fixed
+- **Windows: several widgets shown in one go were drawn on top of each
+  other**: a script that runs `wls`, `wprogress` and `wchoose` one after
+  the other, or any program that shows more than one, left only the last
+  to be seen, on the first one's lines. Windows' pseudo console hands a
+  program's events on at once and its text when it next draws, so each
+  widget came with the cursor still on the first one's line. A widget
+  that comes while the cursor is where the one before it is to be now
+  goes below that one. (0.3.2 listed this as known and left it.)
+
 ## 0.3.2
 
 Fixed (each found by a new test, and held by it)
@@ -37,11 +49,6 @@ Tests
   keys, hovers, turns the wheel; a test terminal can run a script that
   behaves like a shell and writes down what it is sent.
 - docs/regression.md: each of them listed; the numbers measured again.
-
-Known, not changed
-- Windows: several widgets printed by one program in one burst land on
-  one line (the pseudo console hands events on before the text). One
-  widget per command, as the helpers print them, is placed right.
 
 ## 0.3.1
 

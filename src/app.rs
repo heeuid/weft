@@ -843,10 +843,27 @@ pub enum WidgetKind {
 pub struct InlineWidget {
     pub id: String,
     pub anchor: u64,
+    /// The line the cursor was on when it came (see `widget_line`).
+    pub came: u64,
     pub rows: usize,
     pub kind: WidgetKind,
     pub sort: Option<(usize, bool)>,
     pub chosen: Option<usize>,
+}
+
+/// The line a new widget goes on, and the line to remember it came at.
+/// It is the cursor's line, unless the cursor is still where the widget
+/// before it is to be: then the text of that one has not arrived yet, and
+/// this one goes below it. (Windows' pseudo console hands a program's
+/// events on at once and its text when it next draws: several widgets
+/// printed in one go all came with the cursor on the first one's line, and
+/// were drawn on top of each other.) Lines are never numbered twice, so a
+/// cursor inside the last widget's lines means nothing else.
+pub fn widget_line(last: Option<&InlineWidget>, cursor: u64) -> (u64, u64) {
+    match last {
+        Some(w) if cursor >= w.came && cursor < w.anchor + w.rows as u64 => (w.anchor + w.rows as u64, w.came),
+        _ => (cursor, cursor),
+    }
 }
 
 pub struct Pane {
@@ -2690,7 +2707,8 @@ impl App {
                 if let Some(w) = p.widgets.iter_mut().find(|w| w.id == id) {
                     w.kind = kind;
                 } else {
-                    p.widgets.push(InlineWidget { id, anchor, rows, kind, sort: None, chosen: None });
+                    let (anchor, came) = widget_line(p.widgets.last(), anchor);
+                    p.widgets.push(InlineWidget { id, anchor, came, rows, kind, sort: None, chosen: None });
                     if p.widgets.len() > 300 {
                         p.widgets.remove(0);
                     }
@@ -3091,6 +3109,29 @@ mod tests {
     /// A process list that arrives late from the host shown before is not
     /// taken for this host's: Kill would end a process here with a pid from
     /// there.
+    #[test]
+    fn a_widget_goes_below_one_whose_text_has_not_come() {
+        let w = |anchor: u64, came: u64, rows: usize| InlineWidget { id: String::new(), anchor, came, rows, kind: WidgetKind::Progress { pct: 0.0, label: String::new() }, sort: None, chosen: None };
+        // The first, or one that comes after the text of the one before:
+        // where the cursor is.
+        assert_eq!(widget_line(None, 7), (7, 7));
+        assert_eq!(widget_line(Some(&w(0, 0, 3)), 3), (3, 3));
+        assert_eq!(widget_line(Some(&w(0, 0, 3)), 40), (40, 40));
+        // The cursor still on the first one's line, or part way through
+        // its text: below it. And so on down a run of them: the third
+        // comes with the cursor still where the first came.
+        assert_eq!(widget_line(Some(&w(0, 0, 3)), 0), (3, 0));
+        assert_eq!(widget_line(Some(&w(0, 0, 3)), 2), (3, 0));
+        assert_eq!(widget_line(Some(&w(3, 0, 1)), 0), (4, 0));
+        assert_eq!(widget_line(Some(&w(4, 0, 3)), 0), (7, 0));
+        // The text of the first two has come by now: the cursor is where
+        // the third is to be, and the fourth goes below that.
+        assert_eq!(widget_line(Some(&w(4, 0, 3)), 4), (7, 0));
+        // A cursor above where the run began is somewhere else (a program
+        // drawing higher up on the screen): left where it is.
+        assert_eq!(widget_line(Some(&w(13, 10, 3)), 8), (8, 8));
+    }
+
     #[test]
     fn a_process_list_from_another_host_is_dropped() {
         let mut h = crate::testkit::Harness::new(json!({}));

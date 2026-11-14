@@ -28,25 +28,25 @@ cargo check --workspace --all-targets --target aarch64-apple-darwin       # and 
 ## In numbers
 
 <!-- numbers:begin -->
-Measured 2026-11-14 at commit 054064c by `python tools/testdoc.py` (it rewrites this part).
+Measured 2026-11-14 at commit 2f4e62e by `python tools/testdoc.py` (it rewrites this part).
 
 **How many tests**
 
 | Kind | the app | weft-core | weft-draw | together |
 |---|--:|--:|--:|--:|
-| Unit | 58 | 64 | 31 | 153 |
-| Screen (the whole app, no window) | 63 | 0 | 0 | 63 |
+| Unit | 59 | 64 | 31 | 154 |
+| Screen (the whole app, no window) | 64 | 0 | 0 | 64 |
 | Integration (real shells, the agent; run with `--ignored`) | 1 | 13 | 1 | 15 |
-| **All** | 122 | 77 | 32 | **231** |
+| **All** | 124 | 77 | 32 | **233** |
 
 **How much of the code they run** (lines run / lines there are; test code itself left out)
 
 | Crate | lines | unit | screen | integration | all together |
 |---|--:|--:|--:|--:|--:|
-| weft (the app) | 11301 | 33 % | 71 % | 1 % | 83 % |
+| weft (the app) | 11320 | 33 % | 71 % | 1 % | 83 % |
 | weft-core | 4476 | 75 % | 43 % | 28 % | 88 % |
 | weft-draw | 2238 | 82 % | 49 % | 7 % | 93 % |
-| **everything** | 18015 | **50 %** | **61 %** | **8 %** | **85 %** |
+| **everything** | 18034 | **50 %** | **61 %** | **8 %** | **85 %** |
 
 By file (all kinds together), least covered first:
 
@@ -60,10 +60,10 @@ By file (all kinds together), least covered first:
 | `src/serial_ui.rs` | 174 | 65 % | 61 |
 | `src/transfer.rs` | 509 | 79 % | 106 |
 | `src/ui_term.rs` | 2005 | 83 % | 337 |
-| `crates/weft-core/src/pty.rs` | 375 | 84 % | 60 |
-| `crates/weft-core/src/term.rs` | 1590 | 84 % | 254 |
+| `crates/weft-core/src/pty.rs` | 375 | 84 % | 61 |
+| `crates/weft-core/src/term.rs` | 1590 | 84 % | 253 |
 | `src/ui_panels.rs` | 4334 | 86 % | 603 |
-| `src/app.rs` | 2130 | 86 % | 294 |
+| `src/app.rs` | 2149 | 86 % | 294 |
 | `src/widgets.rs` | 412 | 87 % | 55 |
 | `crates/weft-draw/src/theme.rs` | 441 | 88 % | 52 |
 | `crates/weft-core/src/host.rs` | 1613 | 88 % | 189 |
@@ -118,6 +118,7 @@ What the numbers don't show:
 | Windows: terminals run on Windows' own console host, or a conpty.dll the setting names or that is beside weft.exe; never one found on PATH; About and Display test say which | `pty::tests::the_console_host_is_the_settings_or_the_one_beside_or_windows_own`, `terminals_run_on_windows_own_console_host_by_default`, `regress::the_version_is_shown` |
 | A closed terminal's console host goes too (it stayed for good, using a core) | `pty::tests::a_dropped_terminal_is_closed_before_the_end`, `cursor_reports_are_told_from_other_input`, `the_first_cursor_report_fits_the_screen_it_was_opened_with` |
 | Shell events become widgets in the terminal: table (sort), progress (updated in place), choice (types its number), file list (open, show in Files), a note | `regress::shell_events_become_widgets` |
+| Several widgets shown by one program in one go are one below the other (on Windows they were drawn on top of each other: only the last could be seen); each takes its clicks | `regress::widgets_printed_in_one_go_each_get_their_lines`, `app::tests::a_widget_goes_below_one_whose_text_has_not_come` |
 | What weft types reaches the program: the composer's line, typing, a paste | `regress::what_weft_types_reaches_the_program` |
 | The mouse in a terminal: wheel scrolls back and stops at the end; drag selects characters (over lines too), double click a word, triple click a line, Alt+drag a block; a click drops the selection; Ctrl+click opens a path at its line, not a plain word; the menu's Copy selection and Split right | `regress::the_mouse_in_a_terminal` |
 | A command block: found from the shell's marks with its exit code; its buttons copy the command, copy the output, fold and unfold, edit in the composer, run again, open the output in the editor; fold all, unfold all, previous and next command, clear scrollback | `regress::a_command_block_has_its_buttons` |
@@ -267,9 +268,8 @@ What no test here can see. The first is the one worth doing after changing how a
 6. **After weft is closed, no `OpenConsole.exe` of its own is left** in Task Manager (the tests check the same path; `python tools/leak.py` counts them around a test run).
 7. **install.bat / uninstall.bat**, and `weft --version` from a shell after installing.
 8. **How it feels**: typing latency, flicker, a resize. Frame times are measured without a GPU (`frame_times`); what a screen does with them is not.
-9. **Several widgets printed in one burst** (Windows): the pseudo console hands a program's events on at once and its text when it next draws, so events printed without a pause between land on one line and cover each other. One widget per command, as the helpers print them, is placed right. Not something weft can change; the widget test pauses between them.
-10. **A conpty.dll of your own** (the `console_host` setting, or one beside weft.exe): the tests run on Windows' own; that a given one is loaded and used is checked by hand (About says which, and Task Manager shows OpenConsole.exe instead of conhost.exe).
-11. **Linux and macOS**: everything compiles for them (see the commands at the top), and nothing has been run there. `cargo test --workspace` on such a machine tests their code; several tests start `python`, which there may be `python3`.
+9. **A conpty.dll of your own** (the `console_host` setting, or one beside weft.exe): the tests run on Windows' own; that a given one is loaded and used is checked by hand (About says which, and Task Manager shows OpenConsole.exe instead of conhost.exe).
+10. **Linux and macOS**: everything compiles for them (see the commands at the top), and nothing has been run there. `cargo test --workspace` on such a machine tests their code; several tests start `python`, which there may be `python3`.
 
 ## Tools
 

@@ -1226,9 +1226,8 @@ fn shell_events_become_widgets() {
     let body = r#"
 def after(line):
     weft(t="widget", id="p1", kind="progress", rows=1, pct=100, label="done")
-# (A pause after each: Windows' pseudo console hands an event on at once
-# and the text when it next draws, so events printed in one burst would
-# all land on the line the first one is on.)
+# (A pause after each, as when each is a command of its own; without one:
+# widgets_printed_in_one_go_each_get_their_lines.)
 weft(t="widget", id="t1", kind="table", rows=3, columns=["item", "count"], data=[["beta", "20"], ["alpha", "3"]])
 print("item count"); print("beta 20"); print("alpha 3"); time.sleep(0.3)
 weft(t="widget", id="p1", kind="progress", rows=1, pct=40, label="copying")
@@ -1615,7 +1614,8 @@ fn shell_harness() -> (Harness, std::path::PathBuf) {
 
 /// … with these settings besides.
 fn shell_harness_in(more: serde_json::Value) -> (Harness, std::path::PathBuf) {
-    // (A pause after each mark: see shell_events_become_widgets.)
+    // (A pause after each mark: Windows' pseudo console hands a mark on at
+    // once and the text when it next draws.)
     let body = r#"
 def mark(s):
     sys.stdout.write(E + ']133;' + s + chr(7))
@@ -2400,4 +2400,41 @@ fn the_editor_tabs_switch_and_close() {
     h.click_text("Close all");
     h.frames(2);
     assert!(h.app.editor.files.is_empty());
+}
+
+/// A program that shows several widgets in one go, without a pause (a
+/// script, say): each is on its own lines, one below the other. On
+/// Windows they all came with the cursor on the first one's line and were
+/// drawn on top of each other: only the last could be seen.
+#[test]
+fn widgets_printed_in_one_go_each_get_their_lines() {
+    let body = r#"
+weft(t="widget", id="t1", kind="table", rows=3, columns=["item", "count"], data=[["beta", "20"], ["alpha", "3"]])
+print("item count"); print("beta 20"); print("alpha 3")
+weft(t="widget", id="p1", kind="progress", rows=1, pct=40, label="copying")
+print("40% copying")
+weft(t="widget", id="c1", kind="choose", rows=3, options=["yes-please", "no-thanks"])
+print("choose"); print("1) yes-please"); print("2) no-thanks")
+weft(t="widget", id="f1", kind="files", rows=3, dir="/d", entries=[
+    {"name": "subdir", "path": "/d/subdir", "dir": True, "size": 0, "mtime": 0, "mode": "drwxr-xr-x"},
+    {"name": "notes.txt", "path": "/d/notes.txt", "dir": False, "size": 2048, "mtime": 0, "mode": "-rw-r--r--"}])
+print("Name"); print("subdir"); print("notes.txt")
+weft(t="widget", id="p1", kind="progress", rows=1, pct=60, label="copying")
+"#;
+    let (mut h, file) = script_harness(body, json!({}));
+    let pane = h.app.active_pane_id().unwrap();
+    let lines: Vec<(u64, usize)> = h.app.panes[&pane].widgets.iter().map(|w| (w.anchor, w.rows)).collect();
+    assert_eq!(lines, [(0, 3), (3, 1), (4, 3), (7, 3)], "one below the other");
+    // Each can be seen, in that order down the screen, on the lines its
+    // own text was printed on.
+    let ys = [h.at_exact("beta").y, h.at("60%  copying").y, h.at_exact("no-thanks").y, h.at_exact("notes.txt").y];
+    assert!(ys.windows(2).all(|w| w[0] < w[1]), "table, progress, choice, files: {ys:?}");
+    for (widget, text) in [("beta", "beta 20"), ("no-thanks", "2) no-thanks"), ("notes.txt", "notes.txt ")] {
+        let under = h.texts.iter().find(|(t, _)| t.starts_with(text)).unwrap_or_else(|| panic!("the line \"{text}\"")).1;
+        assert!((h.at_exact(widget).y - under.center().y).abs() < under.height(), "\"{widget}\" is on the line printed as \"{text}\"");
+    }
+    // And each takes its clicks: the choice types its number.
+    let opt = h.at_exact("no-thanks");
+    h.click(opt);
+    assert!(h.wait_for(20.0, |_| received(&file).lines().any(|l| l.trim() == "2")), "the program was sent \"2\": {:?}", received(&file));
 }
