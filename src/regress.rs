@@ -1176,3 +1176,124 @@ fn laid_out_files_are_not_kept_for_ever() {
     let kept = crate::ui_panels::kept_galleys(&h.ctx);
     assert!((1..=4).contains(&kept), "seven files were shown, {kept} layouts are kept");
 }
+
+/// weft with a terminal whose program is a python script: it prints what
+/// `body` says (with `weft(...)` to send weft an event, as the shell
+/// helpers do), then "ready-marker", then writes every line it is sent to
+/// a file. What weft types into a terminal can be read back from it.
+fn script_harness(body: &str, more: serde_json::Value) -> (Harness, std::path::PathBuf) {
+    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let stem = std::env::temp_dir().join(format!("weft-script-{}-{n}", std::process::id()));
+    let (script, received) = (stem.with_extension("py"), stem.with_extension("txt"));
+    let _ = std::fs::remove_file(&received);
+    let head = "import base64, json, sys, time\nE = chr(27)\ndef weft(**m):\n    sys.stdout.write(E + ']7777;' + base64.b64encode(json.dumps(m).encode()).decode() + chr(7))\n    sys.stdout.flush()\n";
+    let tail = format!("print('ready-marker', flush=True)\nout = open(r'{}', 'a', encoding='utf-8')\nwhile True:\n    line = sys.stdin.readline()\n    if not line:\n        break\n    out.write(line)\n    out.flush()\n    after(line)\n", received.display());
+    let after = if body.contains("def after(") { "" } else { "def after(line):\n    pass\n" };
+    std::fs::write(&script, format!("{head}{after}{body}\n{tail}")).unwrap();
+    let prof = json!({"name": "t", "kind": "custom", "pty": ["python", "-u", script.display().to_string()], "agent": ["python", "-c", "0"]});
+    let mut settings = json!({"profiles": [prof]});
+    for (k, v) in more.as_object().unwrap() {
+        settings[k] = v.clone();
+    }
+    let mut h = Harness::new(settings);
+    assert!(h.wait_for(30.0, |h| h.texts.iter().map(|t| t.0.as_str()).collect::<String>().contains("ready-marker")), "the script's output is on screen");
+    h.frames(3);
+    (h, received)
+}
+
+fn received(file: &std::path::Path) -> String {
+    std::fs::read_to_string(file).unwrap_or_default()
+}
+
+/// What a shell helper prints becomes a widget in the terminal: a table
+/// (sorted by a click on a column), a progress bar (updated in place), a
+/// choice (a click types its number), a file list (open, show in Files),
+/// and a note pops up.
+#[test]
+fn shell_events_become_widgets() {
+    use crate::app::WidgetKind;
+    let body = r#"
+def after(line):
+    weft(t="widget", id="p1", kind="progress", rows=1, pct=100, label="done")
+# (A pause after each: Windows' pseudo console hands an event on at once
+# and the text when it next draws, so events printed in one burst would
+# all land on the line the first one is on.)
+weft(t="widget", id="t1", kind="table", rows=3, columns=["item", "count"], data=[["beta", "20"], ["alpha", "3"]])
+print("item count"); print("beta 20"); print("alpha 3"); time.sleep(0.3)
+weft(t="widget", id="p1", kind="progress", rows=1, pct=40, label="copying")
+print("40% copying"); time.sleep(0.3)
+weft(t="widget", id="c1", kind="choose", rows=3, options=["yes-please", "no-thanks"])
+print("choose"); print("1) yes-please"); print("2) no-thanks"); time.sleep(0.3)
+weft(t="widget", id="f1", kind="files", rows=3, dir="/d", entries=[
+    {"name": "subdir", "path": "/d/subdir", "dir": True, "size": 0, "mtime": 0, "mode": "drwxr-xr-x"},
+    {"name": "notes.txt", "path": "/d/notes.txt", "dir": False, "size": 2048, "mtime": 0, "mode": "-rw-r--r--"}])
+print("Name"); print("subdir"); print("notes.txt"); time.sleep(0.3)
+weft(t="notify", msg="hello from the shell")
+"#;
+    let (mut h, file) = script_harness(body, json!({}));
+    let pane = h.app.active_pane_id().unwrap();
+    let kinds = |h: &Harness| -> Vec<&'static str> {
+        h.app.panes[&pane].widgets.iter().map(|w| match w.kind {
+            WidgetKind::Table { .. } => "table",
+            WidgetKind::Progress { .. } => "progress",
+            WidgetKind::Choose { .. } => "choose",
+            WidgetKind::Files { .. } => "files",
+        }).collect()
+    };
+    assert_eq!(kinds(&h), ["table", "progress", "choose", "files"]);
+    // Each where its own text was printed, one below the other.
+    let lines: Vec<(u64, usize)> = h.app.panes[&pane].widgets.iter().map(|w| (w.anchor, w.rows)).collect();
+    assert_eq!(lines, [(0, 3), (3, 1), (4, 3), (7, 3)], "the widgets' lines");
+    assert!(h.app.toasts.iter().any(|t| t.text.contains("hello from the shell")), "the note pops up");
+    assert!(h.shows("40%  copying"), "the progress bar says how far");
+    // The table: a click on a column sorts by it.
+    assert!(h.has("item") && h.has("count") && h.has("beta") && h.has("alpha"));
+    let before = (h.at_exact("beta").y, h.at_exact("alpha").y);
+    assert!(before.0 < before.1, "as printed: beta first");
+    let col = h.at_exact("item");
+    h.click(col);
+    h.frames(2);
+    assert!(h.app.panes[&pane].widgets[0].sort.is_some_and(|s| s.0 == 0), "sorted by the first column");
+    assert!(h.at_exact("alpha").y < h.at_exact("beta").y, "alpha now comes first");
+    // The choice: a click types its number, and the row is marked.
+    let opt = h.at_exact("no-thanks");
+    h.click(opt);
+    assert_eq!(h.app.panes[&pane].widgets[2].chosen, Some(1), "clicked at {opt:?}; texts there: {:?}", h.texts.iter().filter(|(_, r)| r.expand(4.0).contains(opt)).map(|t| &t.0).collect::<Vec<_>>());
+    assert!(h.wait_for(20.0, |_| received(&file).lines().any(|l| l.trim() == "2")), "the program was sent \"2\": {:?}", received(&file));
+    assert!(h.shows("chosen"));
+    // The file list: sizes are readable, a double click opens a file, the
+    // menu shows a folder in Files.
+    assert!(h.has("Name") && h.has("Size") && h.has("Mode") && h.has("2.0K") && h.has("drwxr-xr-x"));
+    let row = h.at_exact("notes.txt");
+    h.double_click(row);
+    h.frames(2);
+    assert!(h.app.editor.files.iter().any(|f| f.host == "t" && f.path == "/d/notes.txt"), "opened in the editor");
+    let row = h.at_exact("subdir");
+    h.right_click(row);
+    h.click_text("Show in Files panel");
+    assert_eq!(h.app.side.root, Some(("t".to_string(), "/d/subdir".to_string())));
+    // The program answers by updating its progress bar: the same widget.
+    assert!(h.wait_for(20.0, |h| h.shows("100%  done")), "updated in place");
+    assert_eq!(kinds(&h).len(), 4, "not a fifth widget");
+}
+
+/// The composer's line and a paste reach the program in the terminal as
+/// typed; a file's path is inserted at the prompt from Files.
+#[test]
+fn what_weft_types_reaches_the_program() {
+    let (mut h, file) = script_harness("", json!({}));
+    h.command("composer");
+    h.type_text("echo composed");
+    h.key(Key::Enter, Modifiers::NONE);
+    assert!(h.wait_for(20.0, |_| received(&file).contains("echo composed")), "the composer's line: {:?}", received(&file));
+    // Typed straight into the terminal.
+    h.click(egui::pos2(300.0, 500.0));
+    h.type_text("typed here");
+    h.key(Key::Enter, Modifiers::NONE);
+    assert!(h.wait_for(20.0, |_| received(&file).contains("typed here")), "typing: {:?}", received(&file));
+    // Pasted (Ctrl+V arrives as a paste event).
+    h.frame(vec![Event::Paste("pasted text".into())]);
+    h.key(Key::Enter, Modifiers::NONE);
+    assert!(h.wait_for(20.0, |_| received(&file).contains("pasted text")), "a paste: {:?}", received(&file));
+}
