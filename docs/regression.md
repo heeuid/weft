@@ -24,7 +24,61 @@ cargo clippy --workspace --all-targets                  # must report nothing
 ## In numbers
 
 <!-- numbers:begin -->
-(not measured yet: run `python tools/testdoc.py`)
+Measured 2026-11-14 at commit b878b9d by `python tools/testdoc.py` (it rewrites this part).
+
+**How many tests**
+
+| Kind | the app | weft-core | weft-draw | together |
+|---|--:|--:|--:|--:|
+| Unit | 58 | 60 | 31 | 149 |
+| Screen (the whole app, no window) | 43 | 0 | 0 | 43 |
+| Integration (real shells, the agent; run with `--ignored`) | 1 | 13 | 1 | 15 |
+| **All** | 102 | 73 | 32 | **207** |
+
+**How much of the code they run** (lines run / lines there are; test code itself left out)
+
+| Crate | lines | unit | screen | integration | all together |
+|---|--:|--:|--:|--:|--:|
+| weft (the app) | 11282 | 33 % | 55 % | 1 % | 68 % |
+| weft-core | 4331 | 73 % | 36 % | 28 % | 86 % |
+| weft-draw | 2220 | 81 % | 44 % | 7 % | 88 % |
+| **everything** | 17833 | **49 %** | **49 %** | **8 %** | **75 %** |
+
+By file (all kinds together), least covered first:
+
+| File | lines | run | not run |
+|---|--:|--:|--:|
+| `src/main.rs` | 135 | 2 % | 132 |
+| `src/widgets.rs` | 412 | 28 % | 298 |
+| `src/x11.rs` | 49 | 47 % | 26 |
+| `src/restart.rs` | 61 | 48 % | 32 |
+| `src/mermaid.rs` | 326 | 54 % | 151 |
+| `src/media.rs` | 254 | 59 % | 104 |
+| `src/serial_ui.rs` | 174 | 65 % | 61 |
+| `src/ui_panels.rs` | 4333 | 66 % | 1468 |
+| `src/ui_term.rs` | 2000 | 71 % | 585 |
+| `crates/weft-draw/src/theme.rs` | 441 | 74 % | 113 |
+| `src/app.rs` | 2118 | 74 % | 542 |
+| `src/transfer.rs` | 509 | 78 % | 111 |
+| `crates/weft-core/src/term.rs` | 1525 | 79 % | 320 |
+| `crates/weft-core/src/pty.rs` | 295 | 80 % | 58 |
+| `crates/weft-draw/src/icons.rs` | 165 | 81 % | 32 |
+| `src/confirm.rs` | 233 | 84 % | 37 |
+| `crates/weft-core/src/host.rs` | 1613 | 88 % | 196 |
+| `crates/weft-draw/src/highlight.rs` | 428 | 88 % | 51 |
+| `src/copymode.rs` | 211 | 89 % | 24 |
+| `crates/weft-core/src/find.rs` | 186 | 92 % | 14 |
+| `src/fileops.rs` | 179 | 93 % | 13 |
+| `crates/weft-draw/src/md.rs` | 960 | 94 % | 62 |
+| `crates/weft-core/src/records.rs` | 257 | 94 % | 16 |
+| `crates/weft-core/src/secret.rs` | 274 | 95 % | 14 |
+| `crates/weft-core/src/editfind.rs` | 181 | 96 % | 8 |
+| `src/frame.rs` | 61 | 97 % | 2 |
+| `crates/weft-draw/src/keys.rs` | 112 | 97 % | 3 |
+| `src/doccheck.rs` | 59 | 98 % | 1 |
+| `crates/weft-draw/src/fontfix.rs` | 114 | 99 % | 1 |
+| `src/display_test.rs` | 148 | 100 % | 0 |
+| `src/version.rs` | 20 | 100 % | 0 |
 <!-- numbers:end -->
 
 What the numbers don't show:

@@ -53,7 +53,9 @@ def binaries():
 
 
 def tests_of(exe, ignored=False):
-    out = sh([exe, '--list'] + (['--ignored'] if ignored else [])).stdout
+    # (An instrumented binary writes a profile wherever it runs: this one goes with the others.)
+    env = dict(os.environ, LLVM_PROFILE_FILE=os.path.join(PROF, 'list-%p.profraw'))
+    out = sh([exe, '--list'] + (['--ignored'] if ignored else []), env=env).stdout
     return [l[:-len(': test')] for l in out.splitlines() if l.endswith(': test')]
 
 
@@ -119,15 +121,20 @@ def main():
         'unit': lambda c, e: ([t for t in lists[c] if not is_screen(t)], []),
         'screen': lambda c, e: ([t for t in lists[c] if is_screen(t)], []),
         'integration': lambda c, e: (ignored[c], ['--ignored', '--test-threads=1']),
-        'all': lambda c, e: (lists[c] + ignored[c], ['--include-ignored', '--test-threads=4']),
     }
     counts = {k: {c: len(plan(c, exes[c])[0]) for c in exes} for k, plan in kinds.items()}
-    cov, failures = {}, {}
+    counts['all'] = {c: sum(counts[k][c] for k in kinds) for c in exes}
+    cov, failures, datas = {}, {}, []
     for kind, plan in kinds.items():
         data, failed = run_kind(kind, exes, plan)
+        datas.append(data)
         cov[kind] = coverage(data, exes)
         failures[kind] = failed
         print(kind, 'done', '' if not failed else f'({len(failed)} failed)', flush=True)
+    # All together: the three kinds' profiles merged (not a fourth run).
+    merged = os.path.join(PROF, 'all.profdata')
+    sh(['cargo', 'profdata', '--', 'merge', '-sparse'] + datas + ['-o', merged])
+    cov['all'] = coverage(merged, exes)
 
     files = sorted(f for f in cov['all'] if f not in TEST_ONLY)
     crates = ['weft (the app)', 'weft-core', 'weft-draw']
@@ -170,7 +177,12 @@ def main():
         L.append(f'| `{f}` | {n} | {pct(c, n)} | {n - c} |')
     block = '\n'.join(L)
     if any(failures.values()):
-        print('FAILED while measuring:', failures)
+        # Numbers from a run with failing tests are not written down.
+        print('tests FAILED while measuring, nothing written:')
+        for kind, failed in failures.items():
+            for line in failed:
+                print('  ', kind, line)
+        sys.exit(1)
     if '--print' in sys.argv:
         print(block)
         return

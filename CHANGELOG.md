@@ -5,6 +5,43 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.3.0
+
+Added
+- **Display test** (a link in Help, the palette, the ☰ menu): a window of
+  four test screens drawn with the chosen font by the terminal's own
+  painter: blocks and a logo, colours and attributes, columns, boxes.
+  Each says what to look for, so a font can be checked by eye.
+
+Fixed
+- Box drawing characters (light, heavy and double lines, rounded
+  corners) are drawn by weft, like the block characters since 0.2.0: a
+  font's lines stop short of the row above and below, and frames and
+  trees came out broken between rows.
+- Esc goes to what has the keyboard. The windows that got Esc in 0.2.3
+  took it from a terminal beside them (vim under an open Help) or from
+  the palette or a composer on top of them.
+- More typed after Ctrl+S, before the save was done, is no longer taken
+  for saved; closing weft waits for a save under way.
+- A selection in a markdown table stays with that table when another
+  scrolls out of view.
+- What waited for a remote agent that died fails, and says so, instead of
+  waiting for good.
+- The editor keeps the layout of the last few files, not of every file
+  ever opened.
+
+Tests
+- They run side by side: about 20 s for all of them (it was 45).
+- The app can be drawn to pixels without a window, and tests look at the
+  picture: the logo, blocks and columns in four fonts, box lines that
+  must join, the Display test window.
+- Eighteen screens drawn by the version before 0.2.0 and by this one
+  were compared pixel by pixel: twelve are identical, the others differ
+  by what was added.
+- docs/regression.md names every test (a test fails otherwise), says
+  what each kind covers in numbers (`python tools/testdoc.py`), and
+  lists what is left to check by hand.
+
 ## 0.2.3
 
 Fixed

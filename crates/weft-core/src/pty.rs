@@ -300,6 +300,16 @@ impl Drop for Pty {
         // on a thread, which `finish_closing` waits for before weft ends.
         if let Some(m) = self.master.take() {
             let closer = thread::spawn(move || drop(m));
+            // This crate's own tests open terminals without an app around
+            // them, and the process ends with the last test: each waits
+            // here for its close (weft itself does once, as it ends).
+            #[cfg(test)]
+            {
+                let until = Instant::now() + Duration::from_secs(10);
+                while !closer.is_finished() && Instant::now() < until {
+                    thread::sleep(Duration::from_millis(2));
+                }
+            }
             let mut closing = CLOSING.lock().unwrap_or_else(|e| e.into_inner());
             closing.retain(|h| !h.is_finished());
             closing.push(closer);
@@ -311,11 +321,46 @@ impl Drop for Pty {
 mod tests {
     use super::*;
 
+    /// The tests here that open terminals take turns: they count this
+    /// process's console hosts.
+    static TURN: Mutex<()> = Mutex::new(());
+
+    /// The console hosts (Windows: one per pseudo console) that are this
+    /// process's children.
+    fn console_hosts() -> std::collections::HashSet<u32> {
+        use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+        let mut sys = System::new().expect("the process list");
+        sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
+        let me = sysinfo::Pid::from_u32(std::process::id());
+        sys.processes()
+            .iter()
+            .filter(|(_, p)| p.parent() == Some(me) && matches!(p.name().to_string_lossy().to_lowercase().as_str(), "openconsole.exe" | "conhost.exe"))
+            .map(|(pid, _)| pid.as_u32())
+            .collect()
+    }
+
+    /// No console host is left of terminals that were dropped: each stayed
+    /// for good and kept a core busy. (Found by counting processes by hand
+    /// after test runs; this counts them in the test.)
+    fn no_console_host_is_left(before: &std::collections::HashSet<u32>) {
+        let until = Instant::now() + Duration::from_secs(15);
+        loop {
+            let left: Vec<u32> = console_hosts().difference(before).copied().collect();
+            if left.is_empty() {
+                return;
+            }
+            assert!(Instant::now() < until, "console hosts left behind by dropped terminals: {left:?}");
+            thread::sleep(Duration::from_millis(100));
+        }
+    }
+
     /// A terminal that is dropped has its pseudo console closed by the time
     /// `finish_closing` returns: nothing is left for the process's end to
     /// cut short (which left a console host running for good).
     #[test]
     fn a_dropped_terminal_is_closed_before_the_end() {
+        let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
+        let hosts = console_hosts();
         let argv: Vec<String> = ["python", "-c", "import time; time.sleep(60)"].iter().map(|s| s.to_string()).collect();
         // Dropped at once, before anything it sent was answered; dropped
         // after a moment; and one that was answered as a terminal does.
@@ -324,10 +369,12 @@ mod tests {
         let mut later: Vec<Pty> = (0..2).map(|_| Pty::spawn(&argv, None, &[], 80, 24, || {}).expect("python")).collect();
         thread::sleep(Duration::from_millis(700));
         later[0].write(b"\x1b[1;1R");
-        assert!(later[0].reported && !later[1].reported);
+        // (Only Windows' console host asks, so only there is it noted.)
+        assert_eq!((later[0].reported, later[1].reported), (cfg!(windows), false));
         drop(later);
         assert_eq!(finish_closing(Duration::from_secs(20)), 0, "every pseudo console was closed");
         assert_eq!(finish_closing(Duration::ZERO), 0, "and none is waiting");
+        no_console_host_is_left(&hosts);
     }
 
     /// The cursor's place told to a console host that is just starting is
@@ -341,6 +388,8 @@ mod tests {
         assert_eq!(fit_cursor_report(b"\x1b[5;7R", 24, 80), b"\x1b[5;7R");
         assert_eq!(fit_cursor_report(b"ab\x1b[99;99Rcd", 24, 80), b"ab\x1b[24;80Rcd");
         assert_eq!(fit_cursor_report(b"plain \x1b[A", 24, 80), b"plain \x1b[A");
+        let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
+        let hosts = console_hosts();
         let argv: Vec<String> = ["python", "-c", "import time; time.sleep(60)"].iter().map(|s| s.to_string()).collect();
         let mut pty = Pty::spawn(&argv, None, &[], 80, 24, || {}).expect("python");
         thread::sleep(Duration::from_millis(700));
@@ -348,6 +397,7 @@ mod tests {
         pty.write(b"\x1b[43;1R");
         drop(pty);
         assert_eq!(finish_closing(Duration::from_secs(20)), 0, "the console host took the answer and closed");
+        no_console_host_is_left(&hosts);
     }
 
     #[test]
