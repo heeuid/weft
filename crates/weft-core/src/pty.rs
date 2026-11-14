@@ -32,6 +32,83 @@ pub fn finish_closing(limit: Duration) -> usize {
     }
 }
 
+/// Which console host this process's terminals run on, said in words
+/// (Windows; elsewhere the system's ptys, and nothing to choose).
+static CONSOLE_HOST: std::sync::OnceLock<ConsoleHost> = std::sync::OnceLock::new();
+
+/// The console host in use, and why not the one that was asked for, if so.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ConsoleHost {
+    /// "Windows' own (conhost.exe)", or the conpty.dll's path.
+    pub what: String,
+    /// The setting named a file that isn't there (Windows' own is used).
+    pub problem: Option<String>,
+}
+
+/// Decide which console host terminals use, once, before the first one is
+/// opened. On Windows a terminal runs on a console host: Windows has one
+/// (conhost.exe), and a newer or pinned one can be given as a conpty.dll
+/// (with its OpenConsole.exe beside it):
+///
+/// 1. the file `setting` names (a conpty.dll, or the folder it is in);
+/// 2. else a conpty.dll beside weft's executable;
+/// 3. else Windows' own.
+///
+/// Never one that merely is on PATH: portable-pty loads "conpty.dll" by
+/// name, which found another terminal's (WezTerm's, when installed), so
+/// weft behaved differently from one PC to the next and changed when that
+/// program was updated.
+pub fn choose_console_host(setting: &str) -> ConsoleHost {
+    CONSOLE_HOST.get_or_init(|| pick_console_host(setting)).clone()
+}
+
+/// Where the setting, or the folder beside the executable, has a
+/// conpty.dll; and what to say if the setting's isn't there.
+#[cfg(any(windows, test))]
+fn console_host_file(setting: &str, beside: Option<&std::path::Path>) -> (Option<std::path::PathBuf>, Option<String>) {
+    let setting = setting.trim();
+    let mut problem = None;
+    if !setting.is_empty() {
+        let p = std::path::PathBuf::from(setting);
+        let file = if p.is_dir() { p.join("conpty.dll") } else { p };
+        if file.is_file() {
+            return (Some(file), None);
+        }
+        problem = Some(format!("console host: {} is not there; Windows' own is used", file.display()));
+    }
+    let beside = beside.map(|d| d.join("conpty.dll")).filter(|f| f.is_file());
+    // (One beside the executable is used even when the setting's is missing.)
+    (beside, problem)
+}
+
+#[cfg(windows)]
+fn pick_console_host(setting: &str) -> ConsoleHost {
+    use windows_sys::Win32::System::LibraryLoader::{LoadLibraryExW, SetDefaultDllDirectories, LOAD_LIBRARY_SEARCH_APPLICATION_DIR, LOAD_LIBRARY_SEARCH_DEFAULT_DIRS, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR, LOAD_LIBRARY_SEARCH_SYSTEM32, LOAD_LIBRARY_SEARCH_USER_DIRS};
+    let exe_dir = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.to_path_buf()));
+    let (file, mut problem) = console_host_file(setting, exe_dir.as_deref());
+    unsafe {
+        // From here on a DLL asked for by name comes from weft's folder or
+        // Windows' own, not from PATH or the current folder.
+        SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_USER_DIRS);
+        if let Some(file) = file {
+            // Loaded by its full path now: "conpty.dll" asked for by name
+            // later is this one.
+            let wide: Vec<u16> = file.as_os_str().to_string_lossy().encode_utf16().chain([0]).collect();
+            let loaded = LoadLibraryExW(wide.as_ptr(), std::ptr::null_mut(), LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+            if !loaded.is_null() {
+                return ConsoleHost { what: file.display().to_string(), problem };
+            }
+            problem = Some(format!("console host: {} could not be loaded; Windows' own is used", file.display()));
+        }
+    }
+    ConsoleHost { what: "Windows' own (conhost.exe)".into(), problem }
+}
+
+#[cfg(not(windows))]
+fn pick_console_host(_setting: &str) -> ConsoleHost {
+    ConsoleHost { what: "the system's ptys".into(), problem: None }
+}
+
 pub struct Pty {
     master: Option<Box<dyn MasterPty + Send>>,
     writer: Box<dyn Write + Send>,
@@ -92,6 +169,9 @@ impl Pty {
         rows: u16,
         wake: impl Fn() + Send + 'static,
     ) -> Result<Pty, String> {
+        // (Decided by now when weft runs; for whoever opens a terminal
+        // without having said: no setting.)
+        choose_console_host("");
         let pair = native_pty_system()
             .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
             .map_err(|e| format!("openpty: {e}"))?;
@@ -398,6 +478,59 @@ mod tests {
         drop(pty);
         assert_eq!(finish_closing(Duration::from_secs(20)), 0, "the console host took the answer and closed");
         no_console_host_is_left(&hosts);
+    }
+
+    /// Which conpty.dll is used: the setting's (a file or its folder), else
+    /// one beside the executable, else none (Windows' own). A setting that
+    /// names nothing is said, and does not stop the one beside from being
+    /// used.
+    #[test]
+    fn the_console_host_is_the_settings_or_the_one_beside_or_windows_own() {
+        let dir = std::env::temp_dir().join(format!("weft-conhost-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (given, beside, empty) = (dir.join("given"), dir.join("beside"), dir.join("empty"));
+        for d in [&given, &beside, &empty] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(given.join("conpty.dll"), "").unwrap();
+        std::fs::write(beside.join("conpty.dll"), "").unwrap();
+        let s = |p: &std::path::Path| p.display().to_string();
+        // Nothing set, nothing beside: Windows' own.
+        assert_eq!(console_host_file("", Some(&empty)), (None, None));
+        assert_eq!(console_host_file("  ", None), (None, None));
+        // Beside the executable.
+        assert_eq!(console_host_file("", Some(&beside)), (Some(beside.join("conpty.dll")), None));
+        // The setting wins: as a file, or as its folder.
+        assert_eq!(console_host_file(&s(&given.join("conpty.dll")), Some(&beside)), (Some(given.join("conpty.dll")), None));
+        assert_eq!(console_host_file(&s(&given), Some(&beside)), (Some(given.join("conpty.dll")), None));
+        // A setting that names nothing: said, and the one beside is used.
+        let (file, problem) = console_host_file(&s(&dir.join("nowhere")), Some(&beside));
+        assert_eq!(file, Some(beside.join("conpty.dll")));
+        assert!(problem.is_some_and(|p| p.contains("nowhere") && p.contains("not there")));
+        let (file, problem) = console_host_file(&s(&empty), Some(&empty));
+        assert!(file.is_none() && problem.is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// With nothing set and no conpty.dll beside the test binary, a
+    /// terminal runs on Windows' own console host, whatever is on PATH
+    /// (it used WezTerm's, where that is installed).
+    #[test]
+    #[cfg(windows)]
+    fn terminals_run_on_windows_own_console_host_by_default() {
+        let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
+        let argv: Vec<String> = ["python", "-c", "import time; time.sleep(60)"].iter().map(|s| s.to_string()).collect();
+        let before = console_hosts();
+        let pty = Pty::spawn(&argv, None, &[], 80, 24, || {}).expect("python");
+        assert_eq!(choose_console_host("ignored: it was decided already").what, "Windows' own (conhost.exe)");
+        use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+        let mut sys = System::new().expect("the process list");
+        sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing().with_exe(UpdateKind::Always));
+        let mine: Vec<String> = console_hosts().difference(&before).filter_map(|pid| sys.process(sysinfo::Pid::from_u32(*pid))).map(|p| p.name().to_string_lossy().to_lowercase()).collect();
+        assert_eq!(mine, ["conhost.exe"], "the terminal's console host");
+        drop(pty);
+        assert_eq!(finish_closing(Duration::from_secs(20)), 0);
+        no_console_host_is_left(&before);
     }
 
     #[test]

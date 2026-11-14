@@ -5,6 +5,32 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.3.1
+
+Changed
+- **Windows: terminals run on Windows' own console host** (conhost.exe).
+  Until now weft used whichever `conpty.dll` was found on PATH, which on
+  a PC with WezTerm installed was WezTerm's: weft behaved differently
+  from one PC to the next, and changed when that program was updated.
+  A `conpty.dll` is still used when you give one: put it (with its
+  `OpenConsole.exe`) beside `weft.exe`, or name it in `settings.json`:
+  `"console_host": "C:/path/to/folder-or-conpty.dll"`. weft ships none.
+  About weft, Display test and the log say which one is in use.
+  If something feels different in the terminal after this update (typing
+  Korean, redrawing), the line above with WezTerm's folder brings back
+  what you had.
+
+Fixed
+- The integration tests left a console host behind (they open terminals
+  without an app around them). The terminal tests now count this
+  process's console hosts themselves and fail if one is left.
+
+Checked
+- The whole workspace and its tests compile for Linux and macOS without
+  a warning (`cargo check --workspace --all-targets --target …`); what is
+  specific to Windows is built on Windows only. They have still not been
+  run there.
+
 ## 0.3.0
 
 Added

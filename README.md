@@ -43,7 +43,7 @@ TUI 그리드(날실) 사이에 GUI(씨실)를 엮어 넣은 터미널. Rust (`e
 
 | 경로 | 내용 |
 |---|---|
-| `data/settings.json` | 폰트 크기, 호스트 프로필, 세션(탭/분할/작업 디렉터리), 기록 설정 |
+| `data/settings.json` | 폰트 크기, 호스트 프로필, 세션(탭/분할/작업 디렉터리), 기록 설정, 콘솔 호스트(`console_host`) |
 | `data/records/<날짜>.jsonl` | 끝난 명령마다 한 줄: 명령, 출력, 종료 코드, 시작 시각, 걸린 시간, 디렉터리, 호스트 |
 | `data/history/<host>.txt` | 호스트별 명령 줄 (컴포저 ↑↓/제안). 각 줄 앞에 bash 형식 시각 줄 `#<unix초>` |
 | `data/logs/weft-<날짜>.log` | 앱 이벤트, 셸 실행 명령, 알림, 오류 |
@@ -176,6 +176,15 @@ TUI 그리드(날실) 사이에 GUI(씨실)를 엮어 넣은 터미널. Rust (`e
 - **Commands**: 현재 패널의 명령 블록 목록 (클릭 시 스크롤).
 - **Search**: 파일 내용 검색. 모드 `text`(그대로) / `fuzzy`(글자 순서, `gst`→`git status`) / `glob`(`*` `?` `[ab]`) / `regex`(확장 정규식, `\(`는 괄호), `ignore case`, `hidden`(점으로 시작하는 파일·폴더도, 기본 끔). 원격은 `grep -E`(fuzzy·glob도 같은 뜻의 정규식으로 바꿔 보냄), 로컬은 Rust. 잘못된 정규식은 오류로 표시. 결과 클릭 = 해당 줄 열기, 우클릭 = 그 폴더로 cd·Files에서 보기·복사.
 - **Procs**: 프로세스 표(PID, CPU%, MEM%, 사용자, 명령줄), 정렬/필터, 우클릭 TERM/KILL. 원격은 `ps`, 이 PC는 weft가 직접 읽습니다(CPU%는 작업 관리자처럼 전체 코어 기준; Windows에는 TERM이 없어 둘 다 종료).
+
+## 콘솔 호스트 (Windows)
+
+Windows에서 터미널은 콘솔 호스트 위에서 돕니다. weft는 **Windows에 들어 있는 것**(`conhost.exe`)을 씁니다. 다른 것을 쓰려면 직접 넣습니다(weft에는 들어 있지 않습니다):
+
+- `conpty.dll`과 `OpenConsole.exe`를 `weft.exe` 옆에 두거나,
+- `data/settings.json`에 `"console_host": "C:/폴더 또는 conpty.dll 경로"`.
+
+설정 → 옆에 둔 파일 → Windows 내장 순으로 고르고, 시작할 때 한 번 정합니다. PATH에 있는 다른 프로그램의 `conpty.dll`은 쓰지 않습니다(전에는 WezTerm이 설치된 PC에서 그것을 썼습니다). 지금 무엇을 쓰는지는 팔레트 `About weft`, `Display test` 창, 로그의 `console host:` 줄에 나옵니다. 설정한 경로에 파일이 없으면 알림으로 알리고 Windows 내장을 씁니다. Linux와 macOS에는 해당 없습니다.
 
 ## 연결
 

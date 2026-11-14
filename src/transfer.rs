@@ -310,7 +310,7 @@ impl App {
 
 use crate::app::{PanelId, Region, SideTab};
 use crate::theme;
-use egui::{pos2, vec2, Align2, Color32, CornerRadius, FontId, Id, Rect, RichText, Stroke};
+use egui::{vec2, Align2, Color32, CornerRadius, FontId, Id, Rect, RichText, Stroke};
 
 impl App {
     /// Where a file on `host` can be sent from its menu: the local Downloads
@@ -555,7 +555,7 @@ fn cursor_in_window(ctx: &egui::Context) -> Option<egui::Pos2> {
             }
             ScreenToClient(hwnd, &mut pt);
             let ppp = ctx.pixels_per_point();
-            let p = pos2(pt.x as f32 / ppp, pt.y as f32 / ppp);
+            let p = egui::pos2(pt.x as f32 / ppp, pt.y as f32 / ppp);
             return ctx.screen_rect().contains(p).then_some(p);
         }
     }

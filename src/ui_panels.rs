@@ -162,7 +162,7 @@ const COMMANDS: &[(Cmd, &str, &str, &[&str])] = &[
     (Cmd::LocalShell(crate::host::LocalShell::Cmd), "shell_cmd", "Local shell: cmd", &[]),
     (Cmd::LocalShell(crate::host::LocalShell::Nu), "shell_nu", "Local shell: nushell", &[]),
     (Cmd::MarkdownBreaks, "markdown_breaks", "Markdown: toggle line breaks (GitHub PR style / CommonMark)", &[]),
-    (Cmd::About, "about", "About weft: which version this is", &[]),
+    (Cmd::About, "about", "About weft: which version this is, and which console host", &[]),
     (Cmd::DisplayTest, "display_test", "Display test: see how blocks, colours, columns and boxes are drawn", &[]),
     (Cmd::ConfirmUnsaved, "confirm_unsaved", "Ask before closing unsaved files: on / off", &[]),
     (Cmd::ConfirmRunning, "confirm_running", "Ask before ending running commands: on / off", &[]),
@@ -289,7 +289,10 @@ impl App {
                     self.ask_close_panes(vec![id])
                 }
             }
-            Cmd::About => self.toast(crate::version::line(), crate::app::ToastKind::Info),
+            Cmd::About => {
+                let about = if cfg!(windows) { format!("{}\nconsole host: {}", crate::version::line(), self.console_host.what) } else { crate::version::line() };
+                self.toast(about, crate::app::ToastKind::Info)
+            }
             Cmd::DisplayTest => self.display_test = Some(0),
             Cmd::ConfirmUnsaved => {
                 self.settings.confirm_unsaved = !self.settings.confirm_unsaved;

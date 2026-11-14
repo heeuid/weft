@@ -546,6 +546,12 @@ pub struct Settings {
     /// Ask before closing a terminal where a command is still running.
     #[serde(default = "d_true")]
     pub confirm_running: bool,
+    /// Windows: the console host terminals run on. Empty: a conpty.dll
+    /// beside weft.exe if there is one, else Windows' own. Or the path of a
+    /// conpty.dll (or of its folder; OpenConsole.exe beside it). Read when
+    /// weft starts.
+    #[serde(default)]
+    pub console_host: String,
 }
 
 /// What was open besides the terminals, kept with the session: the
@@ -599,7 +605,7 @@ impl Default for Settings {
                 },
             });
         }
-        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, layout: Layout::default(), show_hidden: false, show_ignored: true, find_mode: Default::default(), palette_mode: d_palette_mode(), cursor_style: Default::default(), local_shell: Default::default(), mermaid: Default::default(), follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, term_font: d_font_file(), icon_font: d_icon_font(), records: Default::default(), passwords: Default::default(), keys: Default::default(), session: Vec::new(), side_tabs: Default::default(), open: Default::default(), confirm_unsaved: true, confirm_running: true }
+        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, layout: Layout::default(), show_hidden: false, show_ignored: true, find_mode: Default::default(), palette_mode: d_palette_mode(), cursor_style: Default::default(), local_shell: Default::default(), mermaid: Default::default(), follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, term_font: d_font_file(), icon_font: d_icon_font(), records: Default::default(), passwords: Default::default(), keys: Default::default(), session: Vec::new(), side_tabs: Default::default(), open: Default::default(), confirm_unsaved: true, confirm_running: true, console_host: String::new() }
     }
 }
 
@@ -1396,6 +1402,8 @@ pub struct App {
     /// and what had the keyboard then.
     pub esc_windows: u8,
     pub focus_before: Option<egui::Id>,
+    /// The console host this weft's terminals run on (pty::choose_console_host).
+    pub console_host: crate::pty::ConsoleHost,
     /// The Display test window's page, while it is open (display_test.rs).
     pub display_test: Option<usize>,
     /// Where a newer weft would appear, when not where `restart` looks by
@@ -1492,8 +1500,11 @@ impl App {
             settings.term_font = crate::theme::DEFAULT_FONT.into();
         }
         crate::records::set_switches(&settings.records);
+        // Before any terminal is opened.
+        let console_host = crate::pty::choose_console_host(&settings.console_host);
         let settings_passwords = settings.passwords;
         data.log(&format!("start: {}, data dir {}", crate::version::line(), data.root.display()));
+        data.log(&format!("console host: {}", crate::pty::choose_console_host("").what));
         let mut app = App {
             ctx,
             data,
@@ -1555,6 +1566,7 @@ impl App {
             update_ready: false,
             update_checked: Instant::now(),
             serial_dialog: None,
+            console_host,
             esc_windows: 0,
             focus_before: None,
             display_test: None,
@@ -1603,6 +1615,10 @@ impl App {
             app.new_tab("local", None);
         }
         app.restore_open();
+        // A console host that was asked for and isn't there: said once.
+        if let Some(problem) = app.console_host.problem.clone() {
+            app.toast(problem, ToastKind::Error);
+        }
         app
     }
 

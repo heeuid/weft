@@ -20,7 +20,7 @@ serialport = { version = "4", default-features = false }
 sysinfo = { version = "0.40.3", default-features = false, features = ["system", "user"] }
 
 [target."cfg(windows)".dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Security_Cryptography", "Win32_System_Memory", "Win32_Foundation", "Win32_UI_Shell"] }
+windows-sys = { version = "0.59", features = ["Win32_Security_Cryptography", "Win32_System_Memory", "Win32_Foundation", "Win32_UI_Shell", "Win32_System_LibraryLoader"] }
 
 [target."cfg(unix)".dependencies]
 libc = "0.2"

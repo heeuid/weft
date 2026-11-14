@@ -9,7 +9,11 @@ source is not named in this file.
 cargo test --workspace                                  # everything but the integration tests: about 20 s
 cargo test --workspace -- --ignored --test-threads=1    # the integration tests (real shells; need Git Bash): about 2 min
 cargo clippy --workspace --all-targets                  # must report nothing
+cargo check --workspace --all-targets --target x86_64-unknown-linux-gnu   # compiles for Linux, without a warning
+cargo check --workspace --all-targets --target aarch64-apple-darwin       # and for macOS
 ```
+
+(The last two need the targets: `rustup target add x86_64-unknown-linux-gnu aarch64-apple-darwin`. They check that what is specific to one system is built only there; they do not run anything.)
 
 ## The kinds of test
 
@@ -108,6 +112,7 @@ What the numbers don't show:
 | Folds | `ui_term::tests::folds_collapse_rows` |
 | Pane split junctions; zoom | `ui_term::tests::junction_where_three_panes_meet`, `zoom_shows_only_active_pane_full_size` |
 | Drag a pane header to move it | `ui_term::tests::dragging_a_pane_header_moves_the_pane`, `app::node_tests::*` |
+| Windows: terminals run on Windows' own console host, or a conpty.dll the setting names or that is beside weft.exe; never one found on PATH; About and Display test say which | `pty::tests::the_console_host_is_the_settings_or_the_one_beside_or_windows_own`, `terminals_run_on_windows_own_console_host_by_default`, `regress::the_version_is_shown` |
 | A closed terminal's console host goes too (it stayed for good, using a core) | `pty::tests::a_dropped_terminal_is_closed_before_the_end`, `cursor_reports_are_told_from_other_input`, `the_first_cursor_report_fits_the_screen_it_was_opened_with` |
 | Serial console: bridge, command, missing port | `host::tests::serial_bridge_and_command`, `regress::serial_tab_explains_a_missing_port` |
 | X11 forwarding (-Y, DISPLAY, old settings) | `x11::tests::*` |
@@ -235,7 +240,8 @@ What no test here can see. The first is the one worth doing after changing how a
 6. **After weft is closed, no `OpenConsole.exe` of its own is left** in Task Manager (the tests check the same path; `python tools/leak.py` counts them around a test run).
 7. **install.bat / uninstall.bat**, and `weft --version` from a shell after installing.
 8. **How it feels**: typing latency, flicker, a resize. Frame times are measured without a GPU (`frame_times`); what a screen does with them is not.
-9. **Linux and macOS**: nothing here runs there.
+9. **A conpty.dll of your own** (the `console_host` setting, or one beside weft.exe): the tests run on Windows' own; that a given one is loaded and used is checked by hand (About says which, and Task Manager shows OpenConsole.exe instead of conhost.exe).
+10. **Linux and macOS**: everything compiles for them (see the commands at the top), and nothing has been run there. `cargo test --workspace` on such a machine tests their code; several tests start `python`, which there may be `python3`.
 
 ## Tools
 

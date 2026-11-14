@@ -517,6 +517,15 @@ fn the_version_is_shown() {
     h.app.help = None;
     h.command("about");
     assert!(h.shows(&line), "About says it");
+    // And on Windows which console host the terminals run on: Windows'
+    // own, with nothing set and none beside the test binary.
+    if cfg!(windows) {
+        assert_eq!(h.app.console_host.what, "Windows' own (conhost.exe)");
+        assert!(h.shows("console host: Windows' own"), "About names the console host");
+        h.command("display_test");
+        h.frames(2);
+        assert!(h.shows("console host: Windows' own"), "and so does Display test");
+    }
 }
 
 /// "Save and close", and while the save is on its way another file is

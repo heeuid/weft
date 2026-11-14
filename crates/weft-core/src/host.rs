@@ -1838,7 +1838,8 @@ mod loopback {
     }
 
     /// A local pane with each local shell choice: marks, cwd, exit codes
-    /// where the shell has them.
+    /// where the shell has them. (The choices are Windows' shells.)
+    #[cfg(windows)]
     fn local_shell_check(choice: LocalShell, cmd: &str, exit: Option<i32>) {
         let (argv, env) = local_shell(choice);
         if which(&argv[0]).is_none() && !Path::new(&argv[0]).is_file() {

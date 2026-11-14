@@ -141,7 +141,8 @@ impl App {
                         page = i;
                     }
                 }
-                ui.label(RichText::new(format!("font: {which}, {} pt", self.settings.font_size)).size(11.5).color(theme::text_faint()));
+                let host = if cfg!(windows) { format!(" · console host: {}", self.console_host.what) } else { String::new() };
+                ui.label(RichText::new(format!("font: {which}, {} pt{host}", self.settings.font_size)).size(11.5).color(theme::text_faint()));
             });
             ui.label(RichText::new(PAGES[page].1).size(12.5).color(theme::text_dim()));
             ui.add_space(4.0);
