@@ -17,25 +17,16 @@ weft-draw = { path = "crates/weft-draw" }
 eframe = "0.31"
 egui = "0.31"
 vte = "0.15"
-portable-pty = "0.9.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 base64 = "0.22"
-flate2 = "1.1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico"] }
 regex = "1"
 mermaid-svg = "0.7.0"
 resvg = "0.49"
 hayro = "0.9.0"
-syntect = { version = "5.3", default-features = false, features = ["default-fancy"] }
-two-face = { version = "0.5", default-features = false, features = ["syntect-default-fancy"] }
-chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
-chacha20 = "0.9"
 zeroize = "1"
-getrandom = "0.2"
-ttf-parser = "0.25"
 serialport = { version = "4", default-features = false }
-sysinfo = { version = "0.40.3", default-features = false, features = ["system", "user"] }
 
 [build-dependencies]
 embed-resource = "3"
@@ -45,10 +36,7 @@ opt-level = 3
 debug = false
 
 [target."cfg(windows)".dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Security_Cryptography", "Win32_System_Memory", "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell"] }
-
-[target."cfg(unix)".dependencies]
-libc = "0.2"
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging"] }
 
 # `cargo test` and `cargo build` without --release: the dependencies fully
 # optimized (egui, fonts and the syntax tables are far too slow otherwise),
