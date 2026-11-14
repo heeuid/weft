@@ -595,6 +595,8 @@ impl Conn {
                 if stdin.write_all(line.as_bytes()).and_then(|_| stdin.write_all(b"\n")).and_then(|_| stdin.flush()).is_err()
                 {
                     self.status = ConnStatus::Failed("agent pipe closed".into());
+                    // Whoever asked gets an answer (a save waits for one).
+                    self.backend_failures.push(json!({"id": id, "ok": false, "error": "agent offline: its pipe closed"}));
                 }
             }
             _ => {

@@ -209,7 +209,7 @@ impl Pty {
         if bytes.is_empty() {
             return;
         }
-        if !self.reported && has_cursor_report(bytes) {
+        if cfg!(windows) && !self.reported && has_cursor_report(bytes) {
             self.reported = true;
             // The first one answers the console host's question as it
             // starts, when its screen is still the size it was opened

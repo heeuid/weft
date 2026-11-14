@@ -9,6 +9,8 @@ mod app;
 mod confirm;
 mod copymode;
 mod display_test;
+#[cfg(test)]
+mod doccheck;
 mod help;
 mod fileops;
 mod frame;

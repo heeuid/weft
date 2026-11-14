@@ -202,6 +202,12 @@ thread_local! {
     static EDITOR_LAYOUTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+/// How many laid-out texts are being kept.
+#[cfg(test)]
+pub fn kept_galleys(ctx: &egui::Context) -> usize {
+    ctx.memory_mut(|m| m.data.get_temp_mut_or_default::<Vec<(Id, KeptGalley)>>(Id::new("kept-galleys")).len())
+}
+
 /// How often an editor's text has been laid out on this thread.
 #[cfg(test)]
 pub fn editor_layouts() -> usize {
@@ -209,9 +215,17 @@ pub fn editor_layouts() -> usize {
 }
 
 impl KeptGalley {
+    /// How many are kept: the editors on screen (a few, side by side),
+    /// not every file ever opened (a big file's galley is big).
+    const KEPT: usize = 4;
+
+    fn all(ui: &Ui) -> Vec<(Id, KeptGalley)> {
+        ui.ctx().memory_mut(|m| m.data.get_temp_mut_or_default::<Vec<(Id, KeptGalley)>>(Id::new("kept-galleys")).clone())
+    }
+
     /// The galley kept under `id`, if it is for `key` and these fonts.
     fn get(ui: &Ui, id: Id, key: u64) -> Option<Arc<egui::Galley>> {
-        let kept: KeptGalley = ui.ctx().memory_mut(|m| m.data.get_temp_mut_or_default::<KeptGalley>(id).clone());
+        let kept = Self::all(ui).into_iter().find(|(i, _)| *i == id)?.1;
         let atlas = ui.fonts(|f| f.texture_atlas());
         match (kept.galley, kept.atlas) {
             (Some(g), Some(a)) if kept.key == key && Arc::ptr_eq(&a, &atlas) => Some(g),
@@ -224,7 +238,12 @@ impl KeptGalley {
         #[cfg(test)]
         EDITOR_LAYOUTS.with(|n| n.set(n.get() + 1));
         let (galley, atlas) = ui.fonts(|f| (f.layout_job(job), f.texture_atlas()));
-        ui.ctx().memory_mut(|m| m.data.insert_temp(id, KeptGalley { key, galley: Some(galley.clone()), atlas: Some(atlas) }));
+        let mut all = Self::all(ui);
+        all.retain(|(i, _)| *i != id);
+        all.push((id, KeptGalley { key, galley: Some(galley.clone()), atlas: Some(atlas) }));
+        let over = all.len().saturating_sub(Self::KEPT);
+        all.drain(..over);
+        ui.ctx().memory_mut(|m| m.data.insert_temp(Id::new("kept-galleys"), all));
         galley
     }
 }
@@ -478,8 +497,44 @@ impl App {
     /// shell gets no Esc for it. (A key being bound has taken its Esc by
     /// now: that cancels the binding, not the window.)
     pub fn escape_closes_windows(&mut self, ctx: &egui::Context) {
-        let open = self.display_test.is_some() || self.serial_dialog.is_some() || self.font_menu.is_some() || self.memo_picker || self.keys_window.is_some() || self.records_window.is_some() || self.help.is_some();
-        if !open || !ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+        let windows = [self.display_test.is_some(), self.serial_dialog.is_some(), self.font_menu.is_some(), self.memo_picker, self.keys_window.is_some(), self.records_window.is_some(), self.help.is_some()];
+        let now = windows.iter().enumerate().fold(0u8, |m, (i, open)| m | ((*open as u8) << i));
+        // One that has just opened takes the keyboard from the terminal;
+        // a click in a terminal gives it back, and Esc is then the shell's
+        // again (vim beside an open Help keeps its Esc).
+        // Who has the keyboard: as it was before this frame when Esc is in
+        // it (egui has already taken the focus from a text field for Esc).
+        let focused = if ctx.input(|i| i.key_pressed(Key::Escape)) {
+            self.focus_before
+        } else {
+            self.focus_before = ctx.memory(|m| m.focused());
+            self.focus_before
+        };
+        let in_terminal = focused.is_some_and(|f| self.panes.keys().any(|id| f == Id::new(("pane", *id))));
+        if now & !self.esc_windows != 0 {
+            self.focus_term = false;
+            if let (true, Some(f)) = (in_terminal, focused) {
+                ctx.memory_mut(|m| m.surrender_focus(f));
+            }
+            self.esc_windows = now;
+            return;
+        }
+        self.esc_windows = now;
+        if now == 0 || in_terminal || self.focus_term {
+            return;
+        }
+        // What is on top and takes Esc itself goes first: the palette, the
+        // connect box, a question, a file dialog; a composer, a search or
+        // the editor's find bar that has the keyboard.
+        if self.palette.is_some() || self.connect.is_some() || self.confirm.is_some() || self.file_op.is_some() {
+            return;
+        }
+        if let Some(f) = focused {
+            if f == Id::new("editor-find-q") || self.panes.keys().any(|id| f == Id::new(("composer", *id)) || f == Id::new(("search", *id))) {
+                return;
+            }
+        }
+        if !ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
             return;
         }
         // One at a time, the smaller ones (opened from the others) first.
@@ -4193,6 +4248,9 @@ fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size:
         let pointer = ctx.input(|i| i.pointer.interact_pos());
         let mut toggle: Option<usize> = None;
         let mut tables: Vec<TableView> = Vec::new();
+        // Which table of the document this is, counting those scrolled out
+        // of view too: a selection stays with its table.
+        let mut table_no = 0;
         for d in decos.iter() {
             match *d {
                 md::Deco::Code { start, end } => {
@@ -4229,6 +4287,8 @@ fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size:
                     painter.hline(origin.x..=right, y, Stroke::new(1.0_f32, theme::border()));
                 }
                 md::Deco::Table { at: i, grid: (ref cells, ref cols, ref rows_y, vpad), ref rows } => {
+                    let no = table_no;
+                    table_no += 1;
                     // A table that is scrolled out of view: none of its cells
                     // is laid out or drawn (a long document has hundreds).
                     if let (Some(&w), Some(&h)) = (cols.last(), rows_y.last()) {
@@ -4274,7 +4334,7 @@ fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size:
                         }
                         laid.push(line);
                     }
-                    tables.push(TableView { rect: egui::Rect::from_min_size(pos2(x(0.0), top), vec2(last_x, height)), xs: cols.clone(), ys: rows_y.clone(), rows: rows.clone(), cells: laid });
+                    tables.push(TableView { no, rect: egui::Rect::from_min_size(pos2(x(0.0), top), vec2(last_x, height)), xs: cols.clone(), ys: rows_y.clone(), rows: rows.clone(), cells: laid });
                 }
                 md::Deco::Diagram { start, end, ref source, collapsed } => {
                     let top = at(start).top();
@@ -4314,7 +4374,8 @@ fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size:
             }
             let has_keyboard = ctx.memory(|m| m.has_focus(edit_id));
             let double = ctx.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary) || i.pointer.button_triple_clicked(egui::PointerButton::Primary));
-            for (k, t) in tables.iter().enumerate() {
+            for t in tables.iter() {
+                let k = t.no;
                 let (Some(&(first, _)), Some(&(_, last))) = (t.rows.first(), t.rows.last()) else { continue };
                 if let (true, Some(o), Some(p)) = (down, press, at_now) {
                     if t.rect.contains(o) && out.response.dragged() {
@@ -4393,6 +4454,8 @@ fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size:
 /// (from its left / top), its rows' source, and each cell's text as laid out
 /// and where.
 struct TableView {
+    /// Which table of the document (the first is 0).
+    no: usize,
     rect: egui::Rect,
     xs: Vec<f32>,
     ys: Vec<f32>,

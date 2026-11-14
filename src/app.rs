@@ -1011,6 +1011,9 @@ pub struct EditorFile {
     pub scratch: bool,
     pub loading: bool,
     pub saving: bool,
+    /// What is being saved (a hash of the text sent): the answer makes the
+    /// file clean only if nothing was typed since.
+    pub saving_of: Option<u64>,
     pub conflict: bool,
     pub goto: Option<usize>,
     /// Find bar matches (byte ranges) to paint, and the current one.
@@ -1204,6 +1207,14 @@ impl Drop for App {
     }
 }
 
+/// A text's hash, to tell whether it is still the one that was saved.
+pub fn text_hash(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut h);
+    h.finish()
+}
+
 pub enum Pending {
     List { path: String },
     Open { path: String, line: usize },
@@ -1381,6 +1392,10 @@ pub struct App {
     pub update_checked: Instant,
     /// The "Serial console…" dialog, while open.
     pub serial_dialog: Option<crate::serial_ui::SerialDialog>,
+    /// Which of the windows Esc closes were open last frame (a bit each),
+    /// and what had the keyboard then.
+    pub esc_windows: u8,
+    pub focus_before: Option<egui::Id>,
     /// The Display test window's page, while it is open (display_test.rs).
     pub display_test: Option<usize>,
     /// Where a newer weft would appear, when not where `restart` looks by
@@ -1540,6 +1555,8 @@ impl App {
             update_ready: false,
             update_checked: Instant::now(),
             serial_dialog: None,
+            esc_windows: 0,
+            focus_before: None,
             display_test: None,
             newer_weft_at: None,
             file_op: None,
@@ -2101,6 +2118,7 @@ impl App {
             scratch: false,
             loading: true,
             saving: false,
+            saving_of: None,
             conflict: false,
             goto: Some(line.max(1)),
             marks: Default::default(),
@@ -2129,6 +2147,7 @@ impl App {
             scratch: true,
             loading: false,
             saving: false,
+            saving_of: None,
             conflict: false,
             goto: None,
             marks: Default::default(),
@@ -2231,6 +2250,7 @@ impl App {
             scratch: false,
             loading: false,
             saving: false,
+            saving_of: None,
             conflict: false,
             goto: None,
             marks: Default::default(),
@@ -2345,6 +2365,7 @@ impl App {
             return;
         }
         f.saving = true;
+        f.saving_of = Some(text_hash(&f.text));
         f.conflict = false;
         let mut req = json!({"op": "write", "path": f.path, "text": f.text});
         if let Some(m) = f.mtime {
@@ -2512,6 +2533,16 @@ impl App {
             let resps = self.conns.get_mut(&h).map(|c| c.poll()).unwrap_or_default();
             for r in resps {
                 self.handle_response(&h, r);
+            }
+            // An agent that is gone answers nothing more: what was still
+            // waiting for it fails now, instead of waiting for good (a file
+            // "saving" for ever, and a "Save and close" behind it; a folder
+            // that never lists).
+            if let Some(ConnStatus::Failed(why)) = self.conns.get(&h).map(|c| c.status.clone()) {
+                let waiting: Vec<u64> = self.pending.keys().filter(|(host, _)| host == &h).map(|k| k.1).collect();
+                for id in waiting {
+                    self.handle_response(&h, json!({"id": id, "ok": false, "error": format!("agent offline: {why}")}));
+                }
             }
             // The agent uses BatchMode ssh; if it failed before the interactive
             // pane finished authenticating (host key prompt, etc.), retry once
@@ -2728,10 +2759,16 @@ impl App {
                 } else if r["conflict"].as_bool().unwrap_or(false) {
                     f.conflict = true;
                 } else {
-                    f.dirty = false;
+                    // On disk is what was sent. Typed since (the answer
+                    // takes a moment: the write waits its turn): still
+                    // unsaved, and not marked "saved".
+                    let same = f.saving_of.take().is_none_or(|sent| sent == text_hash(&f.text));
+                    f.dirty = !same;
                     f.mtime = r["mtime"].as_f64();
                     // Said quietly in the editor's toolbar ("✓ saved"), not a toast.
-                    f.saved_at = Some(Instant::now());
+                    if same {
+                        f.saved_at = Some(Instant::now());
+                    }
                 }
             }
             Pending::Complete { pane } => {
@@ -3039,6 +3076,61 @@ mod tests {
         h.app.pending.insert(("local".into(), 8), Pending::Procs);
         h.app.handle_response("local", json!({"id": 8, "ok": true, "procs": [row]}));
         assert_eq!(h.app.side.procs.as_ref().and_then(|p| p.as_ref().ok()).map(|p| p.len()), Some(1));
+    }
+
+    /// Typed on while a save was on its way: when the answer comes the file
+    /// is still unsaved, and closing it asks (it was marked clean, and what
+    /// was typed after Ctrl+S was dropped without a word).
+    #[test]
+    fn a_save_answered_after_more_typing_leaves_the_file_unsaved() {
+        let mut h = crate::testkit::Harness::new(json!({}));
+        let open = |h: &mut crate::testkit::Harness, path: &str, text: &str| {
+            h.app.open_scratch("x", text.into());
+            let f = h.app.editor.files.last_mut().unwrap();
+            (f.host, f.path, f.scratch, f.dirty) = ("local".into(), path.into(), false, true);
+            h.app.editor.files.len() - 1
+        };
+        // Saved, then typed on before the answer.
+        let i = open(&mut h, "/d/a.txt", "one");
+        h.app.editor.files[i].saving = true;
+        h.app.editor.files[i].saving_of = Some(text_hash("one"));
+        h.app.editor.files[i].text.push_str(" two");
+        h.app.pending.insert(("local".into(), 21), Pending::Save { path: "/d/a.txt".into() });
+        h.app.handle_response("local", json!({"id": 21, "ok": true, "mtime": 7.0}));
+        let f = &h.app.editor.files[i];
+        assert!(f.dirty && !f.saving && f.saved_at.is_none(), "still unsaved, and not marked saved");
+        assert_eq!(f.mtime, Some(7.0), "the file on disk is the one that was written");
+        // Saved and left alone: clean.
+        let j = open(&mut h, "/d/b.txt", "same");
+        h.app.editor.files[j].saving = true;
+        h.app.editor.files[j].saving_of = Some(text_hash("same"));
+        h.app.pending.insert(("local".into(), 22), Pending::Save { path: "/d/b.txt".into() });
+        h.app.handle_response("local", json!({"id": 22, "ok": true, "mtime": 8.0}));
+        let f = &h.app.editor.files[j];
+        assert!(!f.dirty && f.saved_at.is_some());
+    }
+
+    /// The agent died with a save on its way: the save fails (and says so)
+    /// instead of staying "saving" for good, with a "Save and close"
+    /// waiting behind it.
+    #[test]
+    fn what_waited_for_a_dead_agent_fails() {
+        let mut h = crate::testkit::Harness::new(json!({}));
+        // The harness's host "t" has an agent that exits at once.
+        assert!(h.wait_for(20.0, |h| matches!(h.app.conns.get("t").map(|c| &c.status), Some(ConnStatus::Failed(_)))), "the agent is gone");
+        h.app.open_scratch("x", "text".into());
+        let f = h.app.editor.files.last_mut().unwrap();
+        (f.host, f.path, f.scratch, f.saving, f.dirty) = ("t".into(), "/d/a.txt".into(), false, true, true);
+        h.app.pending.insert(("t".into(), 9001), Pending::Save { path: "/d/a.txt".into() });
+        h.frames(3);
+        let f = h.app.editor.files.last().unwrap();
+        assert!(!f.saving && f.dirty, "the save failed: not saving any more, still unsaved");
+        assert!(!h.app.pending.contains_key(&("t".to_string(), 9001)));
+        assert!(h.app.toasts.iter().any(|t| t.text.contains("save failed")), "and it is said");
+        // A request made now is answered too.
+        h.app.save_file(h.app.editor.files.len() - 1, false);
+        h.frames(3);
+        assert!(!h.app.editor.files.last().unwrap().saving);
     }
 
     /// A file renamed while its save is on its way: the answer still finds

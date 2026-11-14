@@ -532,7 +532,7 @@ fn saving_then_closing_asks_about_what_changed_meanwhile() {
     // As after "Save and close" with only a.txt unsaved: a.txt is saved by
     // now, b.txt was changed since.
     h.app.editor.files[0].dirty = false;
-    h.app.after_save = Some(AfterSave { ask: Ask::Quit { restart: false }, files: vec![key(&a)] });
+    h.app.after_save = Some(AfterSave { ask: Ask::Quit { restart: false }, files: vec![key(&a)], asked: true });
     h.window_log.clear();
     h.frames(3);
     assert!(!h.window_log.iter().any(|c| matches!(c, egui::ViewportCommand::Close)), "not closed over b.txt");
@@ -1092,4 +1092,78 @@ fn box_drawing_lines_join() {
         assert!((-4..=4).any(|o| ink(dx + o as f32, y)), "the double frame's outer edge is unbroken at y {y}");
         y += 1.0;
     }
+}
+
+/// With Help open beside it, a terminal that is clicked has the keyboard
+/// again: Esc is the shell's (vim's), and Help stays. A composer on top
+/// closes first, not the Help behind it.
+#[test]
+fn escape_goes_to_what_has_the_keyboard() {
+    let mut h = Harness::new(json!({}));
+    let pane = h.app.active_pane_id().unwrap();
+    h.command("help");
+    h.frames(2);
+    let in_terminal = |h: &Harness| h.ctx.memory(|m| m.focused()) == Some(egui::Id::new(("pane", pane)));
+    assert!(!in_terminal(&h), "Help has the keyboard when it opens, not the terminal");
+    // A click in the terminal, away from the window.
+    h.click(egui::pos2(40.0, 700.0));
+    h.frames(2);
+    assert!(in_terminal(&h), "the terminal has it back");
+    h.key(Key::Escape, Modifiers::NONE);
+    assert!(h.app.help.is_some(), "Esc went to the shell: Help stays open");
+    // A composer over it: Esc closes the composer, then Help is still there.
+    h.command("composer");
+    h.type_text("x");
+    h.key(Key::Escape, Modifiers::NONE);
+    assert!(h.app.panes[&pane].composer.is_none() && h.app.help.is_some(), "the composer closed, not Help");
+    // The palette over it likewise.
+    h.command("palette");
+    h.frames(2);
+    h.key(Key::Escape, Modifiers::NONE);
+    h.frames(2);
+    assert!(h.app.palette.is_none() && h.app.help.is_some(), "the palette closed, not Help");
+}
+
+/// A selection in one table stays in that table when the table above it
+/// scrolls out of view (it was counted among the tables on screen, and
+/// jumped to the next one).
+#[test]
+fn a_table_selection_stays_with_its_table() {
+    let mut h = Harness::new(json!({}));
+    h.size = egui::vec2(1200.0, 1500.0);
+    let file = h.dir.join("three.md");
+    let gap = "text\n\n".repeat(14);
+    std::fs::write(&file, format!("| a1 | a2 |\n|---|---|\n| a3 | a4 |\n\n{gap}| b1 | b2 |\n|---|---|\n| b3 | b4 |\n\n{gap}| c1 | c2 |\n|---|---|\n| c3 | c4 |\n\n{gap}end\n")).unwrap();
+    let path = file.display().to_string().replace('\\', "/");
+    h.app.open_file("local", &path, 1);
+    assert!(h.wait_for(20.0, |h| h.shows("Read") && h.app.editor.files.iter().all(|f| !f.loading)), "opened");
+    h.click_text("Read");
+    assert!(h.wait_for(20.0, |h| h.has("a3") && h.has("b3")), "the first two tables are on screen");
+    let cell = h.at_exact("b3");
+    h.double_click(cell);
+    h.frame(vec![Event::Copy]);
+    assert_eq!(h.copied.take().as_deref(), Some("b3"));
+    // A smaller window, scrolled so the first table is above it.
+    h.size = egui::vec2(1200.0, 420.0);
+    let i = h.app.editor.files.iter().position(|f| f.path == path).unwrap();
+    let line = h.app.editor.files[i].text.lines().position(|l| l.contains("b1")).unwrap() + 3;
+    h.app.editor.files[i].goto = Some(line);
+    assert!(h.wait_for(20.0, |h| h.has("b3") && !h.has("a3")), "the first table is out of view, the second still there");
+    h.frame(vec![Event::Copy]);
+    assert_eq!(h.copied.take().as_deref(), Some("b3"), "still the second table's cell");
+}
+
+/// The editor keeps a few laid-out files, not every one ever opened.
+#[test]
+fn laid_out_files_are_not_kept_for_ever() {
+    let mut h = Harness::new(json!({}));
+    for n in 0..7 {
+        let file = h.dir.join(format!("f{n}.rs"));
+        std::fs::write(&file, format!("fn f{n}() {{}}\n")).unwrap();
+        h.app.open_file("local", &file.display().to_string().replace('\\', "/"), 1);
+        assert!(h.wait_for(20.0, |h| h.app.editor.files.iter().all(|f| !f.loading)), "opened");
+        h.frames(3);
+    }
+    let kept = crate::ui_panels::kept_galleys(&h.ctx);
+    assert!((1..=4).contains(&kept), "seven files were shown, {kept} layouts are kept");
 }

@@ -30,6 +30,9 @@ pub struct Confirm {
 pub struct AfterSave {
     pub ask: Ask,
     pub files: Vec<(String, String)>,
+    /// The question was asked and answered (else weft is only waiting for
+    /// saves that were under way, and still has to ask).
+    pub asked: bool,
 }
 
 impl App {
@@ -105,6 +108,15 @@ impl App {
         if self.quit_confirmed {
             return true;
         }
+        // A save still on its way is waited for: closing now would leave
+        // the file as it was before Ctrl+S.
+        let saving: Vec<(String, String)> = self.editor.files.iter().filter(|f| f.saving).map(|f| (f.host.clone(), f.path.clone())).collect();
+        if !saving.is_empty() {
+            if self.after_save.is_none() {
+                self.after_save = Some(AfterSave { ask: Ask::Quit { restart }, files: saving, asked: false });
+            }
+            return false;
+        }
         let unsaved: Vec<(String, String)> = if self.settings.confirm_unsaved { self.editor.files.iter().filter(|f| self.unsaved(f)).map(|f| (f.host.clone(), f.path.clone())).collect() } else { Vec::new() };
         let mut ids: Vec<usize> = self.panes.keys().copied().collect();
         ids.sort();
@@ -160,6 +172,14 @@ impl App {
         // The saves took a while and something else was changed meanwhile:
         // that is asked about, not closed with the rest. (What was running
         // was shown and accepted with the first question.)
+        if let (false, Ask::Quit { restart }) = (wait.asked, &wait.ask) {
+            // Only waited for saves under way: now ask what there is to ask.
+            let restart = *restart;
+            if self.may_quit(restart) {
+                self.carry_out(wait.ask);
+            }
+            return;
+        }
         let unsaved = self.unsaved_for(&wait.ask);
         if unsaved.is_empty() {
             self.carry_out(wait.ask);
@@ -272,7 +292,7 @@ impl App {
                         self.save_file(i, false);
                     }
                 }
-                self.after_save = Some(AfterSave { ask: c.ask, files: c.unsaved });
+                self.after_save = Some(AfterSave { ask: c.ask, files: c.unsaved, asked: true });
             }
         }
     }
