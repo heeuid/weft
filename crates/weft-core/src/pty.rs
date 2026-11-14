@@ -43,6 +43,33 @@ pub struct Pty {
     closed: Arc<AtomicBool>,
     /// A cursor position report went to it (see `Drop`).
     reported: bool,
+    /// Columns and rows it was opened with.
+    opened: (u16, u16),
+}
+
+/// These bytes with their first cursor position report kept inside a screen
+/// of `rows` by `cols`.
+fn fit_cursor_report(bytes: &[u8], rows: u16, cols: u16) -> Vec<u8> {
+    let digits = |b: &[u8]| b.iter().take_while(|c| c.is_ascii_digit()).count();
+    for i in 0..bytes.len().saturating_sub(1) {
+        if &bytes[i..i + 2] != b"\x1b[" {
+            continue;
+        }
+        let rest = &bytes[i + 2..];
+        let r = digits(rest);
+        let c = if rest.get(r) == Some(&b';') { digits(&rest[r + 1..]) } else { 0 };
+        if r == 0 || c == 0 || rest.get(r + 1 + c) != Some(&b'R') {
+            continue;
+        }
+        let number = |b: &[u8]| std::str::from_utf8(b).ok().and_then(|s| s.parse::<u32>().ok()).unwrap_or(1);
+        let row = number(&rest[..r]).clamp(1, rows.max(1) as u32);
+        let col = number(&rest[r + 1..r + 1 + c]).clamp(1, cols.max(1) as u32);
+        let mut out = bytes[..i].to_vec();
+        out.extend_from_slice(format!("\x1b[{row};{col}R").as_bytes());
+        out.extend_from_slice(&rest[r + 2 + c..]);
+        return out;
+    }
+    bytes.to_vec()
 }
 
 /// `ESC [ row ; col R` somewhere in these bytes: a cursor position report.
@@ -125,7 +152,7 @@ impl Pty {
                 wake();
             }
         });
-        Ok(Pty { master: Some(pair.master), writer, rx, child: Some(child), exited, closed: Arc::new(AtomicBool::new(false)), reported: false })
+        Ok(Pty { master: Some(pair.master), writer, rx, child: Some(child), exited, closed: Arc::new(AtomicBool::new(false)), reported: false, opened: (cols, rows) })
     }
 
     /// A serial port (COM3, /dev/ttyUSB0) as the terminal's other end, opened
@@ -175,7 +202,7 @@ impl Pty {
             exited2.store(true, Ordering::SeqCst);
             wake();
         });
-        Ok(Pty { master: None, writer: dev, rx, child: None, exited, closed, reported: true })
+        Ok(Pty { master: None, writer: dev, rx, child: None, exited, closed, reported: true, opened: (0, 0) })
     }
 
     pub fn write(&mut self, bytes: &[u8]) {
@@ -184,6 +211,15 @@ impl Pty {
         }
         if !self.reported && has_cursor_report(bytes) {
             self.reported = true;
+            // The first one answers the console host's question as it
+            // starts, when its screen is still the size it was opened
+            // with. A place outside that it does not take, and goes on
+            // waiting for good (the terminal's own screen can be larger by
+            // then: a resize is on its way).
+            let fitted = fit_cursor_report(bytes, self.opened.1, self.opened.0);
+            let _ = self.writer.write_all(&fitted);
+            let _ = self.writer.flush();
+            return;
         }
         let _ = self.writer.write_all(bytes);
         let _ = self.writer.flush();
@@ -292,6 +328,26 @@ mod tests {
         drop(later);
         assert_eq!(finish_closing(Duration::from_secs(20)), 0, "every pseudo console was closed");
         assert_eq!(finish_closing(Duration::ZERO), 0, "and none is waiting");
+    }
+
+    /// The cursor's place told to a console host that is just starting is
+    /// kept inside the screen it was opened with: outside it, the host
+    /// never took the answer, and never closed (a terminal whose screen
+    /// had grown and filled before the host asked).
+    #[test]
+    fn the_first_cursor_report_fits_the_screen_it_was_opened_with() {
+        assert_eq!(fit_cursor_report(b"\x1b[43;1R", 24, 80), b"\x1b[24;1R");
+        assert_eq!(fit_cursor_report(b"\x1b[5;200R", 24, 80), b"\x1b[5;80R");
+        assert_eq!(fit_cursor_report(b"\x1b[5;7R", 24, 80), b"\x1b[5;7R");
+        assert_eq!(fit_cursor_report(b"ab\x1b[99;99Rcd", 24, 80), b"ab\x1b[24;80Rcd");
+        assert_eq!(fit_cursor_report(b"plain \x1b[A", 24, 80), b"plain \x1b[A");
+        let argv: Vec<String> = ["python", "-c", "import time; time.sleep(60)"].iter().map(|s| s.to_string()).collect();
+        let mut pty = Pty::spawn(&argv, None, &[], 80, 24, || {}).expect("python");
+        thread::sleep(Duration::from_millis(700));
+        // As a terminal whose screen is 43 rows by now, its cursor at the bottom.
+        pty.write(b"\x1b[43;1R");
+        drop(pty);
+        assert_eq!(finish_closing(Duration::from_secs(20)), 0, "the console host took the answer and closed");
     }
 
     #[test]

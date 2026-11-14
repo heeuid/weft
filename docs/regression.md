@@ -28,7 +28,7 @@ here. "none" marks what still has no automated test.
 | Folds | `ui_term::tests::folds_collapse_rows` |
 | Pane split junctions; zoom | `ui_term::tests::junction_where_three_panes_meet`, `zoom_shows_only_active_pane_full_size` |
 | Drag a pane header to move it | `ui_term::tests::dragging_a_pane_header_moves_the_pane`, `app::node_tests::*` |
-| A closed terminal's console host goes too (it stayed for good, using a core) | `pty::tests::a_dropped_terminal_is_closed_before_the_end`, `cursor_reports_are_told_from_other_input` |
+| A closed terminal's console host goes too (it stayed for good, using a core) | `pty::tests::a_dropped_terminal_is_closed_before_the_end`, `cursor_reports_are_told_from_other_input`, `the_first_cursor_report_fits_the_screen_it_was_opened_with` |
 | Serial console: bridge, command, missing port | `host::tests::serial_bridge_and_command`, `regress::serial_tab_explains_a_missing_port` |
 | X11 forwarding (-Y, DISPLAY, old settings) | `x11::tests::*` |
 | Block characters drawn, not from the font (no black band) | `ui_term::tests::blocks_fill_their_cells`, `a_full_block_hides_its_background` |
@@ -49,8 +49,12 @@ here. "none" marks what still has no automated test.
 | Version in Help and About; the version line; CHANGELOG has it | `regress::the_version_is_shown`, `version::tests::the_version_line` |
 | Closing weft with unsaved files asks, then closes | `regress::closing_weft_with_unsaved_files_asks` |
 | A restart brings back what was open | `regress::a_restart_brings_back_what_was_open` |
+| The timed save writes settings.json only when something changed | `regress::the_timed_save_writes_only_changes` |
 | Keyboard shortcuts: rows hold still on remove | `regress::keys_window_rows_hold_still` |
 | Dialogs fit a small window | `regress::dialogs_fit_a_small_window` |
+| Esc closes every dialog, menu and picker | `regress::every_dialog_closes_on_escape` |
+| The composer sends on Enter | `regress::the_composer_sends_on_enter` |
+| A memo is typed and saved by its button | `regress::a_memo_is_typed_and_saved` |
 | Privacy: "never" reads 0 while typed in | `ui_panels::tests::never_reads_zero_once_clicked` |
 | Restart: a newer weft lights the button | `regress::a_newer_weft_offers_a_restart` |
 
@@ -61,6 +65,7 @@ here. "none" marks what still has no automated test.
 | Panels move anywhere; junctions; hidden keep place | `app::layout_tests::*` |
 | Split side panels / editors; old settings load | `app::layout_tests::a_second_editor_beside_the_first`, `settings_from_before_split_panels_still_load`, `ui_term::tests::dragging_a_pane_header_moves_the_pane` (second editor by its grip) |
 | Side panels following the terminal | `ui_panels::tests::side_panels_that_follow_the_terminal_follow_it` |
+| Side panels and editors split, without overlapping | `regress::panels_split` |
 
 ## Files, search, transfer
 
@@ -68,12 +73,17 @@ here. "none" marks what still has no automated test.
 |---|---|
 | Listing; protected Windows links hidden | `host::tests::local_backend_roundtrip`, `listing_leaves_out_protected_windows_links` |
 | Hidden / git-ignored switch | `host::tests::list_can_leave_out_what_git_ignores` |
+| A folder of thousands of ignored files is listed (it hung) | `host::tests::a_folder_of_thousands_of_ignored_files_is_listed` |
 | Fuzzy / glob / regex | `find::tests::*`, `editfind::tests::*` |
 | Grep modes (local and agent) | `host::tests::local_grep_modes_and_hidden`, `local_grep_text_or_regex` |
 | Tree like the agent | `host::tests::tree_lists_names_like_the_agent` |
 | Transfer ops; any host to any host; no overwrite | `host::tests::transfer_ops_copy_a_folder_in_chunks`, `transfer::tests::*` |
 | History search | `ui_panels::tests::history_search` |
 | New folder, new file, rename, delete (this PC) | `host::tests::file_operations`, `fileops::tests::parents_and_names` |
+| The same as the remote agent does them (agent.py, run by python) | `host::tests::agent_file_operations_match_the_local_ones` |
+| A file dragged onto a folder is copied; Send to the other Files panel | `regress::dragging_a_file_onto_a_folder_copies_it`, `regress::send_to_the_other_files_panel` |
+| The eye menu shows and hides hidden files | `regress::files_show_hidden_from_the_eye_menu` |
+| Procs lists this PC, in the panel | `regress::procs_lists_this_pc` |
 | The same from a row's menu; Esc cancels a delete | `regress::files_new_folder_rename_delete` |
 | The hint beside a dragged file leaves its row readable | `transfer::tests::the_drop_hint_leaves_its_row_readable` |
 | Procs on this PC: list and kill | `host::tests::local_processes_list_and_kill` |
@@ -90,6 +100,8 @@ here. "none" marks what still has no automated test.
 | Memos never ask to overwrite their own save | `ui_panels::tests::memos_never_conflict_with_their_own_saves` |
 | Find / replace | `editfind::tests::*` |
 | Hidden images leave the GPU | `regress::hidden_images_leave_the_gpu` |
+| A file is laid out when it changes, not once a frame; again with new fonts | `regress::the_editor_lays_a_file_out_once` |
+| Tables far down a document are drawn when scrolled to | `regress::tables_far_down_a_document_are_drawn_when_reached` |
 | Images, PDF pages | `media::tests::*` |
 | Mermaid | `mermaid::tests::*` |
 | Table cells: letters, a cell, a block; Ctrl+C; the menu | `ui_panels::tests::a_table_selection_copies_letters_a_cell_or_a_block`, `regress::table_cells_select_and_copy` |
@@ -114,7 +126,8 @@ here. "none" marks what still has no automated test.
 - `weft --version` printed to a shell (the test binary isn't weft.exe): run it after a release build.
 - Delete to the Recycle Bin, and Windows' warning when something can't go there (tests delete for good: the bin is the user's).
 - Linux / macOS: a closed terminal ends what ran in it (the reader lets go of the master).
+- No console host left behind by a whole run: `python target/leak.py <test binary> [filter]` counts `OpenConsole.exe` without a parent before and after (a script of this checkout, not a test: it lists every process of the PC).
 - The loopback tests (`-- --ignored`) time a PowerShell command under 50 ms: run them with `--test-threads=1`, or the shells starting together make the first one slow.
-- File operations and Procs on a remote host (agent.py): the loopback tests don't reach them yet.
+- File operations over a real ssh connection (the agent's ops are tested by running agent.py here; the wire is the same as for listing and reading, which the loopback tests cover).
 - Dropping files from Explorer (the system gives no position; the cursor is asked).
 - The app icon in Explorer (checked: the exe carries one).

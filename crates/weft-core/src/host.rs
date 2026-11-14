@@ -1039,10 +1039,20 @@ fn git_ignored(dir: &str, names: &[String]) -> std::collections::HashSet<String>
         cmd.creation_flags(0x0800_0000); // no console window
     }
     let Ok(mut child) = cmd.spawn() else { return Default::default() };
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(names.join("\0").as_bytes());
+    // Written on a thread of its own while the answer is read: git answers
+    // as it reads, and with more names than fit the pipes (a folder of
+    // thousands of ignored files) each side waited for the other for good.
+    let input = names.join("\0").into_bytes();
+    let writer = child.stdin.take().map(|mut stdin| {
+        thread::spawn(move || {
+            let _ = stdin.write_all(&input);
+        })
+    });
+    let out = child.wait_with_output();
+    if let Some(w) = writer {
+        let _ = w.join();
     }
-    let Ok(out) = child.wait_with_output() else { return Default::default() };
+    let Ok(out) = out else { return Default::default() };
     // 0: some ignored, 1: none, 128: not a repository.
     if out.status.code() != Some(0) {
         return Default::default();
@@ -1319,6 +1329,90 @@ mod tests {
         }
         let gone = local_op(&json!({"op": "kill", "pid": 0xFFFF_FFF0u32, "sig": "TERM"}));
         assert_eq!(gone["ok"], json!(false));
+    }
+
+    /// A folder with thousands of ignored files is still listed (asking git
+    /// about them all at once used to wait for ever).
+    #[test]
+    fn a_folder_of_thousands_of_ignored_files_is_listed() {
+        let dir = std::env::temp_dir().join(format!("weft-ignored-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| Command::new("git").arg("-C").arg(&dir).args(args).output().map(|o| o.status.success()).unwrap_or(false);
+        if !git(&["init", "-q"]) {
+            eprintln!("no git: skipped");
+            return;
+        }
+        std::fs::write(dir.join(".gitignore"), "*.tmp\n").unwrap();
+        for i in 0..4000 {
+            std::fs::write(dir.join(format!("a-rather-long-name-for-a-build-product-number-{i:05}.tmp")), "").unwrap();
+        }
+        std::fs::write(dir.join("kept.txt"), "").unwrap();
+        let path = dir.display().to_string().replace('\\', "/");
+        let (done, wait) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = done.send(local_op(&json!({"op": "list", "path": path, "hidden": true, "ignored": false})));
+        });
+        let v = wait.recv_timeout(std::time::Duration::from_secs(60)).expect("the listing came back");
+        let names: Vec<&str> = v["entries"].as_array().unwrap().iter().filter_map(|e| e["n"].as_str()).filter(|n| *n != ".git").collect();
+        assert_eq!(names, [".gitignore", "kept.txt"], "the 4000 ignored ones are left out");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The same file operations as the remote agent does them (agent.py,
+    /// run here by python): what happens, and what is refused, matches
+    /// this PC's.
+    #[test]
+    fn agent_file_operations_match_the_local_ones() {
+        let dir = std::env::temp_dir().join(format!("weft-agentops-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = r#"
+import json, os, sys
+src = open(sys.argv[1], encoding='utf-8').read().split('\ndef main')[0]
+exec(src)
+root = sys.argv[2]
+at = lambda n: os.path.join(root, n)
+def run(op, **req):
+    try:
+        OPS[op](req)
+        return True
+    except Exception as e:
+        return str(e)
+out = {}
+out['mkdir'] = run('mkdir', path=at('sub'))
+out['mkdir_again'] = run('mkdir', path=at('sub'))
+out['create'] = run('create', path=at('sub/a.txt'))
+open(at('sub/a.txt'), 'w').write('kept')
+out['create_again'] = run('create', path=at('sub/a.txt'))
+open(at('sub/b.txt'), 'w').write('other')
+out['rename_clash'] = run('rename', **{'from': at('sub/a.txt'), 'to': at('sub/b.txt')})
+out['rename'] = run('rename', **{'from': at('sub/a.txt'), 'to': at('sub/c.txt')})
+out['rename_dir'] = run('rename', **{'from': at('sub'), 'to': at('moved')})
+out['delete_file'] = run('delete', path=at('moved/b.txt'))
+out['left'] = sorted(os.listdir(at('moved')))
+out['kept'] = open(at('moved/c.txt')).read()
+out['delete_dir'] = run('delete', path=at('moved'))
+out['gone'] = not os.path.exists(at('moved'))
+out['delete_missing'] = run('delete', path=at('nothing'))
+out['delete_root'] = run('delete', path=os.path.abspath(os.sep))
+out['delete_empty'] = run('delete', path='')
+print(json.dumps(out))
+"#;
+        let agent = concat!(env!("CARGO_MANIFEST_DIR"), "/../../remote/agent.py");
+        let out = Command::new("python").args(["-c", script, agent, &dir.display().to_string()]).output().expect("python");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let v: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stdout)));
+        for done in ["mkdir", "create", "rename", "rename_dir", "delete_file", "delete_dir", "gone"] {
+            assert_eq!(v[done], json!(true), "{done}: {v}");
+        }
+        for refused in ["mkdir_again", "create_again", "delete_missing", "delete_root", "delete_empty"] {
+            assert!(v[refused].is_string(), "{refused} is refused: {v}");
+        }
+        assert!(v["rename_clash"].as_str().unwrap().contains("b.txt already exists"), "{v}");
+        assert_eq!(v["left"], json!(["c.txt"]));
+        assert_eq!(v["kept"], json!("kept"), "the file that was never to be replaced");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// New folder, new file, rename, delete: what Files asks of this PC.

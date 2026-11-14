@@ -176,6 +176,46 @@ struct HlCache {
     state: Arc<std::sync::Mutex<highlight::FileState>>,
 }
 
+/// A laid-out text kept between frames. Asking egui for it each frame means
+/// copying the whole layout job and hashing it to find the galley egui
+/// already has: 12 ms a frame for an 8 000-line source file (its colours are
+/// 216 000 sections), every frame it is on screen.
+///
+/// It holds for as long as the fonts are the ones it was laid out with:
+/// egui makes new ones, with a new atlas, when the scale changes or the
+/// atlas fills up, and the glyphs of an old galley point into the old
+/// atlas. The atlas it was made with is kept, to tell (kept, not just its
+/// address: a new one can't then be given the same address).
+#[derive(Clone, Default)]
+struct KeptGalley {
+    key: u64,
+    galley: Option<Arc<egui::Galley>>,
+    atlas: Option<Arc<egui::mutex::Mutex<egui::epaint::TextureAtlas>>>,
+}
+
+/// How often an editor's text was laid out again (tests: not once a frame).
+pub static EDITOR_LAYOUTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+impl KeptGalley {
+    /// The galley kept under `id`, if it is for `key` and these fonts.
+    fn get(ui: &Ui, id: Id, key: u64) -> Option<Arc<egui::Galley>> {
+        let kept: KeptGalley = ui.ctx().memory_mut(|m| m.data.get_temp_mut_or_default::<KeptGalley>(id).clone());
+        let atlas = ui.fonts(|f| f.texture_atlas());
+        match (kept.galley, kept.atlas) {
+            (Some(g), Some(a)) if kept.key == key && Arc::ptr_eq(&a, &atlas) => Some(g),
+            _ => None,
+        }
+    }
+
+    /// Lay `job` out and keep the result under `id` for `key`.
+    fn lay_out(ui: &Ui, id: Id, key: u64, job: LayoutJob) -> Arc<egui::Galley> {
+        EDITOR_LAYOUTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let (galley, atlas) = ui.fonts(|f| (f.layout_job(job), f.texture_atlas()));
+        ui.ctx().memory_mut(|m| m.data.insert_temp(id, KeptGalley { key, galley: Some(galley.clone()), atlas: Some(atlas) }));
+        galley
+    }
+}
+
 /// A short key for find results, for the layout caches.
 fn marks_key(marks: &[(usize, usize)], cur: Option<(usize, usize)>) -> u64 {
     use std::hash::{Hash, Hasher};
@@ -3229,6 +3269,10 @@ impl App {
                 let cache_id = edit_id.with("hl");
                 let mut layouter = |ui: &Ui, text: &str, _wrap: f32| {
                     let key = hash_str(text, &format!("{ext}|{find}|{}|{}|{}|{}", font.size, theme::active(), highlight::ready(), highlight::warmed()));
+                    let kept_id = cache_id.with("galley");
+                    if let Some(galley) = KeptGalley::get(ui, kept_id, key) {
+                        return galley;
+                    }
                     let cached: HlCache = ui.ctx().memory_mut(|m| m.data.get_temp_mut_or_default::<HlCache>(cache_id).clone());
                     let job = match cached.job {
                         Some(j) if cached.key == key => j,
@@ -3239,7 +3283,7 @@ impl App {
                             j
                         }
                     };
-                    ui.fonts(|f| f.layout_job((*job).clone()))
+                    KeptGalley::lay_out(ui, kept_id, key, (*job).clone())
                 };
                 let before = crate::widgets::cursor_before(ui, edit_id);
                 // Read mode: the text as an immutable buffer, selectable and copyable.
@@ -4070,6 +4114,12 @@ fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size:
             // once the width holds still for a moment it is redone.
             let fit_w = settled_width(ui.ctx(), cache_id.with("width"), wrap);
             let key = hash_str(text, &format!("{style_key}|{}", fit_w.round()));
+            // The galley is for this text, these styles and this wrap width.
+            let kept_id = cache_id.with("galley");
+            let kept_key = key ^ (wrap.to_bits() as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            if let Some(galley) = KeptGalley::get(ui, kept_id, kept_key) {
+                return galley;
+            }
             let cached: MdCache = ui.ctx().memory_mut(|m| m.data.get_temp_mut_or_default::<MdCache>(cache_id).clone());
             let job = match cached.job {
                 Some(j) if cached.key == key => j,
@@ -4085,7 +4135,7 @@ fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size:
             };
             let mut job = (*job).clone();
             job.wrap.max_width = wrap;
-            ui.fonts(|f| f.layout_job(job))
+            KeptGalley::lay_out(ui, kept_id, kept_key, job)
         };
         let before = crate::widgets::cursor_before(ui, edit_id);
         // Read mode: the text as an immutable buffer, selectable and copyable.
@@ -4159,6 +4209,13 @@ fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size:
                     painter.hline(origin.x..=right, y, Stroke::new(1.0_f32, theme::border()));
                 }
                 md::Deco::Table { at: i, grid: (ref cells, ref cols, ref rows_y, vpad), ref rows } => {
+                    // A table that is scrolled out of view: none of its cells
+                    // is laid out or drawn (a long document has hundreds).
+                    if let (Some(&w), Some(&h)) = (cols.last(), rows_y.last()) {
+                        if !ui.is_rect_visible(egui::Rect::from_min_size(pos2(origin.x, at(i).top()), vec2(w, h))) {
+                            continue;
+                        }
+                    }
                     // A selection over the table: the rows it takes, whole (it
                     // copies their markdown source).
                     if let (Some(&last_x), Some((lo, hi))) = (cols.last(), selection) {

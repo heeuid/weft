@@ -1421,6 +1421,9 @@ pub struct App {
     pub actions: Vec<Action>,
     agent_retried: HashSet<String>,
     last_save: Instant,
+    /// settings.json as it was last written (the timed save writes only
+    /// what differs).
+    settings_written: String,
     /// Records for the History panel, loaded when it is first shown.
     pub records: Option<Vec<crate::records::Record>>,
     pub records_query: String,
@@ -1546,6 +1549,7 @@ impl App {
             secrets: crate::secret::Vault::new(settings_passwords),
             auth_prompted: HashSet::new(),
             last_save: Instant::now(),
+            settings_written: String::new(),
             records: None,
             records_query: String::new(),
             records_in_output: false,
@@ -1645,10 +1649,26 @@ impl App {
     }
 
     pub fn save_settings(&mut self) {
+        self.write_settings(true);
+    }
+
+    /// The save every few seconds (a terminal's folder, a tab, a file
+    /// opened: the session as it is now). Written only when it differs from
+    /// what is on disk: it runs inside a frame, and a file written every
+    /// ten seconds for nothing is a frame held up every ten seconds where
+    /// writes are slow (an antivirus reading each one).
+    pub fn autosave_settings(&mut self) {
+        self.write_settings(false);
+    }
+
+    fn write_settings(&mut self, always: bool) {
         self.settings.session = self.tabs.iter().map(|t| self.save_node(&t.root)).collect();
         self.settings.open = self.saved_open();
         if let Ok(s) = serde_json::to_string_pretty(&self.settings) {
-            let _ = std::fs::write(self.data.path("settings.json"), s);
+            if always || s != self.settings_written {
+                let _ = std::fs::write(self.data.path("settings.json"), &s);
+                self.settings_written = s;
+            }
         }
         self.last_save = Instant::now();
     }
@@ -2519,7 +2539,7 @@ impl App {
         }
 
         if self.last_save.elapsed() > Duration::from_secs(10) {
-            self.save_settings();
+            self.autosave_settings();
         }
         self.toasts.retain(|t| t.at.elapsed() < Duration::from_secs(if t.kind == ToastKind::Error { 8 } else { 4 }));
     }

@@ -5,6 +5,36 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.2.3
+
+Fixed
+- Esc closes Help, Keyboard shortcuts, Privacy, Serial console, the memo
+  picker and Fonts (they only had their close button).
+- One more way a console host could be left behind: told a cursor place
+  outside the screen it was opened with (a terminal that had grown and
+  filled before the host asked), it never took the answer. The first
+  answer is kept inside that screen.
+- A folder with thousands of git-ignored files is listed. Asking git about
+  them all at once made each side wait for the other for good, and Files
+  never showed the folder.
+
+Faster (nothing looks different)
+- A big source file in the editor: 11 ms a frame down to under 2 (8 000
+  lines). Its layout is kept until the text, the colours or the fonts
+  change, instead of being copied and looked up again every frame.
+- Markdown: tables scrolled out of view are not laid out.
+- settings.json is written when something changed, not every ten seconds
+  regardless (a hitch each time where an antivirus reads every write).
+
+Tests
+- More of the screen is driven through the real app: every dialog closes
+  on Esc, a file dragged onto a folder, Send to the other Files panel, the
+  eye menu, a memo typed and saved, the composer, panels splitting, Procs
+  in its panel. The remote agent's file operations are run here by python
+  and checked against this PC's.
+- `cargo test -p weft frame_times -- --ignored --nocapture` prints how
+  long a frame takes in a few heavy situations.
+
 ## 0.2.2
 
 Found by a review of everything changed since 0.1.0.

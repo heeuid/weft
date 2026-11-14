@@ -680,3 +680,219 @@ fn procs_lists_this_pc() {
     h.frames(3);
     assert!(h.has(&me), "this very process is in the list, by its pid");
 }
+
+/// Two Files panels side by side: a file's "Send to" offers the folder the
+/// other panel shows, and copies it there.
+#[test]
+fn send_to_the_other_files_panel() {
+    use crate::app::SideTab;
+    let mut h = Harness::new(json!({"sidebar": true, "follow_cwd": false}));
+    let (root, dir) = files_on(&mut h, &["a.txt"]);
+    let other = format!("{dir}/sub");
+    h.command("split_side_down");
+    let n = *h.app.side_views.keys().max().expect("the new panel has a view of its own");
+    h.app.settings.side_tabs.insert(n, SideTab::Files);
+    h.app.side_views.get_mut(&n).unwrap().root = Some(("local".into(), other.clone()));
+    h.frames(4);
+    let row = h.at_exact("a.txt");
+    h.right_click(row);
+    h.click_text("Send to");
+    h.frames(2);
+    assert!(h.shows(&format!("local:{other}")), "the other panel's folder is offered; shown: {:?}", h.texts.iter().map(|t| &t.0).filter(|t| t.contains("local") || t.contains("open another")).collect::<Vec<_>>());
+    h.click_text(&format!("local:{other}"));
+    assert!(h.wait_for(20.0, |_| root.join("sub/a.txt").is_file()), "copied there");
+    assert_eq!(std::fs::read_to_string(root.join("sub/a.txt")).unwrap(), "a.txt text");
+}
+
+/// Not a test of right or wrong: how long a frame takes in a few heavy
+/// situations, to find what is worth making faster. Run with
+/// `cargo test -p weft frame_times -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn frame_times() {
+    fn per_frame(h: &mut Harness, n: usize) -> f64 {
+        h.frames(5);
+        let t = std::time::Instant::now();
+        h.frames(n);
+        t.elapsed().as_secs_f64() * 1000.0 / n as f64
+    }
+    let p = |f: &std::path::Path| f.display().to_string().replace('\\', "/");
+    let mut h = Harness::new(json!({"sidebar": false}));
+    println!("idle terminal                  {:7.2} ms/frame", per_frame(&mut h, 60));
+
+    // A long scrollback.
+    let pane = h.app.active_pane_id().unwrap();
+    {
+        let pn = h.app.panes.get_mut(&pane).unwrap();
+        let mut text = String::new();
+        for i in 0..50_000 {
+            text.push_str(&format!("line {i} of output, some words to fill the row and wrap now and then\r\n"));
+        }
+        pn.parser.advance(&mut pn.term, text.as_bytes());
+    }
+    println!("50 000 lines of scrollback     {:7.2} ms/frame", per_frame(&mut h, 60));
+    h.command("find");
+    h.type_text("line 4999");
+    println!("  with a scrollback search     {:7.2} ms/frame", per_frame(&mut h, 30));
+    h.key(Key::Escape, Modifiers::NONE);
+
+    // A big source file, and a big markdown file with tables.
+    let src = h.dir.join("big.rs");
+    std::fs::write(&src, (0..8000).map(|i| format!("fn f{i}(a: u32) -> u32 {{ a + {i} }} // comment {i}\n")).collect::<String>()).unwrap();
+    h.app.open_file("local", &p(&src), 1);
+    assert!(h.wait_for(30.0, |h| h.app.editor.files.iter().all(|f| !f.loading)));
+    println!("8 000-line source file         {:7.2} ms/frame", per_frame(&mut h, 30));
+    {
+        // Where that goes: the parts of laying the file out, one by one.
+        let text = h.app.editor.files[0].text.clone();
+        let font = egui::FontId::monospace(14.0);
+        let state = Default::default();
+        let job = std::sync::Arc::new(crate::highlight::layout(&text, "rs", font.clone(), &[], None, &state, &h.ctx));
+        let time = |what: &str, f: &mut dyn FnMut()| {
+            let t = std::time::Instant::now();
+            for _ in 0..20 {
+                f();
+            }
+            println!("    {what:34} {:7.2} ms", t.elapsed().as_secs_f64() * 1000.0 / 20.0);
+        };
+        println!("    sections in the job: {}", job.sections.len());
+        time("hash of the text", &mut || {
+            use std::hash::{Hash, Hasher};
+            let mut s = std::collections::hash_map::DefaultHasher::new();
+            text.hash(&mut s);
+            std::hint::black_box(s.finish());
+        });
+        time("clone of the job", &mut || {
+            std::hint::black_box((*job).clone());
+        });
+        time("layout_job (cached galley)", &mut || {
+            std::hint::black_box(h.ctx.fonts(|f| f.layout_job((*job).clone())));
+        });
+        time("line numbers text", &mut || {
+            let nums: String = (1..=8000).map(|n| format!("{n:>4}\n")).collect();
+            std::hint::black_box(nums);
+        });
+        time("count of newlines", &mut || {
+            std::hint::black_box(text.matches('\n').count());
+        });
+    }
+    let md = h.dir.join("big.md");
+    let mut text = String::new();
+    for i in 0..300 {
+        text.push_str(&format!("## Section {i}\n\nSome *text* with `code` and a [link](x).\n\n| a | b | c |\n|---|---|---|\n| {i} | two | three |\n| x | y | z |\n\n"));
+    }
+    std::fs::write(&md, text).unwrap();
+    h.app.open_file("local", &p(&md), 1);
+    assert!(h.wait_for(30.0, |h| h.app.editor.files.iter().all(|f| !f.loading)));
+    println!("markdown, 300 tables           {:7.2} ms/frame", per_frame(&mut h, 30));
+
+    // Files: a folder of 3 000 entries; then the other side tabs.
+    let big = h.dir.join("many");
+    std::fs::create_dir_all(&big).unwrap();
+    for i in 0..3000 {
+        std::fs::write(big.join(format!("file-{i:04}.txt")), "needle\n").unwrap();
+    }
+    h.app.settings.sidebar = true;
+    h.app.side.follow = false;
+    h.app.set_root("local", &p(&big));
+    assert!(h.wait_for(30.0, |h| h.has("file-0000.txt")));
+    println!("Files, 3 000 entries           {:7.2} ms/frame", per_frame(&mut h, 30));
+    h.app.side.tab = crate::app::SideTab::History;
+    h.app.settings.side_tabs.insert(0, crate::app::SideTab::History);
+    println!("History tab                    {:7.2} ms/frame", per_frame(&mut h, 30));
+    h.app.side.tab = crate::app::SideTab::Procs;
+    h.app.settings.side_tabs.insert(0, crate::app::SideTab::Procs);
+    println!("Procs tab (no agent)           {:7.2} ms/frame", per_frame(&mut h, 30));
+    println!("    procs: {:?}; toasts {}; texts on screen {}", h.app.side.procs.as_ref().map(|p| p.as_ref().map(|r| r.len()).map_err(|e| e.clone())), h.app.toasts.len(), h.texts.len());
+    h.app.editor.visible = false;
+    println!("    the same, editor hidden    {:7.2} ms/frame", per_frame(&mut h, 30));
+    h.app.settings.sidebar = false;
+    println!("    and the side panel hidden  {:7.2} ms/frame", per_frame(&mut h, 30));
+    drop(h);
+    let mut h = Harness::new(json!({"sidebar": true, "session": [{"t": "Pane", "host": "local", "cwd": null}]}));
+    h.app.side.tab = crate::app::SideTab::Procs;
+    h.app.settings.side_tabs.insert(0, crate::app::SideTab::Procs);
+    assert!(h.wait_for(30.0, |h| h.app.side.procs.as_ref().is_some_and(|p| p.is_ok())));
+    println!("Procs tab, this PC ({} rows)  {:7.2} ms/frame", h.app.side.procs.as_ref().unwrap().as_ref().unwrap().len(), per_frame(&mut h, 60));
+}
+
+/// A file in the editor is laid out when it changes, not once a frame (a
+/// big source file cost 12 ms every frame). New fonts (the scale changed)
+/// lay it out again: what was kept points into the old font atlas.
+#[test]
+fn the_editor_lays_a_file_out_once() {
+    use crate::ui_panels::EDITOR_LAYOUTS;
+    use std::sync::atomic::Ordering::Relaxed;
+    let mut h = Harness::new(json!({}));
+    for (name, text) in [("big.rs", "fn main() {\n    let x = 1;\n}\n".repeat(400)), ("big.md", "# Title\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\ntext\n".repeat(60))] {
+        let file = h.dir.join(name);
+        std::fs::write(&file, text).unwrap();
+        let path = file.display().to_string().replace('\\', "/");
+        h.app.open_file("local", &path, 1);
+        assert!(h.wait_for(20.0, |h| h.app.editor.files.iter().all(|f| !f.loading)), "opened");
+        // Let the highlighting and the table widths settle.
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        h.frames(10);
+        let settled = EDITOR_LAYOUTS.load(Relaxed);
+        h.frames(30);
+        assert_eq!(EDITOR_LAYOUTS.load(Relaxed), settled, "{name}: 30 frames with nothing changed lay nothing out");
+        // A change is laid out, and shows.
+        let i = h.app.editor.files.iter().position(|f| f.path == path).unwrap();
+        h.app.editor.files[i].text.insert_str(0, "changed_here ");
+        h.frames(3);
+        let edited = EDITOR_LAYOUTS.load(Relaxed);
+        assert!(edited > settled, "{name}: an edit is laid out");
+        assert!(h.shows("changed_here"), "{name}: and drawn");
+        // New fonts: laid out again.
+        let scale = h.ctx.pixels_per_point();
+        h.ctx.set_pixels_per_point(scale * 1.25);
+        h.frames(3);
+        assert!(EDITOR_LAYOUTS.load(Relaxed) > edited, "{name}: new fonts, a new layout");
+        h.ctx.set_pixels_per_point(scale);
+        h.frames(3);
+        h.app.close_files(i, crate::app::CloseWhich::This);
+    }
+}
+
+/// The timed save writes settings.json only when something changed (it
+/// wrote it every ten seconds regardless, inside a frame); an asked-for
+/// save always writes.
+#[test]
+fn the_timed_save_writes_only_changes() {
+    let mut h = Harness::new(json!({}));
+    let file = h.dir.join("settings.json");
+    h.app.save_settings();
+    std::fs::remove_file(&file).unwrap();
+    h.app.autosave_settings();
+    assert!(!file.exists(), "nothing changed: nothing written");
+    h.command("new_tab");
+    h.app.autosave_settings();
+    let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).expect("the new tab was written")).unwrap();
+    assert_eq!(saved["session"].as_array().map(|s| s.len()), Some(2));
+    std::fs::remove_file(&file).unwrap();
+    h.app.save_settings();
+    assert!(file.exists(), "asked for: written");
+}
+
+/// A long markdown document: tables scrolled out of view are still there
+/// when scrolled to (they are skipped while off screen).
+#[test]
+fn tables_far_down_a_document_are_drawn_when_reached() {
+    let mut h = Harness::new(json!({}));
+    let file = h.dir.join("long.md");
+    let mut text = String::new();
+    for i in 0..80 {
+        text.push_str(&format!("## Section {i}\n\n| key | value |\n|---|---|\n| cell{i}a | cell{i}b |\n\n"));
+    }
+    std::fs::write(&file, text).unwrap();
+    let path = file.display().to_string().replace('\\', "/");
+    h.app.open_file("local", &path, 1);
+    assert!(h.wait_for(20.0, |h| h.has("cell0a")), "the first table is drawn");
+    assert!(!h.has("cell79a"), "the last one is far below");
+    // To the end of the document.
+    let i = h.app.editor.files.iter().position(|f| f.path == path).unwrap();
+    let lines = h.app.editor.files[i].text.lines().count();
+    h.app.editor.files[i].goto = Some(lines);
+    assert!(h.wait_for(20.0, |h| h.has("cell79a") && h.has("cell79b")), "the last table, once scrolled to");
+    assert!(!h.has("cell0a"), "and the first is out of view");
+}
