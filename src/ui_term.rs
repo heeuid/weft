@@ -1503,7 +1503,11 @@ impl App {
         let mut cursor_now: Option<(Rect, Option<char>)> = None;
         let mut drawn: Option<Rect> = None;
         let mut held_next = None;
-        let show_cursor = t.cursor_visible && (t.alt_active || p.scroll == 0);
+        // Scrolled back, the cursor is drawn as long as its line is in view
+        // (`ci` is None when it is not), moving with the text as in other
+        // terminals. It used to go at the first line scrolled: near the
+        // end a turn of the wheel switched it off and on.
+        let show_cursor = t.cursor_visible;
         let ci = if t.alt_active { Some(t.cy) } else { vis_index(t.cursor_abs()) };
         if let Some(i) = ci {
             let wide = t.screen.get(t.cy).and_then(|r| r.cells.get(t.cx)).map(|c| c.wide == WIDE_LEAD).unwrap_or(false);
@@ -1516,10 +1520,10 @@ impl App {
             // cursor: it flickered at the rate the program redrew, a
             // spinner's say. A hidden cursor stays where it was for a
             // moment; one that is still hidden after that goes.
-            let held = p.cursor_held.filter(|h| !t.cursor_visible && (t.alt_active || p.scroll == 0) && h.2.elapsed() < CURSOR_HOLD);
+            let held = p.cursor_held.filter(|h| !t.cursor_visible && h.3 == p.scroll && h.2.elapsed() < CURSOR_HOLD);
             if show_cursor {
                 cursor_now = Some((r, under));
-            } else if let Some((at, ch_under, since)) = held {
+            } else if let Some((at, ch_under, since, _)) = held {
                 cursor_now = Some((at, ch_under));
                 ui.ctx().request_repaint_after(CURSOR_HOLD.saturating_sub(since.elapsed()) + Duration::from_millis(5));
             }
@@ -1550,7 +1554,7 @@ impl App {
                 }
             }
             if shown_here {
-                held_next = Some((r, under, std::time::Instant::now()));
+                held_next = Some((r, under, std::time::Instant::now(), p.scroll));
             } else {
                 held_next = held;
             }

@@ -2605,3 +2605,57 @@ fn files_follow_the_terminal_that_has_the_keyboard() {
     h.click(right.1.center());
     assert_eq!(root(&h), Some(format!("{other}:/tmp/right")), "a click in the right pane");
 }
+
+/// Scrolling back a little, the cursor stays on its line and moves with
+/// the text, in every frame; it goes only when its line leaves the
+/// screen, and is back when the line is. (It went at the first line
+/// scrolled, so near the end the wheel switched it off and on.) The
+/// screen is like Claude Code's: an input line with a few lines below it.
+#[test]
+fn the_cursor_moves_with_the_text_while_scrolling() {
+    let body = r#"
+def after(line):
+    sys.stdout.write(''.join('line-%02d\r\n' % i for i in range(100)))
+    sys.stdout.write('> typing here\r\n  hint 1\r\n  hint 2\r\n  hint 3\r\n  hint 4' + E + '[4A' + E + '[14G')
+    sys.stdout.flush()
+"#;
+    let (mut h, _file) = script_harness(body, json!({}));
+    let pane = h.app.active_pane_id().unwrap();
+    h.click(egui::pos2(400.0, 300.0));
+    h.type_text("go");
+    h.key(Key::Enter, Modifiers::NONE);
+    assert!(h.wait_for(20.0, |h| h.shows("hint 4") && h.shows("> typing here")), "the screen is drawn");
+    h.frames(3);
+    let home = h.app.panes[&pane].cursor_drawn.expect("the cursor is drawn on the input line");
+    assert!((home.center().y - h.at("> typing here").y).abs() < 2.0, "on the input line");
+    let ch = home.height();
+    // Four lines below the input line: scrolled up to four lines it is in
+    // view, and the cursor with it; from six on it is not.
+    let at = egui::pos2(400.0, 300.0);
+    let mut wrong = Vec::new();
+    for step in (0..9).chain((0..9).rev()) {
+        h.app.panes.get_mut(&pane).unwrap().scroll = step;
+        h.frame(vec![Event::PointerMoved(at)]);
+        let want = home.translate(egui::vec2(0.0, step as f32 * ch));
+        let drawn = h.app.panes[&pane].cursor_drawn;
+        let ok = match step {
+            0..=4 => drawn.is_some_and(|r| (r.min - want.min).length() < 1.0),
+            5 => true,
+            _ => drawn.is_none(),
+        };
+        if !ok {
+            wrong.push((step, drawn.map(|r| r.top()), want.top()));
+        }
+    }
+    assert!(wrong.is_empty(), "wrong in {wrong:?} (scroll, cursor drawn at, its line at)");
+    // The wheel: a turn up keeps it on its line while that is in view.
+    h.wheel(at, 1.0, Modifiers::NONE);
+    let s = h.app.panes[&pane].scroll;
+    assert!(s > 0, "scrolled");
+    if s <= 4 {
+        assert_eq!(h.app.panes[&pane].cursor_drawn.map(|r| r.top()), Some(home.top() + s as f32 * ch), "on its line, {s} lines lower");
+    }
+    h.wheel(at, -1000.0, Modifiers::NONE);
+    assert_eq!(h.app.panes[&pane].scroll, 0);
+    assert_eq!(h.app.panes[&pane].cursor_drawn, Some(home), "back at the end, where it was");
+}

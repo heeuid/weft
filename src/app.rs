@@ -899,7 +899,8 @@ pub struct Pane {
     /// was not), and where and when the program last had it shown: a
     /// cursor the program hides stays for `CURSOR_HOLD`.
     pub cursor_drawn: Option<Rect>,
-    pub cursor_held: Option<(Rect, Option<char>, Instant)>,
+    /// (Also the scroll it was drawn at: held only while that is the same.)
+    pub cursor_held: Option<(Rect, Option<char>, Instant, usize)>,
     /// A new size waiting to settle (splitter drag) before it is applied.
     pub pending_size: Option<((usize, usize), Instant)>,
     /// The first size was applied (the first layout applies immediately).

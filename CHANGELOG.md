@@ -5,6 +5,16 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.3.5
+
+Fixed
+- **The cursor went off and on while scrolling** near the end of the
+  terminal: it was not drawn once the view was scrolled back by even one
+  line, though its line was still on screen (Claude Code's input line
+  has a few lines below it). It now stays on its line and moves with the
+  text, as in other terminals, and goes only when that line leaves the
+  screen.
+
 ## 0.3.4
 
 Fixed
