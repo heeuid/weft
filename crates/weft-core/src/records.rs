@@ -138,6 +138,11 @@ pub fn today() -> String {
     Local::now().format("%Y-%m-%d").to_string()
 }
 
+/// Now, for a file name: "20261115-143005".
+pub fn stamp() -> String {
+    Local::now().format("%Y%m%d-%H%M%S").to_string()
+}
+
 pub fn now() -> f64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
 }

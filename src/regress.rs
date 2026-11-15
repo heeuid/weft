@@ -2724,3 +2724,45 @@ def after(line):
     assert!(hidden > 0, "some frames came while the program had the cursor hidden");
     assert!(wrong.is_empty(), "of {frames} frames, {} had no cursor or one off the input line: {:?} (scroll, cursor at, input line at)", wrong.len(), &wrong[..wrong.len().min(8)]);
 }
+
+/// "Record this terminal" writes what the program sent (control bytes made
+/// readable), what was typed, and where the cursor was drawn, each with
+/// its time, to a file in data/logs; the status bar says it is on; run
+/// again, it stops and says where the file is.
+#[test]
+fn recording_a_terminal_writes_its_traffic() {
+    let body = r#"
+def after(line):
+    sys.stdout.write(E + '[31m' + 'got ' + line.strip() + E + '[0m\r\n')
+    sys.stdout.flush()
+"#;
+    let (mut h, _file) = script_harness(body, json!({}));
+    let pane = h.app.active_pane_id().unwrap();
+    h.click(egui::pos2(400.0, 300.0));
+    h.command("record_terminal");
+    let path = h.app.panes[&pane].trace.as_ref().map(|t| t.path.clone()).expect("recording");
+    assert!(path.starts_with(h.dir.join("logs")), "in data/logs: {path:?}");
+    assert!(h.shows("recording "), "the status bar says so");
+    h.type_text("hi");
+    h.key(Key::Enter, Modifiers::NONE);
+    assert!(h.wait_for(20.0, |h| h.shows("got hi")), "the program answered");
+    h.frames(3);
+    h.command("record_terminal");
+    assert!(h.app.panes[&pane].trace.is_none(), "stopped");
+    assert!(!h.shows("\u{25cf} recording"));
+    assert!(h.app.toasts.iter().any(|t| t.text.contains("recording stopped") && t.text.contains(&path.display().to_string())), "says where the file is");
+    let log = std::fs::read_to_string(&path).unwrap();
+    let lines: Vec<&str> = log.lines().collect();
+    assert!(lines.iter().all(|l| l.starts_with('+')), "every line starts with its time");
+    assert!(lines.iter().any(|l| l.contains(" in ") && l.ends_with(" hi")), "what was typed: {log}");
+    assert!(lines.iter().any(|l| l.contains(" in 1 \\r")), "Enter, made readable");
+    // (What arrives is what Windows' console host sends: it draws the
+    // program's screen again in its own words, so the colour comes, but
+    // not necessarily as the program wrote it.)
+    assert!(lines.iter().any(|l| l.contains(" out ") && l.contains("\\e[") && l.contains("got hi")), "what the program sent, ESC made readable: {log}");
+    assert!(lines.iter().any(|l| l.contains(" cursor ")), "where the cursor was drawn");
+    assert_eq!(crate::app::OutputTrace::visible(b"\x1b[?25la\\b\r\n\x07\t\xff"), "\\e[?25la\\\\b\\r\\n\\x07\\t\u{fffd}");
+    // Times go up.
+    let times: Vec<f64> = lines.iter().map(|l| l[1..].split(' ').next().unwrap().parse().unwrap()).collect();
+    assert!(times.windows(2).all(|w| w[0] <= w[1]));
+}

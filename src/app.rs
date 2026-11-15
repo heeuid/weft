@@ -880,7 +880,93 @@ pub struct CursorHold {
     pub at: Instant,
 }
 
+/// A record of one terminal's traffic, to see how a program draws (the
+/// "Record this terminal" command): what it sent, what was typed into it,
+/// and where weft drew the cursor, each with the milliseconds since the
+/// recording began. One line each:
+///
+///     +1234.5 out 37 \e[?25l\e[3A> hi\e[?25h
+///     +1240.1 in 1 h
+///     +1241.0 cursor 12,3          (row on screen, column; or "none")
+pub struct OutputTrace {
+    pub path: std::path::PathBuf,
+    file: std::fs::File,
+    start: Instant,
+    written: u64,
+    last_cursor: String,
+}
+
+impl OutputTrace {
+    /// No more than this is written; the recording stops itself there.
+    pub const LIMIT: u64 = 32 << 20;
+
+    pub fn start(path: std::path::PathBuf) -> std::io::Result<OutputTrace> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let file = std::fs::File::create(&path)?;
+        Ok(OutputTrace { path, file, start: Instant::now(), written: 0, last_cursor: String::new() })
+    }
+
+    fn line(&mut self, what: &str, rest: &str) {
+        use std::io::Write;
+        let ms = self.start.elapsed().as_secs_f64() * 1000.0;
+        let line = format!("+{ms:.1} {what} {rest}\n");
+        if self.written < Self::LIMIT && self.file.write_all(line.as_bytes()).is_ok() {
+            self.written += line.len() as u64;
+        }
+    }
+
+    /// Bytes as text that can be read: ESC as \e, other control bytes as
+    /// \r, \n, \t or \xNN, a backslash doubled; the rest as UTF-8.
+    pub fn visible(bytes: &[u8]) -> String {
+        let mut s = String::new();
+        for c in String::from_utf8_lossy(bytes).chars() {
+            match c {
+                '\x1b' => s.push_str("\\e"),
+                '\r' => s.push_str("\\r"),
+                '\n' => s.push_str("\\n"),
+                '\t' => s.push_str("\\t"),
+                '\\' => s.push_str("\\\\"),
+                c if (c as u32) < 0x20 || c as u32 == 0x7f => s.push_str(&format!("\\x{:02x}", c as u32)),
+                c => s.push(c),
+            }
+        }
+        s
+    }
+
+    pub fn output(&mut self, bytes: &[u8]) {
+        self.line("out", &format!("{} {}", bytes.len(), Self::visible(bytes)));
+    }
+
+    pub fn input(&mut self, bytes: &[u8]) {
+        self.line("in", &format!("{} {}", bytes.len(), Self::visible(bytes)));
+    }
+
+    /// Where the cursor was drawn this frame, written when it changed.
+    pub fn cursor(&mut self, at: Option<(usize, usize)>, held: bool) {
+        let now = match at {
+            Some((r, c)) => format!("{r},{c}{}", if held { " held" } else { "" }),
+            None => "none".to_string(),
+        };
+        if now != self.last_cursor {
+            self.line("cursor", &now);
+            self.last_cursor = now;
+        }
+    }
+
+    pub fn full(&self) -> bool {
+        self.written >= Self::LIMIT
+    }
+
+    pub fn size(&self) -> u64 {
+        self.written
+    }
+}
+
 pub struct Pane {
+    /// A recording of this terminal's traffic, while one is being made.
+    pub trace: Option<OutputTrace>,
     /// Synchronized output (DEC 2026) held until its update is whole.
     pub sync: crate::term::SyncOutput,
     /// The remote shell's process (from the bootstrap), for its directory
@@ -952,6 +1038,7 @@ impl Pane {
             ime_rect: None,
             cursor_drawn: None,
             cursor_held: None,
+            trace: None,
             pending_size: None,
             sized: false,
             hist_seen: 0,
@@ -978,6 +1065,9 @@ impl Pane {
         // Enter starts a command for shells that don't mark it themselves.
         if bytes.contains(&b'\r') {
             self.term.user_enter();
+        }
+        if let Some(t) = self.trace.as_mut() {
+            t.input(bytes);
         }
         if let Some(p) = self.pty.as_mut() {
             p.write(bytes);
@@ -2515,7 +2605,11 @@ impl App {
             if let Some(pty) = pane.pty.as_mut() {
                 // An app's synchronized update (DEC 2026) comes in whole.
                 let now = Instant::now();
-                let bytes = pane.sync.push(&pty.read(), now);
+                let read = pty.read();
+                if let (Some(t), false) = (pane.trace.as_mut(), read.is_empty()) {
+                    t.output(&read);
+                }
+                let bytes = pane.sync.push(&read, now);
                 if let Some(d) = pane.sync.due(now) {
                     self.ctx.request_repaint_after(d);
                 }

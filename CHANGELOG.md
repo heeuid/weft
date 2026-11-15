@@ -5,6 +5,26 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.4.0
+
+Added
+- **Record this terminal** (palette, Help group): writes what the program
+  in the terminal sends, what you type into it, and where weft draws the
+  cursor, each with its time in milliseconds, to
+  `data/logs/terminal-<host>-<date>-<time>.log`; run it again to stop.
+  The status bar says `● recording N KB` meanwhile. It stops by itself
+  at 32 MB. The file holds what you typed and what was on screen: look
+  at it before you pass it on.
+
+Found with it
+- On Windows the program's output does not reach weft as it was written:
+  the console host draws the program's screen again and sends that. A
+  cursor hidden and shown again around a redraw came as plain text with
+  no hide or show at all. The tests of 0.3.4 and 0.3.6 sent hide and
+  show as a program would and took it that weft gets them so; what
+  Claude Code's screen comes to through the console host is still to be
+  recorded.
+
 ## 0.3.6
 
 Fixed

@@ -1532,6 +1532,7 @@ impl App {
         // on screen, dropped at every turn of the wheel, and not looked at
         // when the line the program was drawing on was out of view).
         let held = p.cursor_held.filter(|h| !t.cursor_visible && h.alt == t.alt_active && h.at.elapsed() < CURSOR_HOLD);
+        let was_held = !show_cursor && held.is_some();
         if show_cursor {
             cursor_now = cursor_rect.map(|r| (r, here.under));
             held_next = Some(here);
@@ -1713,6 +1714,10 @@ impl App {
             let pm = self.panes.get_mut(&id).unwrap();
             pm.cursor_drawn = drawn;
             pm.cursor_held = held_next;
+            if let Some(tr) = pm.trace.as_mut() {
+                let cell = drawn.map(|r| (((r.top() - inner.top()) / ch).round().max(0.0) as usize, ((r.left() - inner.left()) / cw).round().max(0.0) as usize));
+                tr.cursor(cell, was_held);
+            }
         }
         if focused {
             let pm = self.panes.get_mut(&id).unwrap();

@@ -44,6 +44,7 @@ pub(crate) enum Cmd {
     Composer,
     About,
     DisplayTest,
+    Trace,
     ConfirmUnsaved,
     ConfirmRunning,
     PrevBlock,
@@ -164,6 +165,7 @@ const COMMANDS: &[(Cmd, &str, &str, &[&str])] = &[
     (Cmd::MarkdownBreaks, "markdown_breaks", "Markdown: toggle line breaks (GitHub PR style / CommonMark)", &[]),
     (Cmd::About, "about", "About weft: which version this is, and which console host", &[]),
     (Cmd::DisplayTest, "display_test", "Display test: see how blocks, colours, columns and boxes are drawn", &[]),
+    (Cmd::Trace, "record_terminal", "Record this terminal: what the program sends, what you type, where the cursor is drawn (to a file in data/logs; again to stop)", &[]),
     (Cmd::ConfirmUnsaved, "confirm_unsaved", "Ask before closing unsaved files: on / off", &[]),
     (Cmd::ConfirmRunning, "confirm_running", "Ask before ending running commands: on / off", &[]),
     (Cmd::Settings, "settings_file", "Open settings.json", &[]),
@@ -294,6 +296,34 @@ impl App {
                 self.toast(about, crate::app::ToastKind::Info)
             }
             Cmd::DisplayTest => self.display_test = Some(0),
+            Cmd::Trace => {
+                let Some(id) = pane else { return };
+                let stopped = self.panes.get_mut(&id).and_then(|p| p.trace.take());
+                match stopped {
+                    Some(t) => {
+                        let msg = format!("recording stopped: {} ({} KB)", t.path.display(), t.size() / 1024);
+                        self.data.log(&msg);
+                        self.toast(msg, ToastKind::Info);
+                    }
+                    None => {
+                        let host = self.panes[&id].host.clone();
+                        let stamp = crate::records::stamp();
+                        let name: String = host.chars().map(|c| if c.is_alphanumeric() || c == '-' { c } else { '_' }).collect();
+                        let path = self.data.path(&format!("logs/terminal-{name}-{stamp}.log"));
+                        match crate::app::OutputTrace::start(path) {
+                            Ok(t) => {
+                                let msg = format!("recording this terminal to {} (run the command again to stop)", t.path.display());
+                                self.data.log(&msg);
+                                self.toast(msg, ToastKind::Info);
+                                if let Some(p) = self.panes.get_mut(&id) {
+                                    p.trace = Some(t);
+                                }
+                            }
+                            Err(e) => self.toast(format!("can't record: {e}"), ToastKind::Error),
+                        }
+                    }
+                }
+            }
             Cmd::ConfirmUnsaved => {
                 self.settings.confirm_unsaved = !self.settings.confirm_unsaved;
                 let how = if self.settings.confirm_unsaved { "weft asks before closing a file with unsaved changes" } else { "files close without asking, unsaved changes are dropped" };
@@ -1056,6 +1086,10 @@ impl App {
                 }
                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                     let cut = |ui: &mut Ui, text: String, color: Color32| ui.add(egui::Label::new(small(text.clone(), color)).truncate()).on_hover_text(text);
+                    if let Some(t) = self.active_pane().and_then(|p| p.trace.as_ref()) {
+                        let label = if t.full() { "\u{25cf} recording full".to_string() } else { format!("\u{25cf} recording {} KB", t.size() / 1024) };
+                        ui.label(small(label, theme::error())).on_hover_text(format!("{}\nRecord this terminal again to stop", t.path.display()));
+                    }
                     cut(ui, host.clone(), theme::text());
                     let r = cut(ui, label, theme::text_dim());
                     if matches!(status, ConnStatus::Failed(_)) {
@@ -4077,7 +4111,7 @@ fn group(c: Cmd) -> &'static str {
         | Cmd::Fonts
         | Cmd::MarkdownBreaks => GROUPS[3],
         Cmd::Records | Cmd::Settings | Cmd::AgentLog | Cmd::Keys | Cmd::Restart | Cmd::ConfirmUnsaved | Cmd::ConfirmRunning => GROUPS[4],
-        Cmd::Help | Cmd::Features | Cmd::Palette | Cmd::About | Cmd::DisplayTest => GROUPS[5],
+        Cmd::Help | Cmd::Features | Cmd::Palette | Cmd::About | Cmd::DisplayTest | Cmd::Trace => GROUPS[5],
     }
 }
 
