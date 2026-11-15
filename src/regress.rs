@@ -2659,3 +2659,68 @@ def after(line):
     assert_eq!(h.app.panes[&pane].scroll, 0);
     assert_eq!(h.app.panes[&pane].cursor_drawn, Some(home), "back at the end, where it was");
 }
+
+/// Scrolling while a program redraws (Claude Code working, its spinner
+/// on the line above the input): in every frame where the input line is
+/// in view, the cursor is on it. The hold of a hidden cursor was dropped
+/// at every turn of the wheel, and skipped when the line the program was
+/// drawing on was out of view: the cursor flickered while scrolling.
+#[test]
+fn the_cursor_holds_still_while_scrolling_during_redraws() {
+    let body = r#"
+def put(s):
+    sys.stdout.write(s)
+    sys.stdout.flush()
+def after(line):
+    put(''.join('line-%02d\r\n' % i for i in range(100)))
+    put('working .\r\n> typing here\r\n  hint 1\r\n  hint 2\r\n  hint 3\r\n  hint 4' + E + '[4A' + E + '[14G')
+    time.sleep(0.5)
+    for i in range(70):
+        # The spinner is one line above the input: hide, go there, draw,
+        # come back, show.
+        put(E + '[?25l' + E + '[1A' + E + '[9G' + '|/-\\'[i % 4])
+        time.sleep(0.006)
+        put(E + '[1B' + E + '[14G' + E + '[?25h')
+        time.sleep(0.02)
+    put(E + '[1A' + E + '[11Gdone' + E + '[1B' + E + '[14G')
+"#;
+    let (mut h, _file) = script_harness(body, json!({}));
+    let pane = h.app.active_pane_id().unwrap();
+    h.click(egui::pos2(400.0, 300.0));
+    h.type_text("go");
+    h.key(Key::Enter, Modifiers::NONE);
+    assert!(h.wait_for(20.0, |h| h.shows("hint 4") && h.shows("> typing here")), "the screen is drawn");
+    h.wait_for(1.0, |h| h.shows("working |") || h.shows("working /"));
+    // Where the cursor is at the end, not scrolled: the input line.
+    let input_y = |h: &Harness| h.at("> typing here").y;
+    let hold = crate::ui_term::CURSOR_HOLD;
+    let (mut frames, mut wrong, mut hidden) = (0, Vec::new(), 0);
+    let mut shown_at = std::time::Instant::now();
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let mut k = 0usize;
+    while std::time::Instant::now() < end && !h.shows("done") {
+        // The wheel, back and forth over four lines: a new place every
+        // third frame.
+        k += 1;
+        let s = [0, 1, 2, 3, 4, 3, 2, 1][(k / 3) % 8];
+        h.app.panes.get_mut(&pane).unwrap().scroll = s;
+        h.frames(1);
+        let p = &h.app.panes[&pane];
+        if p.term.cursor_visible {
+            shown_at = std::time::Instant::now();
+        } else {
+            hidden += 1;
+        }
+        frames += 1;
+        let line = input_y(&h);
+        match p.cursor_drawn {
+            Some(r) if (r.center().y - line).abs() < 2.0 => {}
+            None if shown_at.elapsed() + std::time::Duration::from_millis(30) >= hold => {}
+            other => wrong.push((s, other.map(|r| r.center().y), line)),
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert!(h.shows("done") && frames > 50, "the redraws were seen ({frames} frames)");
+    assert!(hidden > 0, "some frames came while the program had the cursor hidden");
+    assert!(wrong.is_empty(), "of {frames} frames, {} had no cursor or one off the input line: {:?} (scroll, cursor at, input line at)", wrong.len(), &wrong[..wrong.len().min(8)]);
+}

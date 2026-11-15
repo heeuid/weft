@@ -5,6 +5,19 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.3.6
+
+Fixed
+- **The cursor still flickered when scrolling while a program was
+  working** (Claude Code with its spinner going). The cursor a program
+  hides while it redraws is held for a moment (0.3.4), but that hold was
+  kept as a place on the screen: every turn of the wheel dropped it, and
+  it was not looked at when the line the program was drawing on (the
+  spinner's) was out of view. In a test that scrolls back and forth over
+  four lines during seventy redraws the cursor was missing in 180 of 603
+  frames. The hold is now a line and column of the text, found again
+  wherever the view has scrolled: 0 frames.
+
 ## 0.3.5
 
 Fixed

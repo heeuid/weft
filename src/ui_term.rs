@@ -1497,37 +1497,50 @@ impl App {
         }
 
         // Cursor + IME.
-        let mut cursor_rect = None;
         // What is drawn as the cursor this frame (and the character under
         // it), where, and what to remember for the frames after.
         let mut cursor_now: Option<(Rect, Option<char>)> = None;
         let mut drawn: Option<Rect> = None;
-        let mut held_next = None;
+        let mut held_next: Option<crate::app::CursorHold> = None;
         // Scrolled back, the cursor is drawn as long as its line is in view
         // (`ci` is None when it is not), moving with the text as in other
         // terminals. It used to go at the first line scrolled: near the
         // end a turn of the wheel switched it off and on.
         let show_cursor = t.cursor_visible;
-        let ci = if t.alt_active { Some(t.cy) } else { vis_index(t.cursor_abs()) };
-        if let Some(i) = ci {
-            let wide = t.screen.get(t.cy).and_then(|r| r.cells.get(t.cx)).map(|c| c.wide == WIDE_LEAD).unwrap_or(false);
-            let r = Rect::from_min_size(pos2(inner.left() + t.cx as f32 * cw, row_y(i)), vec2(if wide { 2.0 * cw } else { cw }, ch));
-            cursor_rect = Some(r);
-            let under = t.screen.get(t.cy).and_then(|r| r.cells.get(t.cx)).map(|c| c.ch).filter(|c| *c != ' ');
-            // A program hides the cursor while it redraws and shows it
-            // again when done (through Windows' pseudo console every
-            // update comes that way). A frame drawn in between had no
-            // cursor: it flickered at the rate the program redrew, a
-            // spinner's say. A hidden cursor stays where it was for a
-            // moment; one that is still hidden after that goes.
-            let held = p.cursor_held.filter(|h| !t.cursor_visible && h.3 == p.scroll && h.2.elapsed() < CURSOR_HOLD);
-            if show_cursor {
-                cursor_now = Some((r, under));
-            } else if let Some((at, ch_under, since, _)) = held {
-                cursor_now = Some((at, ch_under));
-                ui.ctx().request_repaint_after(CURSOR_HOLD.saturating_sub(since.elapsed()) + Duration::from_millis(5));
-            }
-            let shown_here = show_cursor;
+        // Where a cell of the text is on screen now, if it is.
+        let place = |alt: bool, line: u64, col: usize, wide: bool| -> Option<Rect> {
+            let i = if alt { Some(line as usize) } else { vis_index(line) }?;
+            Some(Rect::from_min_size(pos2(inner.left() + col as f32 * cw, row_y(i)), vec2(if wide { 2.0 * cw } else { cw }, ch)))
+        };
+        let cell = t.screen.get(t.cy).and_then(|r| r.cells.get(t.cx));
+        let here = crate::app::CursorHold {
+            alt: t.alt_active,
+            line: if t.alt_active { t.cy as u64 } else { t.cursor_abs() },
+            col: t.cx,
+            wide: cell.is_some_and(|c| c.wide == WIDE_LEAD),
+            under: cell.map(|c| c.ch).filter(|c| *c != ' '),
+            at: std::time::Instant::now(),
+        };
+        let cursor_rect = place(here.alt, here.line, here.col, here.wide);
+        // A program hides the cursor while it redraws and shows it again
+        // when done (through Windows' pseudo console every update comes
+        // that way). A frame drawn in between had no cursor: it flickered
+        // at the rate the program redrew, a spinner's say. A hidden cursor
+        // stays where it was shown for a moment (one still hidden after
+        // that goes). Where is a line and column of the text: scrolled
+        // since, it is found again and moves with the text (it was a place
+        // on screen, dropped at every turn of the wheel, and not looked at
+        // when the line the program was drawing on was out of view).
+        let held = p.cursor_held.filter(|h| !t.cursor_visible && h.alt == t.alt_active && h.at.elapsed() < CURSOR_HOLD);
+        if show_cursor {
+            cursor_now = cursor_rect.map(|r| (r, here.under));
+            held_next = Some(here);
+        } else if let Some(h) = held {
+            cursor_now = place(h.alt, h.line, h.col, h.wide).map(|r| (r, h.under));
+            held_next = Some(h);
+            ui.ctx().request_repaint_after(CURSOR_HOLD.saturating_sub(h.at.elapsed()) + Duration::from_millis(5));
+        }
+        {
             if let (Some((r, under)), true) = (cursor_now, p.composer.is_none()) {
                 drawn = Some(r);
                 if focused {
@@ -1553,11 +1566,8 @@ impl App {
                     painter.rect_stroke(r.shrink(0.5), CornerRadius::same(1), Stroke::new(1.0_f32, theme::text_dim()), StrokeKind::Inside);
                 }
             }
-            if shown_here {
-                held_next = Some((r, under, std::time::Instant::now(), p.scroll));
-            } else {
-                held_next = held;
-            }
+        }
+        if let Some(r) = cursor_rect {
             if focused && !p.preedit.is_empty() {
                 let g = painter.layout_no_wrap(p.preedit.clone(), font.clone(), theme::text());
                 let pr = Rect::from_min_size(r.min, vec2(g.size().x.max(cw), ch));
