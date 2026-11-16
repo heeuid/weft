@@ -42,12 +42,18 @@ case "$dest" in
     *) dest="$(pwd)/$dest" ;;
 esac
 
+# Cargo is often in ~/.cargo/bin, which a shell may not have on its PATH.
+if ! command -v cargo >/dev/null 2>&1 && [ -x "$HOME/.cargo/bin/cargo" ]; then
+    PATH="$HOME/.cargo/bin:$PATH"
+fi
 # The program: built here when cargo is installed, else one built before.
 if [ -z "${WEFT_NO_BUILD:-}" ] && [ -f Cargo.toml ] && command -v cargo >/dev/null 2>&1; then
     if ! cargo build --release; then
         echo "weft: the build failed, see above. Nothing was installed." >&2
         exit 1
     fi
+elif [ -z "${WEFT_NO_BUILD:-}" ]; then
+    echo "weft: cargo not found, so nothing was built; installing target/release/weft as it is."
 fi
 src=target/release/weft
 if [ ! -f "$src" ]; then
@@ -56,6 +62,18 @@ if [ ! -f "$src" ]; then
 fi
 version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml 2>/dev/null | head -n 1)
 version=${version:-0}
+# A weft built before from older sources (cargo was not found, or the
+# build was skipped) is not put in place as this version.
+built=$("$src" --version 2>/dev/null | head -n 1)
+case "$built" in
+    "weft $version" | "weft $version "*) ;;
+    "weft "*)
+        echo "weft: $src is ${built%% (*}, but these sources are weft $version: it was not built again." >&2
+        echo "      Make cargo findable (https://rustup.rs; it is in ~/.cargo/bin) and run this again." >&2
+        echo "      Nothing was installed." >&2
+        exit 1
+        ;;
+esac
 
 echo "Installing weft $version into $dest"
 mkdir -p "$dest"
@@ -218,3 +236,7 @@ fi
 
 echo
 echo "weft $version is installed in $dest. Remove it with $dest/uninstall.sh"
+# A weft already running goes on as the version it started as.
+if command -v pgrep >/dev/null 2>&1 && pgrep -f "$dest/(weft.app/Contents/MacOS/weft-bin|weft)( |$)" >/dev/null 2>&1; then
+    echo "weft is running: quit it (all its windows; Cmd+Q on a Mac) and open it again to use $version."
+fi

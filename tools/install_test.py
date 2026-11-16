@@ -139,6 +139,17 @@ def one(osname):
         check(not os.path.exists(dest), 'nothing is left of it')
         r = run(repo, home, osname, 'uninstall.sh', 'keep')
         check(r.returncode != 0 and 'not installed' in r.stderr, 'uninstalling what is not there says so')
+        # A weft built from older sources (cargo was not found): not put in
+        # place as this version, and said why.
+        with open(os.path.join(repo, 'target', 'release', 'weft'), 'w', newline='\n') as f:
+            f.write('#!/bin/sh\necho "weft 0.6.1 (abc1234 2026-10-01)"\n')
+        r = run(repo, home, osname, 'install.sh')
+        check(r.returncode != 0 and 'weft 0.6.1, but these sources are weft ' + version in r.stderr and 'Nothing was installed' in r.stderr, 'an old build is not installed as the new version')
+        check(not os.path.exists(dest), 'and nothing of it is there')
+        with open(os.path.join(repo, 'target', 'release', 'weft'), 'w', newline='\n') as f:
+            f.write(f'#!/bin/sh\necho "weft {version} (abc1234 2026-11-17)"\n')
+        r = run(repo, home, osname, 'install.sh')
+        check(r.returncode == 0 and f'weft {version} is installed in' in r.stdout, 'one built from these sources is')
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

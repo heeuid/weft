@@ -5,6 +5,17 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.8.2
+
+Fixed
+- **install.sh no longer installs an old build as the new version.**
+  When cargo was not on the shell's PATH it built nothing and quietly
+  installed the weft built before (a Mac had 0.6.1 after a pull). It now
+  looks in ~/.cargo/bin too, says when it builds nothing, and refuses a
+  target/release/weft whose `--version` is not the sources' version.
+  When weft is running it says to quit it and open it again, since the
+  one running stays the version it started as.
+
 ## 0.8.1
 
 Fixed
