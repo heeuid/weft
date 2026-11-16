@@ -696,6 +696,7 @@ impl Term {
         let c = if self.line_drawing { dec_special(c) } else { c };
         let w = char_width(c);
         if w == 0 {
+            self.combine(c);
             return;
         }
         if self.pending_wrap {
@@ -741,6 +742,28 @@ impl Term {
             self.pending_wrap = true;
         } else {
             self.cx = nx;
+        }
+    }
+
+    /// A mark that goes on the letter before it (a combining accent, or
+    /// Hangul's vowel and final consonant as macOS writes file names: 응
+    /// as ㅇ ㅡ ㅇ, which `ls` there prints): put together with that letter
+    /// where Unicode has the two as one. They were dropped, and a Korean
+    /// name from a Mac showed as its first consonants.
+    fn combine(&mut self, c: char) {
+        let row = &mut self.screen[self.cy];
+        let x = if self.pending_wrap { Some(self.cx) } else { self.cx.checked_sub(1) };
+        let Some(mut x) = x else { return };
+        if row.cells[x].wide == WIDE_TAIL && x > 0 {
+            x -= 1;
+        }
+        // Only on the letter just printed (the cursor may have moved since).
+        if row.cells[x].ch != self.last_char {
+            return;
+        }
+        if let Some(joined) = unicode_normalization::char::compose(row.cells[x].ch, c) {
+            row.cells[x].ch = joined;
+            self.last_char = joined;
         }
     }
 
@@ -2097,6 +2120,30 @@ mod tests {
         assert!(!t.app_cursor && !t.line_drawing);
         run(&mut t, "q");
         assert_eq!(rows(&t)[0], "q");
+    }
+
+    /// Letters and the marks after them (as macOS writes Korean file
+    /// names, and as `ls` there prints them) make one character each in
+    /// the grid: "응용프로그램" in six wide cells, not its first consonants.
+    #[test]
+    fn decomposed_letters_are_put_together() {
+        let nfd: String = unicode_normalization::UnicodeNormalization::nfd("응용프로그램 파일.txt").collect();
+        let mut t = Term::new(40, 3);
+        run(&mut t, &nfd);
+        assert_eq!(t.screen[0].text(), "응용프로그램 파일.txt");
+        assert_eq!(t.cx, 6 * 2 + 1 + 2 * 2 + 4, "each syllable two cells wide");
+        // An accent on a Latin letter.
+        let mut t = Term::new(20, 2);
+        run(&mut t, "cafe\u{301} ok");
+        assert_eq!(t.screen[0].text(), "caf\u{e9} ok");
+        // At the end of a line (the cursor waiting to wrap) as well.
+        let mut t = Term::new(4, 3);
+        run(&mut t, &unicode_normalization::UnicodeNormalization::nfd("ab한").collect::<String>());
+        assert_eq!(t.screen[0].text(), "ab한");
+        // A mark with nothing to go on, or none it makes one with, is left out.
+        let mut t = Term::new(20, 2);
+        run(&mut t, "\u{301}x\u{1161}");
+        assert_eq!(t.screen[0].text(), "x");
     }
 
     /// The word under the pointer, for Ctrl+click: up to a space, a quote

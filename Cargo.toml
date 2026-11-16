@@ -9,7 +9,7 @@ members = ["crates/weft-core", "crates/weft-draw"]
 
 # One version for weft and its crates: raised here, with CHANGELOG.md.
 [workspace.package]
-version = "0.6.2"
+version = "0.6.3"
 
 [dependencies]
 weft-core = { path = "crates/weft-core" }
@@ -27,6 +27,10 @@ resvg = "0.49"
 hayro = "0.9.0"
 zeroize = "1"
 serialport = { version = "4", default-features = false }
+
+[dev-dependencies]
+# Names as macOS writes them, in the tests.
+unicode-normalization = "0.1"
 
 [build-dependencies]
 embed-resource = "3"

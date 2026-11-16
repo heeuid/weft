@@ -2933,3 +2933,42 @@ def after(line):
         }
     }
 }
+
+/// Names as macOS writes them (Hangul as its separate letters, "응" as
+/// ㅇ ㅡ ㅇ) are shown as syllables everywhere a name is drawn: the Files
+/// tree, its path, the filter's results, the terminal's tab, the editor's
+/// tab and path; the file itself opens by its own name. They showed letter
+/// by letter ("ㅇㅡㅇㅇㅛㅇ…").
+#[test]
+fn names_from_a_mac_show_as_syllables() {
+    use unicode_normalization::UnicodeNormalization;
+    let nfd = |s: &str| s.nfd().collect::<String>();
+    let mut h = Harness::new(json!({"sidebar": true, "follow_cwd": false}));
+    let root = h.dir.join(nfd("응용프로그램"));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join(nfd("메모 파일.md")), "# 안녕\n").unwrap();
+    let dir = root.display().to_string().replace('\\', "/");
+    assert!(!dir.contains("응용"), "the folder's name is decomposed, as on a Mac");
+    h.app.set_root("local", &dir);
+    assert!(h.wait_for(20.0, |h| h.shows("파일.md")), "the file is listed as syllables: {:?}", h.texts.iter().map(|t| &t.0).filter(|t| t.contains(".md")).collect::<Vec<_>>());
+    assert!(h.has("응용프로그램"), "and its folder in the path above");
+    assert!(!h.texts.iter().any(|(t, _)| t.contains('\u{110b}')), "no letter is drawn on its own");
+    // The terminal in that folder: its tab says so in syllables.
+    let pane = h.app.active_pane_id().unwrap();
+    h.app.panes.get_mut(&pane).unwrap().term.cwd = Some(dir.clone());
+    h.frames(2);
+    assert!(h.texts.iter().any(|(t, r)| t.contains("응용프로그램") && r.top() < 40.0), "the tab's title");
+    // Opened: the editor's tab and path; the file is read by its own name.
+    let row = h.at("파일.md");
+    h.double_click(row);
+    assert!(h.wait_for(20.0, |h| h.app.editor.files.iter().any(|f| f.text.contains("안녕") && !f.loading)), "opened by its own name");
+    h.frames(2);
+    assert!(h.has("메모 파일.md"), "the editor's tab");
+    assert!(h.shows("응용프로그램/메모 파일.md"), "the editor's path");
+    // The filter: the result as syllables, its matched letters marked.
+    let field = h.at("fuzzy: letters in order");
+    h.click(field);
+    h.type_text("md");
+    assert!(h.wait_for(20.0, |h| h.shows("1 match")), "found");
+    assert!(h.has("메모 파일.md"), "the result's name, as syllables: {:?}", h.texts.iter().map(|t| &t.0).filter(|t| t.contains("md")).collect::<Vec<_>>());
+}

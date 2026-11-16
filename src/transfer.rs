@@ -472,7 +472,8 @@ impl App {
                             };
                             ui.horizontal(|ui| {
                                 let w = ui.available_width() - 26.0;
-                                let label = if t.is_dir { format!("{}/", t.name) } else { t.name.clone() };
+                                let name = weft_core::shown(&t.name);
+                                let label = if t.is_dir { format!("{name}/") } else { name.into_owned() };
                                 ui.add_sized([w, 18.0], egui::Label::new(RichText::new(label).size(12.5)).truncate());
                                 if t.state == State::Running && crate::icons::button(ui, crate::icons::Icon::Cross, "cancel (the part copied so far is removed)").clicked() {
                                     cancel = Some(t.id);
@@ -481,7 +482,7 @@ impl App {
                             let (bar, _) = ui.allocate_exact_size(vec2(ui.available_width(), 4.0), egui::Sense::hover());
                             ui.painter().rect_filled(bar, CornerRadius::same(2), theme::tint(theme::text_faint(), 40));
                             ui.painter().rect_filled(Rect::from_min_size(bar.min, vec2(bar.width() * frac.clamp(0.0, 1.0), bar.height())), CornerRadius::same(2), color);
-                            let route = format!("{}:{} \u{2192} {}:{}", t.src_host, t.src_path, t.dst_host, t.dest());
+                            let route = format!("{}:{} \u{2192} {}:{}", t.src_host, weft_core::shown(&t.src_path), t.dst_host, weft_core::shown(&t.dest()));
                             let detail = match &t.state {
                                 State::Running => {
                                     let files = if t.is_dir { format!(" · {}/{} files", t.files_done(), t.files()) } else { String::new() };

@@ -5,6 +5,22 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.6.3
+
+Fixed
+- **Korean names from a Mac showed letter by letter** ("응용프로그램" as
+  ㅇㅡㅇㅇㅛㅇ…): macOS hands out file names with Hangul (and accents)
+  decomposed, and they were drawn as given. Wherever a name or path is
+  drawn (Files tree and path, filter and search results, terminal tabs
+  and pane titles, the status bar, the editor's tabs and path, copies,
+  the file and close dialogs, file lists in the terminal) it is now
+  shown composed; the name itself is kept as the system gave it, so
+  opening, renaming and copying still find the file.
+- **In the terminal, such letters and accents were dropped**: `ls` on a
+  Mac showed only each syllable's first consonant, and "café" written
+  with a separate accent showed "cafe". They are now put together with
+  the letter before them.
+
 ## 0.6.2
 
 Changed

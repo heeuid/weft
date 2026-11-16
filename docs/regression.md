@@ -99,6 +99,9 @@ What the numbers don't show:
 | Output, wrapping, scrollback, absolute lines | `term::tests::prints_wraps_and_scrolls_into_history`, `clear_screen_keeps_absolute_lines` |
 | Colours and attributes (SGR); the alternate screen; cursor reports | `term::tests::sgr_colors`, `alt_screen_keeps_primary`, `dsr_reply_and_token` |
 | Hangul two cells; never split at a row end | `term::tests::hangul_is_two_cells_wide`, `reflow_never_splits_a_wide_char` |
+| Letters and the marks after them (Hangul as macOS writes names, accents) make one character in the grid; a mark with nothing to go on is left out | `term::tests::decomposed_letters_are_put_together` |
+| Text shown composed (NFC), a character at a time with the given ones it stands for | `tests::decomposed_text_is_shown_composed` |
+| Names from a Mac show as syllables in the Files tree and path, the terminal's tab, the editor's tab and path and the filter's results; the file opens by its own name | `regress::names_from_a_mac_show_as_syllables` |
 | Resize reflows, blocks move with lines | `term::tests::narrowing_then_widening_restores_the_prompt`, `reflow_moves_blocks_with_their_lines`, `resize_shrink_pushes_to_history` |
 | Scrollback stores no trailing blanks (memory) | `term::tests::scrollback_keeps_no_trailing_blanks` |
 | OSC 133 blocks; guessed without it | `term::tests::osc133_blocks_capture_command_and_exit`, `term::guess_tests::*` |

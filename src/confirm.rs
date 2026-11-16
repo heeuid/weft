@@ -226,7 +226,7 @@ impl App {
             let small = |s: &str| RichText::new(s.to_owned()).size(11.5).color(theme::text_faint());
             let list = |ui: &mut egui::Ui, items: &[String]| {
                 for it in items.iter().take(8) {
-                    ui.label(RichText::new(format!("  {it}")).monospace().size(12.0));
+                    ui.label(RichText::new(format!("  {}", weft_core::shown(it))).monospace().size(12.0));
                 }
                 if items.len() > 8 {
                     ui.label(small(&format!("  and {} more", items.len() - 8)));

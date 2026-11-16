@@ -1133,7 +1133,7 @@ impl App {
                         }
                     }
                     if let Some(cwd) = self.active_pane().and_then(|p| p.term.cwd.clone()) {
-                        cut(ui, cwd, theme::text_faint());
+                        cut(ui, weft_core::shown(&cwd).into_owned(), theme::text_faint());
                     }
                 });
             });
@@ -1319,7 +1319,7 @@ impl App {
                 }
                 let label = if i == 0 && part.is_empty() { "/".to_string() } else { part.to_string() };
                 let last = i == parts.len() - 1;
-                let r = ui.add(egui::Label::new(RichText::new(label).size(11.5).color(if last { theme::text() } else { theme::text_dim() })).sense(Sense::click()));
+                let r = ui.add(egui::Label::new(RichText::new(weft_core::shown(&label)).size(11.5).color(if last { theme::text() } else { theme::text_dim() })).sense(Sense::click()));
                 if r.hovered() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 }
@@ -2194,7 +2194,7 @@ impl App {
             ui.label(RichText::new("open the Files tab first").color(theme::text_faint()));
             return;
         };
-        ui.label(RichText::new(format!("in {host}:{root}")).size(11.5).color(theme::text_faint()));
+        ui.label(RichText::new(format!("in {host}:{}", weft_core::shown(&root))).size(11.5).color(theme::text_faint()));
         let r = ui.add(TextEdit::singleline(&mut self.side.grep_q).hint_text(format!("{} (Enter)", self.side.grep_mode.hint())).desired_width(f32::INFINITY));
         if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
             self.actions.push(Action::Grep);
@@ -2236,7 +2236,7 @@ impl App {
                 if path != last_file {
                     ui.add_space(4.0);
                     let rel = path.strip_prefix(&base).unwrap_or(&path).trim_start_matches('/');
-                    let r = ui.add(egui::Label::new(RichText::new(rel).size(12.0).color(theme::ansi(12))).sense(Sense::click()));
+                    let r = ui.add(egui::Label::new(RichText::new(weft_core::shown(rel)).size(12.0).color(theme::ansi(12))).sense(Sense::click()));
                     if r.clicked() {
                         chosen = Some(HitAction::Open(path.clone(), 1));
                     }
@@ -2456,10 +2456,10 @@ impl App {
                 let name_at = chars.iter().rposition(|&c| c == '/').map(|k| k + 1).unwrap_or(0);
                 let mut job = LayoutJob::default();
                 let put = |job: &mut LayoutJob, range: std::ops::Range<usize>, base: Color32, size: f32| {
-                    for k in range {
-                        let hit = pos.contains(&k);
+                    for (c, of) in weft_core::shown_chars(&chars[range.clone()]) {
+                        let hit = (of.start + range.start..of.end + range.start).any(|k| pos.contains(&k));
                         let fmt = egui::TextFormat { font_id: FontId::proportional(size), color: if hit { theme::accent() } else { base }, underline: if hit { Stroke::new(1.0_f32, theme::accent()) } else { Stroke::NONE }, ..Default::default() };
-                        job.append(&chars[k].to_string(), 0.0, fmt);
+                        job.append(&c.to_string(), 0.0, fmt);
                     }
                 };
                 put(&mut job, name_at..chars.len(), if *dir { theme::text() } else { theme::text_dim() }, 13.0);
@@ -2995,6 +2995,7 @@ impl App {
                     let name = if memo { memo_title(&f.text) } else { f.path.rsplit('/').next().unwrap_or(&f.path).to_string() };
                     let sel = i == self.editor.active;
                     // Memos save themselves, so no unsaved dot for them.
+                    let name = weft_core::shown(&name).into_owned();
                     let label = RichText::new(if f.dirty && !memo { format!("● {name}") } else { name }).size(12.5).color(if sel { theme::text() } else { theme::text_dim() });
                     let label = if memo { label.italics() } else { label };
                     let r = ui.selectable_label(sel, label).on_hover_text(format!("{}:{}", f.host, f.path));
@@ -3037,7 +3038,7 @@ impl App {
             ui.horizontal(|ui| {
                 ui.painter().circle_filled(ui.cursor().min + vec2(5.0, 11.0), 3.5, host_color(&f.host));
                 ui.add_space(12.0);
-                let path = format!("{}  {}", f.host, f.path);
+                let path = format!("{}  {}", f.host, weft_core::shown(&f.path));
                 ui.add(egui::Label::new(RichText::new(&path).size(11.5).color(theme::text_faint())).truncate()).on_hover_text(path);
             });
             // Wraps onto a second line in a narrow editor instead of losing its end.

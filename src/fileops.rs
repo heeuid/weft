@@ -162,8 +162,8 @@ impl App {
         crate::widgets::dialog(ctx, title, vec2(400.0, 130.0)).open(&mut open).resizable(false).show(ctx, |ui| {
             let small = |s: String| RichText::new(s).size(11.5).color(theme::text_faint());
             if op.kind == FileOpKind::Delete {
-                ui.label(format!("{}{}", base_name(&op.path), if op.dir { " and everything in it" } else { "" }));
-                ui.label(small(format!("{}:{}", op.host, op.path)));
+                ui.label(format!("{}{}", weft_core::shown(&base_name(&op.path)), if op.dir { " and everything in it" } else { "" }));
+                ui.label(small(format!("{}:{}", op.host, weft_core::shown(&op.path))));
                 ui.add_space(4.0);
                 if trash {
                     ui.label(RichText::new("It goes to the Recycle Bin.").color(theme::text_dim()));
@@ -182,7 +182,7 @@ impl App {
                 return;
             }
             let place = if op.kind == FileOpKind::Rename { parent_of(&op.path) } else { op.path.clone() };
-            ui.label(small(format!("in {}:{place}", op.host)));
+            ui.label(small(format!("in {}:{}", op.host, weft_core::shown(&place))));
             let r = ui.add(TextEdit::singleline(&mut op.name).id(egui::Id::new("file-op-name")).desired_width(f32::INFINITY).hint_text("name"));
             if op.focus {
                 r.request_focus();

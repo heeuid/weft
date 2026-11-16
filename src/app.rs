@@ -1034,8 +1034,10 @@ impl Pane {
         }
     }
 
+    /// For showing (a folder's name from a Mac as syllables: `shown`).
     pub fn title(&self) -> String {
         let cwd = self.term.cwd.as_deref().or(self.initial_cwd.as_deref()).unwrap_or("");
+        let cwd = &*weft_core::shown(cwd);
         let base = cwd.trim_end_matches('/').rsplit('/').next().unwrap_or("");
         let base = if base.is_empty() { cwd } else { base };
         if base.is_empty() {

@@ -10,3 +10,54 @@ pub mod pty;
 pub mod records;
 pub mod secret;
 pub mod term;
+
+/// Text as it is to be drawn: combining marks put together with their
+/// letters (Unicode's NFC). macOS hands out file names decomposed, Hangul
+/// as its separate letters ("응" as ㅇ ㅡ ㅇ), which a font draws one by
+/// one. Only for showing: the name itself (to open or rename the file
+/// with) is left as the system gave it.
+pub fn shown(s: &str) -> std::borrow::Cow<'_, str> {
+    use unicode_normalization::{is_nfc_quick, IsNormalized, UnicodeNormalization};
+    match is_nfc_quick(s.chars()) {
+        IsNormalized::Yes => std::borrow::Cow::Borrowed(s),
+        _ => std::borrow::Cow::Owned(s.nfc().collect()),
+    }
+}
+
+/// `shown` for text drawn a character at a time: each character as it is
+/// to be drawn, and which of the given ones it stands for (a letter and the
+/// marks put together with it), so marks that go with the given characters
+/// (the matched ones of a search) still go with the right ones.
+pub fn shown_chars(chars: &[char]) -> Vec<(char, std::ops::Range<usize>)> {
+    let mut out: Vec<(char, std::ops::Range<usize>)> = Vec::with_capacity(chars.len());
+    for (k, &c) in chars.iter().enumerate() {
+        if let Some(joined) = out.last().and_then(|(prev, _)| unicode_normalization::char::compose(*prev, c)) {
+            let last = out.last_mut().unwrap();
+            last.0 = joined;
+            last.1.end = k + 1;
+        } else {
+            out.push((c, k..k + 1));
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn decomposed_text_is_shown_composed() {
+        // macOS's "응용프로그램": each syllable as its letters.
+        let nfd: String = unicode_normalization::UnicodeNormalization::nfd("응용프로그램").collect();
+        assert_eq!(nfd.chars().count(), 15);
+        assert_eq!(super::shown(&nfd), "응용프로그램");
+        assert_eq!(super::shown("e\u{301}t\u{e9}"), "\u{e9}t\u{e9}");
+        // Already composed: the same string, not a copy.
+        assert!(matches!(super::shown("응용 abc"), std::borrow::Cow::Borrowed(_)));
+        // A character at a time: which given ones each drawn one stands for.
+        let chars: Vec<char> = nfd.chars().collect();
+        let drawn = super::shown_chars(&chars);
+        assert_eq!(drawn.iter().map(|d| d.0).collect::<String>(), "응용프로그램");
+        assert_eq!((drawn[0].1.clone(), drawn[1].1.clone(), drawn[5].1.clone()), (0..3, 3..6, 12..15));
+        assert_eq!(super::shown_chars(&['a', 'b']), [('a', 0..1), ('b', 1..2)]);
+    }
+}

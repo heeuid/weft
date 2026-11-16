@@ -84,8 +84,11 @@ pub fn dialog(ctx: &egui::Context, title: &str, size: egui::Vec2) -> egui::Windo
 
 /// Text at `pos` (left edge, vertically centred) cut with … to `max_w`,
 /// so it never runs into whatever sits to its right.
+///
+/// Drawn as `weft_core::shown`: a name from a Mac shows its Hangul as
+/// syllables, not letter by letter.
 pub fn text_fit(p: &egui::Painter, pos: egui::Pos2, text: &str, font: FontId, color: egui::Color32, max_w: f32) {
-    let mut job = egui::text::LayoutJob::simple_singleline(text.to_owned(), font, color);
+    let mut job = egui::text::LayoutJob::simple_singleline(weft_core::shown(text).into_owned(), font, color);
     job.wrap = egui::text::TextWrapping { max_width: max_w.max(8.0), max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
     let g = p.layout_job(job);
     p.galley(pos2(pos.x, pos.y - g.size().y / 2.0), g, color);
@@ -129,6 +132,7 @@ fn cmp_cells(a: &str, b: &str) -> Ordering {
 }
 
 fn clip_text(s: &str, max_chars: usize) -> String {
+    let s = weft_core::shown(s);
     if s.chars().count() <= max_chars {
         s.to_string()
     } else {

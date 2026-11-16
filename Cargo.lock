@@ -1815,7 +1815,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.58.0",
+ "windows-core 0.62.2",
 ]
 
 [[package]]
@@ -4140,6 +4140,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
 
 [[package]]
+name = "unicode-normalization"
+version = "0.1.26"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75cd3fb03d5288b3ba9a1ee103ac7e9cbb59f0b03d64f8ddfcc04dd42758a85d"
+dependencies = [
+ "tinyvec",
+]
+
+[[package]]
 name = "unicode-script"
 version = "0.5.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4548,7 +4557,7 @@ checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
 
 [[package]]
 name = "weft"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "base64 0.22.1",
  "eframe",
@@ -4562,6 +4571,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serialport",
+ "unicode-normalization",
  "vte",
  "weft-core",
  "weft-draw",
@@ -4571,7 +4581,7 @@ dependencies = [
 
 [[package]]
 name = "weft-core"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "base64 0.22.1",
  "chacha20",
@@ -4585,6 +4595,7 @@ dependencies = [
  "serde_json",
  "serialport",
  "sysinfo",
+ "unicode-normalization",
  "vte",
  "windows-sys 0.59.0",
  "zeroize",
@@ -4592,7 +4603,7 @@ dependencies = [
 
 [[package]]
 name = "weft-draw"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "egui",
  "syntect",
