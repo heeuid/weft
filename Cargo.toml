@@ -1,6 +1,7 @@
 [package]
 name = "weft"
 version.workspace = true
+license.workspace = true
 edition = "2021"
 description = "weft - a terminal that weaves GUI widgets into the TUI grid; thick local client, thin ssh/POSIX/python remote"
 
@@ -9,7 +10,8 @@ members = ["crates/weft-core", "crates/weft-draw"]
 
 # One version for weft and its crates: raised here, with CHANGELOG.md.
 [workspace.package]
-version = "0.6.3"
+version = "0.7.0"
+license = "MIT"
 
 [dependencies]
 weft-core = { path = "crates/weft-core" }

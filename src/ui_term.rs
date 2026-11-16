@@ -1906,6 +1906,8 @@ impl App {
     }
 
     fn ui_search(&mut self, ui: &mut Ui, id: usize, inner: Rect, all: &[VRow], rows: usize, _acts: &mut Vec<Action>) {
+        // Aa as set here is how the next find starts (kept in settings).
+        let mut remember_icase: Option<bool> = None;
         let p = self.panes.get_mut(&id).unwrap();
         let Some(s) = p.search.as_mut() else { return };
         if s.seen_generation != p.term.generation {
@@ -1955,6 +1957,7 @@ impl App {
             if ui.selectable_label(s.icase, "Aa").on_hover_text("ignore case").clicked() {
                 s.icase = !s.icase;
                 s.seen_generation = u64::MAX;
+                remember_icase = Some(s.icase);
             }
             if icons::button(ui, Icon::ChevronDown, "next (Enter)").clicked() {
                 jump = Some(1);
@@ -1974,6 +1977,9 @@ impl App {
         if close {
             p.search = None;
             self.focus_term = true;
+        }
+        if let Some(icase) = remember_icase {
+            self.settings.search.terminal_icase = icase;
         }
     }
 

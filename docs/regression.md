@@ -100,7 +100,8 @@ What the numbers don't show:
 | Colours and attributes (SGR); the alternate screen; cursor reports | `term::tests::sgr_colors`, `alt_screen_keeps_primary`, `dsr_reply_and_token` |
 | Hangul two cells; never split at a row end | `term::tests::hangul_is_two_cells_wide`, `reflow_never_splits_a_wide_char` |
 | Letters and the marks after them (Hangul as macOS writes names, accents) make one character in the grid; a mark with nothing to go on is left out | `term::tests::decomposed_letters_are_put_together` |
-| Text shown composed (NFC), a character at a time with the given ones it stands for | `tests::decomposed_text_is_shown_composed` |
+| Text shown with marks put on their letters (Hangul and kana as a Mac writes them, accents), a character at a time with the given ones it stands for | `tests::decomposed_text_is_shown_composed` |
+| Text already composed, of every script (CJK, Arabic, Hebrew, Devanagari, Thai, Vietnamese, emoji with joiners, compatibility characters), is left exactly as it is | `tests::composed_text_of_every_script_is_left_alone` |
 | Names from a Mac show as syllables in the Files tree and path, the terminal's tab, the editor's tab and path and the filter's results; the file opens by its own name | `regress::names_from_a_mac_show_as_syllables` |
 | Resize reflows, blocks move with lines | `term::tests::narrowing_then_widening_restores_the_prompt`, `reflow_moves_blocks_with_their_lines`, `resize_shrink_pushes_to_history` |
 | Scrollback stores no trailing blanks (memory) | `term::tests::scrollback_keeps_no_trailing_blanks` |
@@ -170,6 +171,7 @@ What the numbers don't show:
 | The buttons right of the tabs: editor, side panel, split right and down, palette, ?, Aa, theme, and the ☰ menu of every command with its keys | `regress::the_top_bar_buttons` |
 | In a narrow window (330, 420, 520, 700 px) nothing in the tab bar covers anything else or runs off the window (the tab's + was under the palette button) | `regress::the_tab_bar_fits_a_narrow_window` |
 | Commands one by one: focus mode, cursor shape, font and UI size with their limits, hidden files, markdown breaks, theme: system, local shell, zoom, focus left/right/up/down, history, memos, privacy, features, open memo, theme, fonts, settings.json | `regress::commands_do_what_they_say` |
+| Each search opens as last set, also after a restart: the Search panel (mode, ignore case, hidden), the editor's find (mode, match case), find in a terminal (Aa) | `regress::searches_open_as_they_were_last_set` |
 | When a terminal's program ends, its notice covers none of the text: the text is raised above it (it covered the last line); text that does not reach it stays put | `regress::the_exit_notice_covers_no_text` |
 | Focus mode's label has its own strip: it covers no button and no pane (it covered a split pane's close button); a click on it leaves | `regress::focus_mode_label_covers_nothing` |
 | Zoom's and focus mode's labels, alone and together, cover neither each other nor a button (in focus mode they were drawn over each other); each still works | `regress::zoom_and_focus_labels_cover_nothing` |
@@ -199,6 +201,7 @@ What the numbers don't show:
 | Hidden / git-ignored switch | `host::tests::list_can_leave_out_what_git_ignores` |
 | A folder of thousands of ignored files is listed (it hung) | `host::tests::a_folder_of_thousands_of_ignored_files_is_listed` |
 | Fuzzy / glob / regex | `find::tests::*`, `editfind::tests::*` |
+| Glob: text with no wildcard is found anywhere in the name (or a command); a pattern is the whole name | `find::tests::glob_without_a_wildcard_is_contained` |
 | Grep modes (local and agent) | `host::tests::local_grep_modes_and_hidden`, `local_grep_text_or_regex` |
 | Tree like the agent | `host::tests::tree_lists_names_like_the_agent` |
 | Transfer ops; any host to any host; no overwrite | `host::tests::transfer_ops_copy_a_folder_in_chunks`, `transfer::tests::*` |

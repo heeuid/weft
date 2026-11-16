@@ -5,6 +5,30 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.7.0
+
+Added
+- **MIT license** (LICENSE, and `license = "MIT"` in the manifests); the
+  README lists what comes with weft under its own license (the fonts,
+  Catppuccin's colours).
+- **Each search opens as it was last set**, also after a restart: the
+  Search panel's mode, ignore case and hidden; the editor's find mode and
+  match case; Aa of find in a terminal. (Only the Files filter, the
+  History panel and the palette kept theirs.)
+
+Fixed
+- **Glob without a wildcard found only a whole name that was all of
+  it**: "ssh" in the History panel did not find "ssh user@host", "main" in
+  the Files filter not "main.rs". Text with no `*`, `?`, `[` or `{` is now
+  found anywhere in it; a pattern is still the whole name (`*.rs`,
+  `cargo*`).
+- Names shown composed (0.6.3) now only put marks together with their
+  letters; a character that already is one stays exactly the one it is
+  (a full NFC also turned compatibility characters, such as the hanja of
+  Korean names at U+F900, into others). Checked over many scripts.
+- **Japanese voicing marks as a Mac writes them** (が as か and a mark)
+  took a cell of their own in the terminal; they go on their letter.
+
 ## 0.6.3
 
 Fixed

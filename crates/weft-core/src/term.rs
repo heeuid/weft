@@ -1302,7 +1302,8 @@ pub fn char_width(c: char) -> usize {
         return 1;
     }
     match u {
-        0x300..=0x36F | 0x483..=0x489 | 0x1160..=0x11FF | 0x1AB0..=0x1AFF | 0x1DC0..=0x1DFF | 0x200B..=0x200F
+        // (0x3099, 0x309A: the kana voicing marks, as a Mac writes が.)
+        0x300..=0x36F | 0x483..=0x489 | 0x1160..=0x11FF | 0x1AB0..=0x1AFF | 0x1DC0..=0x1DFF | 0x200B..=0x200F | 0x3099..=0x309A
         | 0x20D0..=0x20FF | 0xFE00..=0xFE0F | 0xFE20..=0xFE2F => 0,
         0x1100..=0x115F
         | 0x231A..=0x231B
@@ -2140,6 +2141,16 @@ mod tests {
         let mut t = Term::new(4, 3);
         run(&mut t, &unicode_normalization::UnicodeNormalization::nfd("ab한").collect::<String>());
         assert_eq!(t.screen[0].text(), "ab한");
+        // Japanese: が as か and its voicing mark, in one wide cell.
+        let mut t = Term::new(20, 2);
+        run(&mut t, &unicode_normalization::UnicodeNormalization::nfd("がパ").collect::<String>());
+        assert_eq!(t.screen[0].text(), "がパ");
+        assert_eq!(t.cx, 4);
+        // Text already composed, of any script, goes in as it is.
+        let mut t = Term::new(60, 2);
+        let s = "한글 日本語 がパ Tiếng Việt Ññ \u{F900}";
+        run(&mut t, s);
+        assert_eq!(t.screen[0].text(), s);
         // A mark with nothing to go on, or none it makes one with, is left out.
         let mut t = Term::new(20, 2);
         run(&mut t, "\u{301}x\u{1161}");

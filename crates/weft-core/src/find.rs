@@ -34,7 +34,7 @@ impl FindMode {
     pub fn hint(self) -> &'static str {
         match self {
             FindMode::Fuzzy => "fuzzy: letters in order, e.g. srcmain",
-            FindMode::Glob => "glob: *.rs, src/**/test_*, {a,b}.md",
+            FindMode::Glob => "glob: *.rs, src/**/test_*, {a,b}.md; no wildcard: contains",
             FindMode::Regex => "regex on the path, e.g. ^src/.*\\.rs$",
         }
     }
@@ -51,7 +51,13 @@ impl Matcher {
             FindMode::Fuzzy => Ok(Matcher::Fuzzy(query.chars().filter(|c| !c.is_whitespace()).flat_map(char::to_lowercase).collect())),
             FindMode::Glob => {
                 let q = query.trim();
-                let re = regex::RegexBuilder::new(&format!("^{}$", glob_fragment(&q.chars().collect::<Vec<_>>()))).case_insensitive(true).build().map_err(|e| e.to_string())?;
+                // A pattern is the whole name (or path): *.rs ends in .rs.
+                // Text with no wildcard is found anywhere in it: "ssh" finds
+                // "ssh user@host" (it found only a name that was all "ssh").
+                let wild = q.contains(['*', '?', '[', '{']);
+                let body = glob_fragment(&q.chars().collect::<Vec<_>>());
+                let pat = if wild { format!("^{body}$") } else { body };
+                let re = regex::RegexBuilder::new(&pat).case_insensitive(true).build().map_err(|e| e.to_string())?;
                 Ok(Matcher::Pattern { re, full_path: q.contains('/') })
             }
             FindMode::Regex => {
@@ -229,6 +235,26 @@ mod tests {
         assert_eq!(names(FindMode::Glob, "{agent,md}.*", TREE), ["src/md.rs", "remote/agent.py"]);
         assert_eq!(names(FindMode::Glob, "m?.rs", TREE), ["src/md.rs"]);
         assert_eq!(names(FindMode::Glob, "[!m]*.rs", TREE), ["target/x.rs"]);
+    }
+
+    /// Text with no wildcard is found anywhere in the name; a pattern is
+    /// the whole name. (Plain text found only a name that was all of it.)
+    #[test]
+    fn glob_without_a_wildcard_is_contained() {
+        assert_eq!(names(FindMode::Glob, "main", TREE), ["src/main.rs", "src/ui/main_view.rs"]);
+        assert_eq!(names(FindMode::Glob, "MAIN", TREE), ["src/main.rs", "src/ui/main_view.rs"], "any case");
+        assert_eq!(names(FindMode::Glob, "src/m", TREE), ["src/main.rs", "src/md.rs"], "with a slash: in the path");
+        assert_eq!(names(FindMode::Glob, "main*", TREE), ["src/main.rs", "src/ui/main_view.rs"], "a pattern: from the start of the name");
+        assert!(names(FindMode::Glob, "ain*", TREE).is_empty());
+        // Commands, as the History panel matches them (the whole line).
+        let cmds = ["ssh user@host", "git status", "vim a.txt"];
+        let m = Matcher::new(FindMode::Glob, "ssh").unwrap();
+        let m = match m {
+            Matcher::Pattern { re, .. } => Matcher::Pattern { re, full_path: true },
+            m => m,
+        };
+        assert!(m.matches(cmds[0]).is_some() && m.matches(cmds[1]).is_none());
+        assert!(Matcher::new(FindMode::Glob, "a.txt").unwrap().matches(cmds[2]).is_some(), "a dot is a dot");
     }
 
     #[test]

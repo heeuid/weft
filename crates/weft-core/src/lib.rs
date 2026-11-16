@@ -11,17 +11,39 @@ pub mod records;
 pub mod secret;
 pub mod term;
 
-/// Text as it is to be drawn: combining marks put together with their
-/// letters (Unicode's NFC). macOS hands out file names decomposed, Hangul
-/// as its separate letters ("응" as ㅇ ㅡ ㅇ), which a font draws one by
-/// one. Only for showing: the name itself (to open or rename the file
-/// with) is left as the system gave it.
+/// Text as it is to be drawn: each combining mark put together with the
+/// letter before it where Unicode has the two as one. macOS hands out file
+/// names decomposed: Hangul as its separate letters ("응" as ㅇ ㅡ ㅇ), "が"
+/// as か and a mark, an accent apart from its letter, which a font draws
+/// one by one. Nothing else changes: unlike a full NFC, a character that is
+/// already one (a CJK compatibility ideograph, an Ångström sign) stays the
+/// character it is. Only for showing: the name itself (to open or rename
+/// the file with) is left as the system gave it.
 pub fn shown(s: &str) -> std::borrow::Cow<'_, str> {
-    use unicode_normalization::{is_nfc_quick, IsNormalized, UnicodeNormalization};
-    match is_nfc_quick(s.chars()) {
-        IsNormalized::Yes => std::borrow::Cow::Borrowed(s),
-        _ => std::borrow::Cow::Owned(s.nfc().collect()),
+    let mut out = String::with_capacity(s.len());
+    let mut pending: Option<char> = None;
+    let mut joined_any = false;
+    for c in s.chars() {
+        match pending.and_then(|p| unicode_normalization::char::compose(p, c)) {
+            Some(j) => {
+                pending = Some(j);
+                joined_any = true;
+            }
+            None => {
+                if let Some(p) = pending {
+                    out.push(p);
+                }
+                pending = Some(c);
+            }
+        }
     }
+    if !joined_any {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    if let Some(p) = pending {
+        out.push(p);
+    }
+    std::borrow::Cow::Owned(out)
 }
 
 /// `shown` for text drawn a character at a time: each character as it is
@@ -44,6 +66,34 @@ pub fn shown_chars(chars: &[char]) -> Vec<(char, std::ops::Range<usize>)> {
 
 #[cfg(test)]
 mod tests {
+    /// Text that is already as it is to be drawn is left exactly as it is,
+    /// whatever the script: only marks after their letters are put
+    /// together. (A full NFC would also have turned compatibility
+    /// characters, e.g. the hanja of Korean names at U+F900, into others.)
+    #[test]
+    fn composed_text_of_every_script_is_left_alone() {
+        let samples = [
+            "한글 파일 이름.txt",
+            "日本語のファイル がぎぐ パピプ",
+            "中文文件名 繁體字",
+            "العربية ملف",
+            "עברית קובץ",
+            "हिन्दी फ़ाइल",
+            "ไฟล์ภาษาไทย",
+            "Tiếng Việt: tệp ổ đĩa",
+            "Ελληνικά Кириллица Ññ Åå",
+            "emoji 👍🏽 👨‍👩‍👧 ❤️ 🇰🇷",
+            "\u{F900}\u{F92D} hanja compatibility, \u{212B} angstrom, \u{2126} ohm",
+            "ascii only, tabs\tand\nnewlines",
+        ];
+        for s in samples {
+            assert!(matches!(super::shown(s), std::borrow::Cow::Borrowed(t) if t == s), "{s:?} is left as it is: {:?}", super::shown(s));
+            let chars: Vec<char> = s.chars().collect();
+            let drawn = super::shown_chars(&chars);
+            assert_eq!(drawn.iter().map(|d| d.0).collect::<String>(), s, "a character at a time too");
+        }
+    }
+
     #[test]
     fn decomposed_text_is_shown_composed() {
         // macOS's "응용프로그램": each syllable as its letters.
@@ -53,6 +103,9 @@ mod tests {
         assert_eq!(super::shown("e\u{301}t\u{e9}"), "\u{e9}t\u{e9}");
         // Already composed: the same string, not a copy.
         assert!(matches!(super::shown("응용 abc"), std::borrow::Cow::Borrowed(_)));
+        // Japanese as a Mac writes it: が as か and its mark.
+        let ja: String = unicode_normalization::UnicodeNormalization::nfd("がぎぐパピ").collect();
+        assert_eq!(super::shown(&ja), "がぎぐパピ");
         // A character at a time: which given ones each drawn one stands for.
         let chars: Vec<char> = nfd.chars().collect();
         let drawn = super::shown_chars(&chars);

@@ -1,6 +1,7 @@
 [package]
 name = "weft-core"
 version.workspace = true
+license.workspace = true
 edition = "2021"
 description = "weft without its window: the terminal grid and parser, ptys, hosts and their agents, search, records, secrets"
 

@@ -282,6 +282,22 @@ python tools/testdoc.py                               # 종류별 테스트 수�
 cargo test --workspace -- --include-ignored # + Git Bash를 원격 대역으로 쓰는 E2E (인메모리 rc, OSC 133/7/7777, stdin 에이전트)
 ```
 
+## 라이선스
+
+weft는 MIT 라이선스입니다([LICENSE](LICENSE)).
+
+함께 들어 있는 것들은 각자의 라이선스를 따릅니다.
+
+| 무엇 | 라이선스 | 파일 |
+|---|---|---|
+| D2Coding (Nerd Font 판) | SIL Open Font License 1.1 | `fonts/D2Coding-LICENSE.txt` |
+| JetBrains Mono (Nerd Font 판) | SIL Open Font License 1.1 | `fonts/JetBrainsMono-OFL.txt` |
+| Hack (Nerd Font 판) | MIT, Bitstream Vera | `fonts/Hack-LICENSE.md` |
+| Nerd Fonts 아이콘 글리프 | 여러 라이선스(파일에 정리) | `fonts/NerdFonts-LICENSE` |
+| Catppuccin 색 | MIT (https://catppuccin.com) | |
+
+글꼴은 weft 실행 파일 안에도 들어 있습니다. 실행 파일을 나눠 줄 때는 위 라이선스 파일을 함께 두면 됩니다. Rust 라이브러리들은 각자의 라이선스(대부분 MIT 또는 Apache-2.0)를 따릅니다.
+
 ## 구조
 
 셸 통합·OSC·원격 도구: [docs/shell-integration.md](docs/shell-integration.md)

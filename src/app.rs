@@ -552,6 +552,29 @@ pub struct Settings {
     /// weft starts.
     #[serde(default)]
     pub console_host: String,
+    /// How each search was last set, so it is set so when it opens again
+    /// (and after a restart): the Search panel, the editor's find bar,
+    /// find in a terminal's scrollback.
+    #[serde(default)]
+    pub search: SearchModes,
+}
+
+/// See `Settings::search`.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
+#[serde(default)]
+pub struct SearchModes {
+    pub files_mode: crate::editfind::MatchMode,
+    pub files_icase: bool,
+    pub files_hidden: bool,
+    pub editor_mode: crate::editfind::MatchMode,
+    pub editor_case: bool,
+    pub terminal_icase: bool,
+}
+
+impl Default for SearchModes {
+    fn default() -> Self {
+        SearchModes { files_mode: Default::default(), files_icase: true, files_hidden: false, editor_mode: Default::default(), editor_case: false, terminal_icase: true }
+    }
 }
 
 /// What was open besides the terminals, kept with the session: the
@@ -605,7 +628,7 @@ impl Default for Settings {
                 },
             });
         }
-        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, layout: Layout::default(), show_hidden: false, show_ignored: true, find_mode: Default::default(), palette_mode: d_palette_mode(), cursor_style: Default::default(), local_shell: Default::default(), mermaid: Default::default(), follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, term_font: d_font_file(), icon_font: d_icon_font(), records: Default::default(), passwords: Default::default(), keys: Default::default(), session: Vec::new(), side_tabs: Default::default(), open: Default::default(), confirm_unsaved: true, confirm_running: true, console_host: String::new() }
+        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, layout: Layout::default(), show_hidden: false, show_ignored: true, find_mode: Default::default(), palette_mode: d_palette_mode(), cursor_style: Default::default(), local_shell: Default::default(), mermaid: Default::default(), follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, term_font: d_font_file(), icon_font: d_icon_font(), records: Default::default(), passwords: Default::default(), keys: Default::default(), session: Vec::new(), side_tabs: Default::default(), open: Default::default(), confirm_unsaved: true, confirm_running: true, console_host: String::new(), search: Default::default() }
     }
 }
 
@@ -1619,6 +1642,7 @@ impl App {
         let settings_passwords = settings.passwords;
         data.log(&format!("start: {}, data dir {}", crate::version::line(), data.root.display()));
         data.log(&format!("console host: {}", crate::pty::choose_console_host("").what));
+        let searched = settings.search;
         let mut app = App {
             ctx,
             data,
@@ -1638,9 +1662,9 @@ impl App {
                 expanded: HashSet::new(),
                 filter: String::new(),
                 grep_q: String::new(),
-                grep_icase: true,
-                grep_mode: Default::default(),
-                grep_hidden: false,
+                grep_icase: searched.files_icase,
+                grep_mode: searched.files_mode,
+                grep_hidden: searched.files_hidden,
                 grep_ran: None,
                 grep_busy: false,
                 grep: None,

@@ -375,7 +375,7 @@ impl App {
                 if let Some(p) = pane.and_then(|id| self.panes.get_mut(&id)) {
                     p.search = match p.search.take() {
                         Some(_) => None,
-                        None => Some(SearchState { query: String::new(), icase: true, hits: Vec::new(), cur: 0, seen_generation: u64::MAX, focus: true }),
+                        None => Some(SearchState { query: String::new(), icase: self.settings.search.terminal_icase, hits: Vec::new(), cur: 0, seen_generation: u64::MAX, focus: true }),
                     };
                     if p.search.is_none() {
                         self.focus_term = true;
@@ -2209,6 +2209,9 @@ impl App {
             });
             ui.checkbox(&mut self.side.grep_icase, RichText::new("ignore case").size(12.0));
             ui.checkbox(&mut self.side.grep_hidden, RichText::new("hidden").size(12.0)).on_hover_text("also in hidden files and folders (names starting with .)");
+            // As set here, the Search panel opens next time (kept in settings).
+            let s = &mut self.settings.search;
+            (s.files_mode, s.files_icase, s.files_hidden) = (self.side.grep_mode, self.side.grep_icase, self.side.grep_hidden);
             if ui.button("Search").clicked() {
                 self.actions.push(Action::Grep);
             }
@@ -3200,7 +3203,8 @@ impl App {
                     let s: String = f.text.chars().skip(a).take(b - a).collect();
                     (!s.is_empty() && !s.contains('\n')).then_some(s)
                 });
-                let bar = self.editor.find.get_or_insert_with(Default::default);
+                let last = self.settings.search;
+                let bar = self.editor.find.get_or_insert_with(|| crate::editfind::FindBar { mode: last.editor_mode, case: last.editor_case, ..Default::default() });
                 if let Some(s) = picked {
                     bar.query = s;
                     bar.cur = 0;
@@ -3209,7 +3213,8 @@ impl App {
                 bar.focus = true;
             }
         } else if open_find && text_file {
-            let bar = self.editor.find.get_or_insert_with(Default::default);
+            let last = self.settings.search;
+            let bar = self.editor.find.get_or_insert_with(|| crate::editfind::FindBar { mode: last.editor_mode, case: last.editor_case, ..Default::default() });
             bar.focus = true;
         }
         if !text_file {
@@ -3347,6 +3352,8 @@ impl App {
                 f.mark_cur = None;
                 ui.memory_mut(|m| m.request_focus(edit_id));
             } else {
+                self.settings.search.editor_mode = bar.mode;
+                self.settings.search.editor_case = bar.case;
                 self.editor.find = Some(bar);
             }
         }

@@ -2972,3 +2972,61 @@ fn names_from_a_mac_show_as_syllables() {
     assert!(h.wait_for(20.0, |h| h.shows("1 match")), "found");
     assert!(h.has("메모 파일.md"), "the result's name, as syllables: {:?}", h.texts.iter().map(|t| &t.0).filter(|t| t.contains("md")).collect::<Vec<_>>());
 }
+
+/// Each search opens as it was last set, also after a restart: the Search
+/// panel's mode, ignore case and hidden; the editor's find mode and match
+/// case; Aa of find in a terminal. (Only the Files filter, the History
+/// panel and the palette kept theirs.)
+#[test]
+fn searches_open_as_they_were_last_set() {
+    use crate::editfind::MatchMode;
+    let mut h = Harness::new(json!({"sidebar": true}));
+    // The Search panel.
+    h.app.side.tab = crate::app::SideTab::Search;
+    h.app.set_root("local", &h.dir.display().to_string().replace('\\', "/"));
+    h.frames(2);
+    h.app.side.grep_mode = MatchMode::Regex;
+    h.app.side.grep_icase = false;
+    h.app.side.grep_hidden = true;
+    h.frames(2);
+    // The editor's find bar: glob, match case.
+    let file = h.dir.join("a.txt");
+    std::fs::write(&file, "one\n").unwrap();
+    h.app.open_file("local", &file.display().to_string().replace('\\', "/"), 1);
+    assert!(h.wait_for(20.0, |h| h.app.editor.files.iter().all(|f| !f.loading)));
+    h.frames(2);
+    h.click_text("Find");
+    {
+        let bar = h.app.editor.find.as_mut().expect("the find bar");
+        bar.mode = MatchMode::Glob;
+        bar.case = true;
+    }
+    h.frames(2);
+    h.key(Key::Escape, Modifiers::NONE);
+    assert!(h.app.editor.find.is_none());
+    // Find in the terminal: Aa off.
+    h.command("find");
+    let aa = h.texts.iter().filter(|(t, _)| t == "Aa").map(|(_, r)| r.center()).max_by(|a, b| a.y.total_cmp(&b.y)).unwrap();
+    h.click(aa);
+    h.key(Key::Escape, Modifiers::NONE);
+    // Reopened, as left.
+    h.click_text("Find");
+    assert_eq!(h.app.editor.find.as_ref().map(|b| (b.mode, b.case)), Some((MatchMode::Glob, true)), "the editor's find bar");
+    h.key(Key::Escape, Modifiers::NONE);
+    h.command("find");
+    let pane = h.app.active_pane_id().unwrap();
+    assert_eq!(h.app.panes[&pane].search.as_ref().map(|s| s.icase), Some(false), "find in the terminal");
+    h.key(Key::Escape, Modifiers::NONE);
+    // And after a restart.
+    h.restart();
+    let s = h.app.settings.search;
+    assert_eq!((h.app.side.grep_mode, h.app.side.grep_icase, h.app.side.grep_hidden), (MatchMode::Regex, false, true), "the Search panel: {s:?}");
+    h.command("find");
+    let pane = h.app.active_pane_id().unwrap();
+    assert_eq!(h.app.panes[&pane].search.as_ref().map(|s| s.icase), Some(false), "find in the terminal, after a restart");
+    h.key(Key::Escape, Modifiers::NONE);
+    assert!(h.wait_for(20.0, |h| h.app.editor.files.iter().any(|f| f.path.ends_with("a.txt") && !f.loading)), "the file is back");
+    h.frames(2);
+    h.click_text("Find");
+    assert_eq!(h.app.editor.find.as_ref().map(|b| (b.mode, b.case)), Some((MatchMode::Glob, true)), "the editor's find bar, after a restart");
+}
