@@ -5,6 +5,20 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.8.1
+
+Fixed
+- **The same host on another port connects to that port.** Connect named
+  the profile it made by the host alone, so `user@host -p 22024` after
+  `user@host -p 22008` found the first one's profile and went to 22008.
+  Profiles made now are named `user@host:22024`; one already made for the
+  same host and options is used again, whatever its name.
+- **`ls` on a Mac shows Korean names, not `????`.** weft started from the
+  Finder or the Dock has no locale, and neither had its terminals. When
+  none is set, a terminal now gets the Mac's own (`ko_KR.UTF-8`, as
+  Terminal.app does; en_US.UTF-8 if there is none), or C.UTF-8 on Linux.
+  One that is set is left alone; Windows is unchanged.
+
 ## 0.8.0
 
 Added

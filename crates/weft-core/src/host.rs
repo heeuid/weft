@@ -121,6 +121,49 @@ pub enum HostKind {
     Serial { via: String, port: String, baud: u32 },
 }
 
+/// The profile for what was typed in Connect: one of that name, else one
+/// for the same host with the same options (under any name), else a new
+/// one (added to `profiles`). Its name is returned. (The same host on two
+/// ports got one profile, the first port's.)
+pub fn connect_profile(profiles: &mut Vec<Profile>, typed: &str) -> String {
+    if typed == "local" || profiles.iter().any(|p| p.name == typed) {
+        return typed.to_string();
+    }
+    let new = Profile::ssh(typed);
+    let same = |p: &Profile| matches!((&p.kind, &new.kind), (HostKind::Ssh { target: a, args: x, .. }, HostKind::Ssh { target: b, args: y, .. }) if a == b && x == y);
+    if let Some(p) = profiles.iter().find(|p| same(p)) {
+        return p.name.clone();
+    }
+    let name = new.name.clone();
+    profiles.push(new);
+    name
+}
+
+/// The name of an ssh profile: the host, ":port" for `-p N` (or `-pN`),
+/// then any other options as typed.
+pub fn ssh_name(host: &str, args: &[String]) -> String {
+    let mut name = host.to_string();
+    let mut rest: Vec<&str> = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if a == "-p" && i + 1 < args.len() {
+            name = format!("{name}:{}", args[i + 1]);
+            i += 2;
+            continue;
+        }
+        match a.strip_prefix("-p").filter(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit())) {
+            Some(port) => name = format!("{name}:{port}"),
+            None => rest.push(a),
+        }
+        i += 1;
+    }
+    if !rest.is_empty() {
+        name = format!("{name} {}", rest.join(" "));
+    }
+    name
+}
+
 pub const SERIAL_PY: &str = include_str!("../../../remote/serial.py");
 
 /// Speeds offered for serial consoles.
@@ -148,10 +191,15 @@ impl Profile {
         Profile { name: "local".into(), kind: HostKind::Local }
     }
 
+    /// An ssh profile from what is typed in Connect ("user@host -p 2222 …").
+    /// Its name tells it apart from the same host on another port or with
+    /// other options: "user@host:2222" (it was the host alone, so a second
+    /// port got the first one's profile).
     pub fn ssh(target: &str) -> Profile {
         let mut parts = target.split_whitespace().map(String::from);
         let host = parts.next().unwrap_or_default();
-        Profile { name: host.clone(), kind: HostKind::Ssh { target: host, args: parts.collect(), x11: false } }
+        let args: Vec<String> = parts.collect();
+        Profile { name: ssh_name(&host, &args), kind: HostKind::Ssh { target: host, args, x11: false } }
     }
 
     pub fn is_local(&self) -> bool {
@@ -1286,6 +1334,38 @@ mod tests {
         }
         assert!(ZSH_ZSH.contains("precmd_functions") && ZSH_ZSH.contains("preexec_functions"));
         assert!(FISH_FISH.contains("fish_preexec") && FISH_FISH.contains("fish_prompt"));
+    }
+
+    /// One host on two ports is two profiles, each running ssh with its own
+    /// port. (Both got the first one's: the profile was named by the host
+    /// alone, and the second found the first's name.)
+    #[test]
+    fn one_host_on_two_ports_is_two_profiles() {
+        let args = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(ssh_name("u@h", &[]), "u@h");
+        assert_eq!(ssh_name("u@h", &args(&["-p", "22024"])), "u@h:22024");
+        assert_eq!(ssh_name("u@h", &args(&["-p22008"])), "u@h:22008");
+        assert_eq!(ssh_name("u@h", &args(&["-i", "key", "-p", "2"])), "u@h:2 -i key");
+        let mut profiles = vec![Profile { name: "local".into(), kind: HostKind::Local }];
+        let a = connect_profile(&mut profiles, "u@10.20.20.54 -p 22008");
+        let b = connect_profile(&mut profiles, "u@10.20.20.54 -p 22024");
+        assert_eq!((a.as_str(), b.as_str()), ("u@10.20.20.54:22008", "u@10.20.20.54:22024"));
+        let port = |name: &str| {
+            let p = profiles.iter().find(|p| p.name == name).unwrap();
+            let argv = p.pty_argv(None, false);
+            argv.iter().position(|a| a == "-p").map(|i| argv[i + 1].clone())
+        };
+        assert_eq!((port(&a), port(&b)), (Some("22008".into()), Some("22024".into())), "each ssh with its own port");
+        // Again: the same profiles, none added; by name too.
+        assert_eq!(connect_profile(&mut profiles, "u@10.20.20.54   -p 22024"), b);
+        assert_eq!(connect_profile(&mut profiles, "u@10.20.20.54:22008"), a);
+        assert_eq!(profiles.len(), 3);
+        // A profile made before, named by the host alone, is found by its
+        // host and options, under that name.
+        let mut old = vec![Profile { name: "u@h".into(), kind: HostKind::Ssh { target: "u@h".into(), args: args(&["-p", "22008"]), x11: false } }];
+        assert_eq!(connect_profile(&mut old, "u@h -p 22008"), "u@h");
+        assert_eq!(connect_profile(&mut old, "u@h -p 22024"), "u@h:22024");
+        assert_eq!(old.len(), 2);
     }
 
     #[test]

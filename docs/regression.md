@@ -157,6 +157,8 @@ What the numbers don't show:
 | Default keys valid and distinct | `ui_panels::tests::default_keys_are_valid_and_distinct`, `keys::tests::*` |
 | Alt+1…9, Ctrl+Tab / Ctrl+Shift+Tab | `regress::tab_keys` |
 | Split panes resize from the keyboard: Alt+Shift+arrow moves the nearest border that way by 5%, stops at 10%/90%, says when there is none, takes other keys, kept with the session; with no split the keys are the shell's | `regress::split_panes_resize_from_the_keyboard` |
+| The same host on two ports (`-p 22008`, `-p 22024`) is two profiles, each ssh with its own port; typed again, the same one; an old profile named by the host alone is found by its options | `weft_core::host::tests::one_host_on_two_ports_is_two_profiles` |
+| A terminal started with no locale (from the Finder) gets a UTF-8 one (the Mac's, en_US, or C.UTF-8), so `ls` shows Korean names; a set LANG/LC_ALL/LC_CTYPE is left alone | `weft_core::pty::tests::a_terminal_gets_a_utf8_locale_when_none_is_set` |
 | Ctrl+Shift+Z is redo in a text field | `ui_panels::tests::redo_key_stays_with_a_text_field` |
 | Tab drag reorder; narrow tab rows; which tabs a tab's menu closes | `ui_panels::tests::dragged_tab_lands_between_tabs`, `narrow_tab_rows_keep_the_open_tab`, `app::close_tests::*` |
 | Palette reopens full height, at the top | `regress::palette_reopens_full_height_at_the_top` |

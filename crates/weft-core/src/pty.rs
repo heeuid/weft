@@ -4,7 +4,7 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize}
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -186,6 +186,14 @@ impl Pty {
         }
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
+        // A program started from the Finder or the Dock (or a desktop menu)
+        // has no locale: `ls` on a Mac then shows Korean names as ????.
+        // As Terminal.app does, the terminal gets a UTF-8 one when none is
+        // set (one that is, here or in `env`, is left as it is).
+        let lang = if cfg!(windows) { None } else { utf8_locale(|k| std::env::var(k).ok().or_else(|| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone())), cfg!(target_os = "macos"), mac_locale) };
+        if let Some(lang) = lang {
+            cmd.env("LANG", lang);
+        }
         // As terminals name themselves to what runs in them
         // (`echo $TERM_PROGRAM_VERSION`; local shells: ssh passes neither).
         cmd.env("TERM_PROGRAM", "weft");
@@ -397,6 +405,35 @@ impl Drop for Pty {
     }
 }
 
+/// The LANG a terminal is given when nothing sets a locale (`get` reads the
+/// environment): none when LC_ALL, LC_CTYPE or LANG is there. On a Mac,
+/// the language and region set in System Settings (as Terminal.app does:
+/// ko_KR.UTF-8), else en_US.UTF-8; elsewhere C.UTF-8. (Not asked on
+/// Windows, where programs take no locale from the environment.)
+pub fn utf8_locale(get: impl Fn(&str) -> Option<String>, macos: bool, apple_locale: fn() -> Option<String>) -> Option<String> {
+    if ["LC_ALL", "LC_CTYPE", "LANG"].iter().any(|k| get(k).is_some_and(|v| !v.is_empty())) {
+        return None;
+    }
+    if !macos {
+        return Some("C.UTF-8".into());
+    }
+    // "ko_KR", "en_US@rg=krzzzz": the part before any @, letters and _ only.
+    let region = apple_locale().map(|l| l.trim().split('@').next().unwrap_or("").to_string()).filter(|l| l.len() >= 2 && l.chars().all(|c| c.is_ascii_alphabetic() || c == '_'));
+    Some(format!("{}.UTF-8", region.as_deref().unwrap_or("en_US")))
+}
+
+/// The Mac's language and region (`defaults read -g AppleLocale`), asked
+/// once.
+fn mac_locale() -> Option<String> {
+    static LOCALE: OnceLock<Option<String>> = OnceLock::new();
+    LOCALE
+        .get_or_init(|| {
+            let out = std::process::Command::new("defaults").args(["read", "-g", "AppleLocale"]).output().ok()?;
+            out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        })
+        .clone()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -480,6 +517,26 @@ mod tests {
         assert!(new_one.try_wait().unwrap().is_none(), "the new program still runs");
         let _ = new_one.kill();
         let _ = new_one.wait();
+    }
+
+    /// A terminal started with no locale (from the Finder or the Dock) gets
+    /// a UTF-8 one, so `ls` shows Korean names rather than ????: on a Mac
+    /// the one its settings name, else en_US.UTF-8; elsewhere C.UTF-8. One
+    /// that is set is left alone.
+    #[test]
+    fn a_terminal_gets_a_utf8_locale_when_none_is_set() {
+        let none = |_: &str| None;
+        assert_eq!(utf8_locale(none, true, || Some("ko_KR".into())).as_deref(), Some("ko_KR.UTF-8"));
+        assert_eq!(utf8_locale(none, true, || Some("en_US@rg=krzzzz".into())).as_deref(), Some("en_US.UTF-8"), "the region part is left off");
+        assert_eq!(utf8_locale(none, true, || None).as_deref(), Some("en_US.UTF-8"));
+        assert_eq!(utf8_locale(none, true, || Some("not a locale!".into())).as_deref(), Some("en_US.UTF-8"));
+        assert_eq!(utf8_locale(none, false, || Some("ko_KR".into())).as_deref(), Some("C.UTF-8"), "Linux and the rest");
+        for k in ["LANG", "LC_ALL", "LC_CTYPE"] {
+            let set = move |n: &str| (n == k).then(|| "de_DE.UTF-8".to_string());
+            assert_eq!(utf8_locale(set, true, || Some("ko_KR".into())), None, "{k} set: left alone");
+        }
+        let empty = |n: &str| (n == "LANG").then(String::new);
+        assert!(utf8_locale(empty, true, || None).is_some(), "an empty LANG is none");
     }
 
     /// The cursor's place told to a console host that is just starting is

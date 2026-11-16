@@ -3721,17 +3721,13 @@ impl App {
             keep = false;
         }
         if let Some(target) = open {
-            let host = if self.settings.profiles.iter().any(|p| p.name == target) || target == "local" {
-                target
-            } else {
-                // Ad-hoc target with optional extra args: remember it as a profile.
-                let prof = crate::host::Profile::ssh(&target);
-                let name = prof.name.clone();
-                if !self.settings.profiles.iter().any(|p| p.name == name) {
-                    self.settings.profiles.push(prof);
-                }
-                name
-            };
+            // A profile of that name, or for the same host and options, or
+            // a new one (remembered).
+            let known = self.settings.profiles.len();
+            let host = crate::host::connect_profile(&mut self.settings.profiles, &target);
+            if self.settings.profiles.len() != known {
+                self.save_settings();
+            }
             if !st.password.is_empty() && host != "local" {
                 // Must be set before the pane/agent spawn so both use it.
                 self.set_password(&host, std::mem::take(&mut st.password));
