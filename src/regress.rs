@@ -2472,9 +2472,15 @@ weft(t="widget", id="p1", kind="progress", rows=1, pct=60, label="copying")
 /// cursor the program hides for good does go.
 #[test]
 fn the_cursor_holds_still_while_a_program_redraws() {
-    // Forty redraws, 25 ms apart; each comes in two parts, as a slow
-    // program's (or the pseudo console's) does.
-    let body = r#"
+    // Redraws 25 ms apart, each in two parts as a slow program's (or the
+    // pseudo console's) come, until the test makes the stop file (a fixed
+    // number of them could be over on a busy PC before the test looked).
+    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let stop = std::env::temp_dir().join(format!("weft-redraw-stop-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)));
+    let _ = std::fs::remove_file(&stop);
+    let body = format!(
+        r#"
+import os
 def put(s):
     sys.stdout.write(s)
     sys.stdout.flush()
@@ -2483,14 +2489,18 @@ def after(line):
     if line.strip() == 'hide':
         put(E + '[?25l')
         return
-    for i in range(40):
+    i = 0
+    while not os.path.exists(r'{stop}') and i < 3000:
         put(E + '[?25l' + E + '[1;9H' + '|/-\\'[i % 4])
         time.sleep(0.006)
         put(E + '[2;3H' + E + '[?25h')
         time.sleep(0.02)
+        i += 1
     put(E + '[1;12Hdone' + E + '[2;3H')
-"#;
-    let (mut h, _file) = script_harness(body, json!({}));
+"#,
+        stop = stop.display()
+    );
+    let (mut h, _file) = script_harness(&body, json!({}));
     let pane = h.app.active_pane_id().unwrap();
     h.click(egui::pos2(300.0, 500.0));
     assert!(h.app.panes[&pane].cursor_drawn.is_some(), "the cursor is drawn");
@@ -2503,21 +2513,27 @@ def after(line):
     // as it should; the hidden frames are counted to show the test bites).
     let hold = crate::ui_term::CURSOR_HOLD;
     let (mut frames, mut off, mut elsewhere, mut hidden) = (0, 0, 0, 0);
-    let mut shown_at = std::time::Instant::now();
+    let mut shown_at: Option<std::time::Instant> = None;
     let mut spun = false;
-    let end = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    // Enough is seen at so many frames, or after six seconds on a PC so
+    // busy that frames come slowly; then the program is let stop.
+    let looked = std::time::Instant::now();
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while std::time::Instant::now() < end && !h.shows("done") {
+        if (frames >= 200 || looked.elapsed() > std::time::Duration::from_secs(6)) && !stop.exists() {
+            std::fs::write(&stop, "").unwrap();
+        }
         h.frames(1);
         spun |= ["|", "/", "-", "\\"].iter().any(|s| h.shows(&format!("working {s}")));
         if h.app.panes[&pane].term.cursor_visible {
-            shown_at = std::time::Instant::now();
+            shown_at = Some(std::time::Instant::now());
         } else if spun {
             hidden += 1;
         }
         if spun {
             frames += 1;
             match h.app.panes[&pane].cursor_drawn {
-                None if shown_at.elapsed() + std::time::Duration::from_millis(30) < hold => off += 1,
+                None if shown_at.is_some_and(|t| t.elapsed() + std::time::Duration::from_millis(30) < hold) => off += 1,
                 None => {}
                 // On the spinner's line: where the program drew, not where it keeps the cursor.
                 Some(r) if (r.center().y - h.at("working").y).abs() < r.height() / 2.0 => elsewhere += 1,
@@ -2526,7 +2542,8 @@ def after(line):
         }
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
-    assert!(h.shows("done") && frames > 50, "the redraws were seen ({frames} frames)");
+    let _ = std::fs::remove_file(&stop);
+    assert!(h.shows("done") && frames >= 10, "the redraws were seen ({frames} frames)");
     assert!(hidden > 0, "some frames were drawn while the program had the cursor hidden");
     assert_eq!((off, elsewhere), (0, 0), "of {frames} frames, the cursor was off in {off} and up at the spinner in {elsewhere}");
     // Hidden for good: gone, a moment later.
@@ -2709,12 +2726,17 @@ def after(line):
     let input_y = |h: &Harness| h.at("> typing here").y;
     let hold = crate::ui_term::CURSOR_HOLD;
     let (mut frames, mut wrong, mut hidden) = (0, Vec::new(), 0);
-    let mut shown_at = std::time::Instant::now();
-    let end = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    // (None until the cursor is first seen shown: before that it may have
+    // been hidden for longer than the hold, and rightly not drawn.)
+    let mut shown_at: Option<std::time::Instant> = None;
+    // Enough is seen at so many frames, or after six seconds on a PC so
+    // busy that frames come slowly; then the program is let stop.
+    let looked = std::time::Instant::now();
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(60);
     let mut k = 0usize;
     while std::time::Instant::now() < end && !h.shows("done") {
         // Enough seen: let the program stop.
-        if frames == 300 {
+        if (frames >= 300 || looked.elapsed() > std::time::Duration::from_secs(6)) && !stop.exists() {
             std::fs::write(&stop, "").unwrap();
         }
         // The wheel, back and forth over four lines: a new place every
@@ -2725,7 +2747,7 @@ def after(line):
         h.frames(1);
         let p = &h.app.panes[&pane];
         if p.term.cursor_visible {
-            shown_at = std::time::Instant::now();
+            shown_at = Some(std::time::Instant::now());
         } else {
             hidden += 1;
         }
@@ -2733,15 +2755,24 @@ def after(line):
         let line = input_y(&h);
         match p.cursor_drawn {
             Some(r) if (r.center().y - line).abs() < 2.0 => {}
-            None if shown_at.elapsed() + std::time::Duration::from_millis(30) >= hold => {}
-            other => wrong.push((s, other.map(|r| r.center().y), line)),
+            None if shown_at.is_none_or(|t| t.elapsed() + std::time::Duration::from_millis(30) >= hold) => {}
+            other => wrong.push(format!(
+                "scroll {s}: cursor at {:?}, input line at {line}; shown {}, at {},{} (abs {}), hidden from {:?}, last seen shown {:?} ms ago",
+                other.map(|r| r.center().y),
+                p.term.cursor_visible,
+                p.term.cy,
+                p.term.cx,
+                p.term.cursor_abs(),
+                p.term.hidden_from.map(|c| (c.line, c.col, c.at.elapsed().as_millis())),
+                shown_at.map(|t| t.elapsed().as_millis())
+            )),
         }
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
     let _ = std::fs::remove_file(&stop);
-    assert!(h.shows("done") && frames >= 300, "the redraws were seen ({frames} frames)");
+    assert!(h.shows("done") && frames >= 10, "the redraws were seen ({frames} frames)");
     assert!(hidden > 0, "some frames came while the program had the cursor hidden");
-    assert!(wrong.is_empty(), "of {frames} frames, {} had no cursor or one off the input line: {:?} (scroll, cursor at, input line at)", wrong.len(), &wrong[..wrong.len().min(8)]);
+    assert!(wrong.is_empty(), "of {frames} frames, {} had no cursor or one off the input line: {:?}", wrong.len(), &wrong[..wrong.len().min(8)]);
 }
 
 /// "Record this terminal" writes what the program sent (control bytes made
@@ -2809,4 +2840,60 @@ fn the_tab_bar_fits_a_narrow_window() {
             assert!(ra.right() <= width + 0.5, "at {width}: \"{a}\" {ra:?} runs off the window");
         }
     }
+}
+
+/// Focus mode's "click to leave" label has a strip of its own above the
+/// panes: it covered a split pane's zoom and close buttons. A click on it
+/// still leaves focus mode.
+#[test]
+fn focus_mode_label_covers_nothing() {
+    let mut h = Harness::new(json!({}));
+    h.command("split_right");
+    h.command("focus_mode");
+    h.frames(3);
+    let label = h.find("FOCUS").expect("the focus mode label");
+    let pill = label.expand2(egui::vec2(8.0, 3.0));
+    for (tip, r) in h.icons.iter() {
+        assert!(!pill.intersects(*r), "the label {pill:?} covers \"{tip}\" {r:?}");
+    }
+    for (id, r) in &h.app.pane_rects {
+        assert!(r.top() >= pill.bottom() - 0.5, "pane {id} {r:?} starts under the label {pill:?}");
+    }
+    let at = label.center();
+    h.click(at);
+    assert!(h.app.focus_mode.is_none(), "a click on the label leaves focus mode");
+}
+
+/// Zoom's "click to restore" and focus mode's "click to leave" labels,
+/// alone and together: neither covers the other nor a button (in focus mode
+/// the two were drawn over each other).
+#[test]
+fn zoom_and_focus_labels_cover_nothing() {
+    let mut h = Harness::new(json!({}));
+    h.command("split_right");
+    let check = |h: &Harness, what: &str| {
+        let labels: Vec<egui::Rect> = ["ZOOM", "FOCUS"].iter().filter_map(|l| h.find(l)).map(|r| r.expand2(egui::vec2(8.0, 3.0))).collect();
+        for (i, a) in labels.iter().enumerate() {
+            for b in labels.iter().skip(i + 1) {
+                assert!(!a.intersects(*b), "{what}: the labels {a:?} and {b:?} overlap");
+            }
+            for (tip, r) in &h.icons {
+                assert!(!a.intersects(*r), "{what}: a label {a:?} covers \"{tip}\" {r:?}");
+            }
+        }
+        labels.len()
+    };
+    h.command("zoom");
+    h.frames(3);
+    assert_eq!(check(&h, "zoomed"), 1);
+    h.command("focus_mode");
+    h.frames(3);
+    assert_eq!(check(&h, "zoomed, in focus mode"), 2);
+    // Each still does what it says.
+    let zoom = h.at("ZOOM");
+    h.click(zoom);
+    assert!(!h.app.tabs[h.app.active_tab].zoomed, "the zoom label restores the split");
+    let focus = h.at("FOCUS");
+    h.click(focus);
+    assert!(h.app.focus_mode.is_none(), "the focus label leaves focus mode");
 }

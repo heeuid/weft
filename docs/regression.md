@@ -166,6 +166,8 @@ What the numbers don't show:
 | The buttons right of the tabs: editor, side panel, split right and down, palette, ?, Aa, theme, and the ☰ menu of every command with its keys | `regress::the_top_bar_buttons` |
 | In a narrow window (330, 420, 520, 700 px) nothing in the tab bar covers anything else or runs off the window (the tab's + was under the palette button) | `regress::the_tab_bar_fits_a_narrow_window` |
 | Commands one by one: focus mode, cursor shape, font and UI size with their limits, hidden files, markdown breaks, theme: system, local shell, zoom, focus left/right/up/down, history, memos, privacy, features, open memo, theme, fonts, settings.json | `regress::commands_do_what_they_say` |
+| Focus mode's label has its own strip: it covers no button and no pane (it covered a split pane's close button); a click on it leaves | `regress::focus_mode_label_covers_nothing` |
+| Zoom's and focus mode's labels, alone and together, cover neither each other nor a button (in focus mode they were drawn over each other); each still works | `regress::zoom_and_focus_labels_cover_nothing` |
 | The status bar: text size and UI scale buttons, the terminal's size, an agent that is not there with reconnect and password… | `regress::the_status_bar` |
 | Dialogs fit a small window | `regress::dialogs_fit_a_small_window` |
 | Esc closes every dialog, menu and picker; it goes to what has the keyboard (the shell, a composer or the palette on top) | `regress::every_dialog_closes_on_escape`, `regress::escape_goes_to_what_has_the_keyboard` |

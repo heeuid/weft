@@ -124,6 +124,15 @@ pub enum TermEvent {
     Weft { anchor: u64, value: serde_json::Value },
 }
 
+/// See `Term::hidden_from`.
+#[derive(Clone, Copy, Debug)]
+pub struct HiddenCursor {
+    pub alt: bool,
+    pub line: u64,
+    pub col: usize,
+    pub at: Instant,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum BlockState {
     Prompt,
@@ -198,6 +207,11 @@ pub struct Term {
     pub mouse_mode: u16,
     pub mouse_sgr: bool,
     pub cursor_visible: bool,
+    /// Where the cursor was when the program last hid it, and when: an
+    /// absolute line (or a row of the alternate screen, `alt`) and a
+    /// column. Taken as the output is read, so it holds however late the
+    /// screen is drawn after (see ui_term's CURSOR_HOLD).
+    pub hidden_from: Option<HiddenCursor>,
     autowrap: bool,
     insert_mode: bool,
     line_drawing: bool,
@@ -253,6 +267,7 @@ impl Term {
             mouse_mode: 0,
             mouse_sgr: false,
             cursor_visible: true,
+            hidden_from: None,
             autowrap: true,
             insert_mode: false,
             line_drawing: false,
@@ -1027,7 +1042,13 @@ impl Term {
             match n {
                 1 => self.app_cursor = on,
                 7 => self.autowrap = on,
-                25 => self.cursor_visible = on,
+                25 => {
+                    if !on && self.cursor_visible {
+                        let line = if self.alt_active { self.cy as u64 } else { self.cursor_abs() };
+                        self.hidden_from = Some(HiddenCursor { alt: self.alt_active, line, col: self.cx, at: Instant::now() });
+                    }
+                    self.cursor_visible = on;
+                }
                 47 | 1047 => {
                     if on {
                         self.enter_alt()

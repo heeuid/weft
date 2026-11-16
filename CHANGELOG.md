@@ -5,6 +5,20 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.4.2
+
+Fixed
+- **Focus mode's "click to leave" label covered a split pane's zoom and
+  close buttons**, and with a pane zoomed it was drawn over zoom's
+  "click to restore" label. It has a strip of its own above the panes
+  now; a click on either label still does what it says.
+- **The cursor a program hides while it redraws could still go off on a
+  busy PC.** It is held where it was for 150 ms (0.3.4), counted from the
+  last frame drawn with it shown; when the program showed it and hid it
+  again between two frames, that count had run out. The hold now starts
+  when the program hides it, taken as its output is read (the terminal
+  keeps where and when: `Term::hidden_from`).
+
 ## 0.4.1
 
 Fixed

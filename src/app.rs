@@ -866,20 +866,6 @@ pub fn widget_line(last: Option<&InlineWidget>, cursor: u64) -> (u64, u64) {
     }
 }
 
-/// Where the program last had the cursor shown: a line of the text (an
-/// absolute line, or a row of the alternate screen) and a column, so it is
-/// found again wherever the view has scrolled to since.
-#[derive(Clone, Copy, Debug)]
-pub struct CursorHold {
-    pub alt: bool,
-    pub line: u64,
-    pub col: usize,
-    pub wide: bool,
-    /// The character under it, drawn inverted by a block cursor.
-    pub under: Option<char>,
-    pub at: Instant,
-}
-
 /// A record of one terminal's traffic, to see how a program draws (the
 /// "Record this terminal" command): what it sent, what was typed into it,
 /// and where weft drew the cursor, each with the milliseconds since the
@@ -999,7 +985,6 @@ pub struct Pane {
     /// was not), and where and when the program last had it shown: a
     /// cursor the program hides stays for `CURSOR_HOLD`.
     pub cursor_drawn: Option<Rect>,
-    pub cursor_held: Option<CursorHold>,
     /// A new size waiting to settle (splitter drag) before it is applied.
     pub pending_size: Option<((usize, usize), Instant)>,
     /// The first size was applied (the first layout applies immediately).
@@ -1037,7 +1022,6 @@ impl Pane {
             preedit: String::new(),
             ime_rect: None,
             cursor_drawn: None,
-            cursor_held: None,
             trace: None,
             pending_size: None,
             sized: false,

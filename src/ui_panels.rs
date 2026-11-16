@@ -2769,12 +2769,18 @@ impl App {
                         // Terminal panel: its tab bar, then the active tab's panes.
                         // Focus mode: the panes only, and a way out.
                         if self.focus_mode.is_some() {
-                            ui.painter().rect_filled(r, CornerRadius::ZERO, theme::bg_term());
-                            ui.scope_builder(egui::UiBuilder::new().max_rect(r).id_salt("panes"), |ui| self.ui_panes(ui));
+                            // The label has a strip of its own above the
+                            // panes: drawn over them it covered a split
+                            // pane's zoom and close buttons.
+                            let strip = egui::Rect::from_min_size(r.min, vec2(r.width(), 24.0));
+                            let body = egui::Rect::from_min_max(pos2(r.left(), strip.bottom()), r.max);
+                            ui.painter().rect_filled(strip, CornerRadius::ZERO, theme::bg_base());
+                            ui.painter().rect_filled(body, CornerRadius::ZERO, theme::bg_term());
+                            ui.scope_builder(egui::UiBuilder::new().max_rect(body).id_salt("panes"), |ui| self.ui_panes(ui));
                             let keys = self.keys_label(Cmd::FocusMode);
                             let label = if keys.is_empty() { "FOCUS · click to leave".to_string() } else { format!("FOCUS · {keys} or click to leave") };
                             let g = ui.painter().layout_no_wrap(label, FontId::proportional(11.0), theme::accent());
-                            let pill = egui::Rect::from_min_size(pos2(r.right() - g.size().x - 28.0, r.top() + 6.0), vec2(g.size().x + 16.0, 18.0));
+                            let pill = egui::Rect::from_min_size(pos2(r.right() - g.size().x - 28.0, strip.center().y - 9.0), vec2(g.size().x + 16.0, 18.0));
                             let resp = ui.interact(pill, Id::new("focus-pill"), Sense::click());
                             let alpha = if resp.hovered() { 90 } else { 28 };
                             ui.painter().rect_filled(pill, CornerRadius::same(9), theme::tint(theme::accent(), alpha));

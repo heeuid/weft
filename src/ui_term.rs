@@ -1501,7 +1501,6 @@ impl App {
         // it), where, and what to remember for the frames after.
         let mut cursor_now: Option<(Rect, Option<char>)> = None;
         let mut drawn: Option<Rect> = None;
-        let mut held_next: Option<crate::app::CursorHold> = None;
         // Scrolled back, the cursor is drawn as long as its line is in view
         // (`ci` is None when it is not), moving with the text as in other
         // terminals. It used to go at the first line scrolled: near the
@@ -1512,16 +1511,16 @@ impl App {
             let i = if alt { Some(line as usize) } else { vis_index(line) }?;
             Some(Rect::from_min_size(pos2(inner.left() + col as f32 * cw, row_y(i)), vec2(if wide { 2.0 * cw } else { cw }, ch)))
         };
-        let cell = t.screen.get(t.cy).and_then(|r| r.cells.get(t.cx));
-        let here = crate::app::CursorHold {
-            alt: t.alt_active,
-            line: if t.alt_active { t.cy as u64 } else { t.cursor_abs() },
-            col: t.cx,
-            wide: cell.is_some_and(|c| c.wide == WIDE_LEAD),
-            under: cell.map(|c| c.ch).filter(|c| *c != ' '),
-            at: std::time::Instant::now(),
+        // The cell at a line and column: wide (two cells), and the
+        // character in it (drawn inverted by a block cursor).
+        let cell_at = |alt: bool, line: u64, col: usize| {
+            let row = if alt { t.screen.get(line as usize) } else { t.line(line) };
+            let c = row.and_then(|r| r.cells.get(col));
+            (c.is_some_and(|c| c.wide == WIDE_LEAD), c.map(|c| c.ch).filter(|c| *c != ' '))
         };
-        let cursor_rect = place(here.alt, here.line, here.col, here.wide);
+        let here_line = if t.alt_active { t.cy as u64 } else { t.cursor_abs() };
+        let (here_wide, here_under) = cell_at(t.alt_active, here_line, t.cx);
+        let cursor_rect = place(t.alt_active, here_line, t.cx, here_wide);
         // A program hides the cursor while it redraws and shows it again
         // when done (through Windows' pseudo console every update comes
         // that way). A frame drawn in between had no cursor: it flickered
@@ -1530,15 +1529,18 @@ impl App {
         // that goes). Where is a line and column of the text: scrolled
         // since, it is found again and moves with the text (it was a place
         // on screen, dropped at every turn of the wheel, and not looked at
-        // when the line the program was drawing on was out of view).
-        let held = p.cursor_held.filter(|h| !t.cursor_visible && h.alt == t.alt_active && h.at.elapsed() < CURSOR_HOLD);
-        let was_held = !show_cursor && held.is_some();
+        // when the line the program was drawing on was out of view). The
+        // moment is when the program hid it, taken as the output was read
+        // (it was the last frame drawn with the cursor shown: on a busy PC
+        // a show and the next hide could come between two frames, and the
+        // hold had run out).
+        let held = t.hidden_from.filter(|h| !show_cursor && h.alt == t.alt_active && h.at.elapsed() < CURSOR_HOLD);
+        let was_held = held.is_some();
         if show_cursor {
-            cursor_now = cursor_rect.map(|r| (r, here.under));
-            held_next = Some(here);
+            cursor_now = cursor_rect.map(|r| (r, here_under));
         } else if let Some(h) = held {
-            cursor_now = place(h.alt, h.line, h.col, h.wide).map(|r| (r, h.under));
-            held_next = Some(h);
+            let (wide, under) = cell_at(h.alt, h.line, h.col);
+            cursor_now = place(h.alt, h.line, h.col, wide).map(|r| (r, under));
             ui.ctx().request_repaint_after(CURSOR_HOLD.saturating_sub(h.at.elapsed()) + Duration::from_millis(5));
         }
         {
@@ -1713,7 +1715,6 @@ impl App {
         {
             let pm = self.panes.get_mut(&id).unwrap();
             pm.cursor_drawn = drawn;
-            pm.cursor_held = held_next;
             if let Some(tr) = pm.trace.as_mut() {
                 let cell = drawn.map(|r| (((r.top() - inner.top()) / ch).round().max(0.0) as usize, ((r.left() - inner.left()) / cw).round().max(0.0) as usize));
                 tr.cursor(cell, was_held);
