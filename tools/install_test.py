@@ -103,6 +103,20 @@ def one(osname):
         else:
             print('  (skip  the PATH link: this sh copies instead of linking, so it is not recognised as ours)')
 
+        # The app (or program) thrown away first, then uninstall.sh: it
+        # still clears up what is left, and asks about the data.
+        check(run(repo, home, osname, 'install.sh', 'desktop').returncode == 0, 'install.sh again, with a desktop launcher')
+        if osname == 'macos':
+            shutil.rmtree(os.path.join(dest, 'weft.app'))
+        else:
+            os.remove(os.path.join(dest, 'weft'))
+        r = run(repo, home, osname, os.path.join(dest, 'uninstall.sh'), 'keep')
+        check(r.returncode == 0, 'uninstall.sh after the program was thrown away')
+        left = sorted(os.listdir(dest)) if os.path.isdir(dest) else []
+        check(left == ['data'], f'it clears up the rest, the data kept ({left})')
+        if osname == 'linux':
+            check(not os.path.exists(os.path.join(home, 'Desktop', 'weft.desktop')), 'and the desktop launcher')
+
         # Again, then away with the data too.
         check(run(repo, home, osname, 'install.sh').returncode == 0, 'install.sh after that')
         check(read(os.path.join(dest, 'data', 'settings.json')) == '{"from": "weft"}', 'the kept data is picked up')

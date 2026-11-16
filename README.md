@@ -58,6 +58,7 @@ TUI 그리드(날실) 사이에 GUI(씨실)를 엮어 넣은 터미널. Rust (`e
 - macOS: 설치 폴더에 `weft.app`과 `data/`가 나란히 있습니다. Launchpad·Spotlight·Dock에서 쓰는 보통 앱이고, 데이터는 앱 안이 아니라 옆의 `data/`에 둡니다(앱을 바꿔도 데이터는 그대로). 그 Mac에서 빌드한 것이라 처음 열 때 보안 경고가 뜨지 않습니다. 앱 아이콘은 macOS 내장 도구(`sips`, `iconutil`)로 만듭니다.
 - 데이터: `./weft.sh`로 쓰던 `target/release/data`가 있으면 처음 설치할 때 복사해 옵니다.
 - 제거: 설치가 만든 것(앱 메뉴 항목, 바탕화면 바로가기, PATH 링크)은 설치 폴더의 `.installed`에 적어 두었다가 그것만 지웁니다. 켜져 있는 weft가 있으면 닫을 때까지 기다립니다.
+- macOS에서 `weft.app`을 먼저 휴지통에 버렸어도(Linux에서 실행 파일을 먼저 지웠어도) 설치 폴더의 `uninstall.sh`로 나머지(바로가기, 링크, 데이터)를 정리할 수 있습니다.
 - 스크립트 시험: `python tools/install_test.py`(가짜 weft로 두 OS의 설치·업데이트·제거를 임시 홈 폴더에서 돌려 봄. Windows에서는 Git Bash의 `sh`로).
 
 설정·로그·히스토리는 실행 파일 옆 `data/`에 저장됩니다 (`WEFT_DATA_DIR`로 변경 가능).

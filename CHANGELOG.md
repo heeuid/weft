@@ -5,6 +5,14 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.6.1
+
+Fixed
+- **uninstall.sh after weft.app was put in the Trash** (or, on Linux,
+  the program deleted) said weft was not installed and stopped, leaving
+  the launchers, links and data. It now clears up what the install left
+  (it knows from `.installed`, or from the data folder).
+
 ## 0.6.0
 
 Added

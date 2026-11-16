@@ -35,7 +35,9 @@ case "$dest" in
     *) dest="$(pwd)/$dest" ;;
 esac
 if [ "$os" = macos ]; then program="$dest/weft.app/Contents/MacOS/weft-bin"; else program="$dest/weft"; fi
-if [ ! -f "$program" ]; then
+# Installed there: the program, or (it was put in the Trash, or deleted,
+# first) what the install left beside it, which is then cleared up.
+if [ ! -f "$program" ] && [ ! -f "$dest/.installed" ] && [ ! -d "$dest/data" ]; then
     echo "weft: not installed in $dest (give the folder: ./uninstall.sh /path/to/weft)" >&2
     exit 1
 fi
