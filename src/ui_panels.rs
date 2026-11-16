@@ -4348,18 +4348,25 @@ fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size:
                 }
                 md::Deco::Bullet { at: i, depth, col } => {
                     // In the middle of its column; by depth a filled dot, a
-                    // square, a hollow dot, and again.
+                    // hollow dot, a filled square, a hollow square, and
+                    // again: next to each other, filled and hollow always
+                    // differ (at a small size a dot and a square hardly do).
                     let r = at(i);
                     let c = pos2(r.left() - col * 0.5, r.center().y);
-                    match depth % 3 {
+                    let (dot, square) = (size * 0.17, egui::Rect::from_center_size(c, vec2(size * 0.32, size * 0.32)));
+                    let line = Stroke::new(1.3_f32, theme::text_dim());
+                    match depth % 4 {
                         0 => {
-                            painter.circle_filled(c, size * 0.14, theme::text_dim());
+                            painter.circle_filled(c, dot, theme::text_dim());
                         }
                         1 => {
-                            painter.rect_filled(egui::Rect::from_center_size(c, vec2(size * 0.24, size * 0.24)), CornerRadius::ZERO, theme::text_dim());
+                            painter.circle_stroke(c, dot, line);
+                        }
+                        2 => {
+                            painter.rect_filled(square, CornerRadius::ZERO, theme::text_dim());
                         }
                         _ => {
-                            painter.circle_stroke(c, size * 0.13, Stroke::new(1.2_f32, theme::text_dim()));
+                            painter.rect_stroke(square, CornerRadius::ZERO, line, egui::StrokeKind::Inside);
                         }
                     }
                 }

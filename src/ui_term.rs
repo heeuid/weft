@@ -1019,7 +1019,13 @@ impl App {
                 (all, top, w)
             }
         };
-        let row_y = |i: usize| inner.top() + i as f32 * ch;
+        // The program has ended: its notice takes the bottom of the pane,
+        // and the text is drawn that much higher, its last line just above
+        // the notice (the notice covered it). Only as far as the text
+        // reaches down there.
+        let banner = Rect::from_min_size(pos2(inner.left(), inner.bottom() - ch - 10.0), vec2(inner.width(), ch + 8.0));
+        let lift = if self.panes[&id].exited { (inner.top() + window.len() as f32 * ch - (banner.top() - 2.0)).max(0.0) } else { 0.0 };
+        let row_y = |i: usize| inner.top() - lift + i as f32 * ch;
 
         // 3. interaction
         let resp = ui.interact(body, term_id, Sense::click_and_drag());
@@ -1044,7 +1050,7 @@ impl App {
         let mods = ui.input(|i| i.modifiers);
         let hover = ui.input(|i| i.pointer.hover_pos()).filter(|p| inner.contains(*p) && resp.hovered());
         let hit = |t: &Term, pos: egui::Pos2| -> Option<(u64, usize)> {
-            let i = ((pos.y - inner.top()) / ch).floor().clamp(0.0, (window.len().max(1) - 1) as f32) as usize;
+            let i = ((pos.y - inner.top() + lift) / ch).floor().clamp(0.0, (window.len().max(1) - 1) as f32) as usize;
             let col = ((pos.x - inner.left()) / cw).floor().clamp(0.0, (cols - 1) as f32) as usize;
             window.get(i).and_then(|v| v.abs(t)).map(|a| (a, col))
         };
@@ -1272,6 +1278,10 @@ impl App {
         }
 
         // 4. draw grid + overlays (read-only)
+        // (Raised, the text stays inside the terminal: its top line is cut
+        // off rather than drawn over the pane's header.)
+        let whole = painter.clone();
+        let painter = if lift > 0.0 { painter.with_clip_rect(painter.clip_rect().intersect(inner.expand2(vec2(2.0, 0.0)))) } else { painter };
         let p = &self.panes[&id];
         let t = &p.term;
         for (i, vr) in window.iter().enumerate() {
@@ -1594,13 +1604,14 @@ impl App {
             painter.galley(r.min + vec2(6.0, 3.0), g, theme::text());
         }
 
+        let painter = whole;
         // Exited banner.
         if p.exited {
             let msg = match &p.spawn_error {
                 Some(e) => format!("failed to start: {e} — Enter: retry · Ctrl+Shift+W: close"),
                 None => "process exited — Enter: restart · Ctrl+Shift+W: close".to_string(),
             };
-            let r = Rect::from_min_size(pos2(inner.left(), inner.bottom() - ch - 10.0), vec2(inner.width(), ch + 8.0));
+            let r = banner;
             painter.rect_filled(r, CornerRadius::same(5), theme::tint(theme::warn(), 30));
             painter.text(pos2(r.left() + 10.0, r.center().y), Align2::LEFT_CENTER, msg, FontId::proportional(12.5), theme::warn());
         }

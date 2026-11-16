@@ -2897,3 +2897,39 @@ fn zoom_and_focus_labels_cover_nothing() {
     h.click(focus);
     assert!(h.app.focus_mode.is_none(), "the focus label leaves focus mode");
 }
+
+/// When the program in a terminal ends, its notice ("process exited …")
+/// does not cover the last lines it printed: the text is raised above the
+/// notice (it covered the last line, Claude Code's status line). Text that
+/// does not reach that far stays where it is.
+#[test]
+fn the_exit_notice_covers_no_text() {
+    for (lines, raised) in [(200usize, true), (3, false)] {
+        let body = format!(
+            r#"
+import os
+def after(line):
+    sys.stdout.write(''.join('line-%03d\r\n' % i for i in range({lines})) + 'LAST-LINE')
+    sys.stdout.flush()
+    time.sleep(0.3)
+    os._exit(0)
+"#
+        );
+        let (mut h, _file) = script_harness(&body, json!({}));
+        let pane = h.app.active_pane_id().unwrap();
+        h.click(egui::pos2(400.0, 300.0));
+        h.type_text("go");
+        h.key(Key::Enter, Modifiers::NONE);
+        assert!(h.wait_for(30.0, |h| h.app.panes[&pane].exited && h.shows("process exited")), "the program ended ({lines} lines)");
+        h.frames(3);
+        let notice = h.find("process exited").unwrap();
+        let last = h.find("LAST-LINE").unwrap_or_else(|| panic!("the last line is drawn ({lines} lines)"));
+        assert!(last.bottom() <= notice.top(), "{lines} lines: the last line {last:?} is above the notice {notice:?}");
+        // Raised only when the text reaches down to the notice.
+        let first = h.texts.iter().filter(|(t, r)| t.starts_with("line-") && r.top() > 30.0).map(|(_, r)| r.top()).fold(f32::MAX, f32::min);
+        let top_of_text = h.app.pane_rects.iter().find(|(id, _)| *id == pane).map(|(_, r)| r.top()).unwrap();
+        if !raised {
+            assert!(first - top_of_text < 30.0, "{lines} lines: not raised, the first line at the top ({first} vs {top_of_text})");
+        }
+    }
+}

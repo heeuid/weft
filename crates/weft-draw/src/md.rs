@@ -16,7 +16,7 @@ pub const BOLD_FONT: &str = "bold";
 pub enum Deco {
     /// "-", "*" or "+" list marker at this char index: draw a bullet in the
     /// `col` wide column that ends where the marker is, its shape by
-    /// `depth` (filled dot, square, hollow dot, again).
+    /// `depth` (filled dot, hollow dot, filled square, hollow square, again).
     Bullet { at: usize, depth: usize, col: f32 },
     /// An ordered item's number, written as its depth wants ("3.", "iii.",
     /// "c."), right-aligned just before the marker at this char index.

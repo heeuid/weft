@@ -167,6 +167,7 @@ What the numbers don't show:
 | The buttons right of the tabs: editor, side panel, split right and down, palette, ?, Aa, theme, and the ☰ menu of every command with its keys | `regress::the_top_bar_buttons` |
 | In a narrow window (330, 420, 520, 700 px) nothing in the tab bar covers anything else or runs off the window (the tab's + was under the palette button) | `regress::the_tab_bar_fits_a_narrow_window` |
 | Commands one by one: focus mode, cursor shape, font and UI size with their limits, hidden files, markdown breaks, theme: system, local shell, zoom, focus left/right/up/down, history, memos, privacy, features, open memo, theme, fonts, settings.json | `regress::commands_do_what_they_say` |
+| When a terminal's program ends, its notice covers none of the text: the text is raised above it (it covered the last line); text that does not reach it stays put | `regress::the_exit_notice_covers_no_text` |
 | Focus mode's label has its own strip: it covers no button and no pane (it covered a split pane's close button); a click on it leaves | `regress::focus_mode_label_covers_nothing` |
 | Zoom's and focus mode's labels, alone and together, cover neither each other nor a button (in focus mode they were drawn over each other); each still works | `regress::zoom_and_focus_labels_cover_nothing` |
 | The status bar: text size and UI scale buttons, the terminal's size, an agent that is not there with reconnect and password… | `regress::the_status_bar` |
@@ -219,7 +220,7 @@ What the numbers don't show:
 | Markdown rendering kept byte for byte | `md::tests::*` |
 | Lists nest as on GitHub (two spaces under "- ", three under "1. "; one is the next item); mixed kinds count every level | `md::tests::lists_nest_as_on_github` |
 | Ordered items: 1. i. a. by depth, numbered from the first one's number ("1." for each counts up), roman and letters past 26 | `md::tests::ordered_items_are_numbered_by_depth` |
-| Bullets know their depth (drawn ● ■ ○); a task's box stands for its bullet | `md::tests::bullets_know_their_depth` |
+| Bullets know their depth (drawn ● ○ ■ □); a task's box stands for its bullet | `md::tests::bullets_know_their_depth` |
 | An item's text is further in than its parent's whatever the spaces, a paragraph of it under its text, and nothing moves when the cursor comes to the line | `md::tests::list_text_keeps_its_place` |
 | Tables: fit the width, wrap in columns, rows' source | `md::tests::tables_hide_pipes_and_align_columns`, `a_wide_table_wraps_inside_its_columns` |
 | Unsaved / saved / copied marks; Rich ⇄ Source; Read mode | `regress::editor_marks_buttons_and_read_mode` |

@@ -5,6 +5,20 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.5.1
+
+Changed
+- **Bullets go ● ○ ■ □ by depth** (they went ● ■ ○), a little larger: at
+  a small size a dot and a square are hard to tell apart, filled and
+  hollow are not, and next to each other they now always differ.
+
+Fixed
+- **When a terminal's program ended, its notice covered the last line**
+  ("process exited — Enter: restart …" over Claude Code's status line,
+  after an ssh connection dropped). The text is drawn higher, its last
+  line just above the notice; text that does not reach that far stays
+  where it is.
+
 ## 0.5.0
 
 Changed
