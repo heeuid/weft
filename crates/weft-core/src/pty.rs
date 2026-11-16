@@ -457,6 +457,31 @@ mod tests {
         no_console_host_is_left(&hosts);
     }
 
+    /// A restart starts the new weft as a child of the old one, with its
+    /// terminals still open, then closes them: the new process must not
+    /// hold on to them (an inherited handle of a terminal's pipes kept its
+    /// console host, and the old shell, running for good). The terminals
+    /// close, and their console hosts go, while the new process runs on.
+    #[test]
+    fn a_process_started_meanwhile_keeps_no_terminal_open() {
+        let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
+        let hosts = console_hosts();
+        let argv: Vec<String> = ["python", "-c", "import time; time.sleep(60)"].iter().map(|s| s.to_string()).collect();
+        let mut panes: Vec<Pty> = (0..2).map(|_| Pty::spawn(&argv, None, &[], 80, 24, || {}).expect("python")).collect();
+        thread::sleep(Duration::from_millis(700));
+        for p in &mut panes {
+            p.write(b"\x1b[1;1R");
+        }
+        // As restart does: a plain spawn, the new program left running.
+        let mut new_one = std::process::Command::new("python").args(["-c", "import time; time.sleep(30)"]).spawn().expect("python");
+        drop(panes);
+        assert_eq!(finish_closing(Duration::from_secs(20)), 0, "every pseudo console was closed");
+        no_console_host_is_left(&hosts);
+        assert!(new_one.try_wait().unwrap().is_none(), "the new program still runs");
+        let _ = new_one.kill();
+        let _ = new_one.wait();
+    }
+
     /// The cursor's place told to a console host that is just starting is
     /// kept inside the screen it was opened with: outside it, the host
     /// never took the answer, and never closed (a terminal whose screen
