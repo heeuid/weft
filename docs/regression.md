@@ -281,7 +281,7 @@ What no test here can see. The first is the one worth doing after changing how a
 4. **Real hosts**: files and Procs over ssh, a serial port, X11 forwarding. (The agent's operations are run here by python; the wire to a real host is covered by the integration tests for listing and reading only.)
 5. **Deleting on this PC** goes to the Recycle Bin, and Windows warns when something can't go there (tests delete for good: the bin is yours).
 6. **After weft is closed, no `OpenConsole.exe` of its own is left** in Task Manager (the tests check the same path; `python tools/leak.py` counts them around a test run).
-7. **install.bat / uninstall.bat**, and `weft --version` from a shell after installing.
+7. **install.bat / uninstall.bat**, and `weft --version` from a shell after installing. **install.sh / uninstall.sh** on a real Linux desktop and a Mac: that the menu entry or weft.app starts weft, with its data in `data/` beside it (`python tools/install_test.py` checks where every file goes, with a stand-in weft; it cannot open a window, nor make the macOS icon, which needs a Mac).
 8. **How it feels**: typing latency, flicker, a resize. Frame times are measured without a GPU (`frame_times`); what a screen does with them is not.
 9. **A conpty.dll of your own** (the `console_host` setting, or one beside weft.exe): the tests run on Windows' own; that a given one is loaded and used is checked by hand (About says which, and Task Manager shows OpenConsole.exe instead of conhost.exe).
 10. **Linux and macOS**: everything compiles for them (see the commands at the top), and nothing has been run there. `cargo test --workspace` on such a machine tests their code; several tests start `python`, which there may be `python3`.

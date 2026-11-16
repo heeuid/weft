@@ -9,7 +9,7 @@ members = ["crates/weft-core", "crates/weft-draw"]
 
 # One version for weft and its crates: raised here, with CHANGELOG.md.
 [workspace.package]
-version = "0.5.1"
+version = "0.6.0"
 
 [dependencies]
 weft-core = { path = "crates/weft-core" }

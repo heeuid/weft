@@ -16,9 +16,11 @@ TUI 그리드(날실) 사이에 GUI(씨실)를 엮어 넣은 터미널. Rust (`e
 |---|---|---|
 | Windows | 탐색기에서 `weft.bat` | cmd: `weft.bat`, PowerShell: `.\weft.bat` |
 | Linux | 파일 관리자에서 `weft.desktop` (처음엔 "실행 허용"/"Allow Launching" 필요할 수 있음) | `./weft.sh` |
+| macOS | (설치하면 Launchpad·Spotlight의 weft) | `./weft.sh` |
 
 - Windows는 PowerShell `Start-Process`(탐색기 더블클릭과 같은 방식)로 띄워 터미널의 핸들을 하나도 물려주지 않습니다.
-- Linux는 `setsid`(없으면 `nohup`)로 새 세션에서 띄워 터미널을 닫을 때의 종료 신호가 가지 않습니다.
+- Linux는 `setsid`(없으면 `nohup`)로 새 세션에서 띄워 터미널을 닫을 때의 종료 신호가 가지 않습니다. macOS에는 `setsid`가 없어 `nohup`으로 띄웁니다.
+- Linux와 macOS는 빌드(컴파일)까지만 확인했고, 실제 창을 띄워 본 적은 아직 없습니다.
 - 빌드에 실패하면 오류를 보여 주고 멈춥니다. `cargo`가 없으면 이미 빌드된 실행 파일을 띄웁니다.
 
 개발 중에는 그냥 `cargo run --release`도 됩니다.
@@ -38,6 +40,25 @@ TUI 그리드(날실) 사이에 GUI(씨실)를 엮어 넣은 터미널. Rust (`e
 - 설치: `cargo`가 있으면 먼저 빌드합니다. 시작 메뉴에 바로가기를 만들고 설정 > 앱 목록에 올립니다. 다시 실행하면 업데이트입니다. weft가 켜져 있어도 되고, 다음에 켤 때 새 버전으로 뜹니다.
 - 데이터는 설치 폴더의 `data\`입니다. `weft.bat`으로 쓰던 `target\release\data`가 있으면 처음 설치할 때 복사해 옵니다.
 - 제거: 바로가기, 앱 목록 항목, PATH 항목, 실행 파일을 지웁니다. 켜져 있는 weft가 있으면 닫을 때까지 기다립니다. 데이터는 지울지 묻고, 남기면 다시 설치할 때 그대로 이어 씁니다.
+
+### Linux / macOS에 설치 / 제거
+
+관리자 권한 없이 이 사용자에게만 설치합니다. 스크립트 하나가 두 OS를 다 맡습니다.
+
+| | 명령 |
+|---|---|
+| 설치 (Linux `~/.local/opt/weft`, macOS `~/Applications/weft`) | `./install.sh` |
+| 다른 위치에 | `./install.sh /some/dir` |
+| 바탕화면 바로가기도 / PATH에도 (`~/.local/bin/weft`) | `./install.sh desktop path` |
+| 제거 (데이터는 물어봄) | 설치 폴더의 `./uninstall.sh` (또는 저장소의 `./uninstall.sh`) |
+| 데이터까지 / 데이터는 남기고 | `./uninstall.sh purge` / `./uninstall.sh keep` |
+
+- 설치: `cargo`가 있으면 먼저 빌드합니다. 다시 실행하면 업데이트입니다. 켜져 있는 weft는 그대로 돌고, 다음에 켤 때(또는 weft의 restart 버튼으로) 새 버전이 뜹니다.
+- Linux: 설치 폴더에 실행 파일, 아이콘, `data/`. 앱 메뉴에 weft가 생깁니다(`~/.local/share/applications/weft.desktop`).
+- macOS: 설치 폴더에 `weft.app`과 `data/`가 나란히 있습니다. Launchpad·Spotlight·Dock에서 쓰는 보통 앱이고, 데이터는 앱 안이 아니라 옆의 `data/`에 둡니다(앱을 바꿔도 데이터는 그대로). 그 Mac에서 빌드한 것이라 처음 열 때 보안 경고가 뜨지 않습니다. 앱 아이콘은 macOS 내장 도구(`sips`, `iconutil`)로 만듭니다.
+- 데이터: `./weft.sh`로 쓰던 `target/release/data`가 있으면 처음 설치할 때 복사해 옵니다.
+- 제거: 설치가 만든 것(앱 메뉴 항목, 바탕화면 바로가기, PATH 링크)은 설치 폴더의 `.installed`에 적어 두었다가 그것만 지웁니다. 켜져 있는 weft가 있으면 닫을 때까지 기다립니다.
+- 스크립트 시험: `python tools/install_test.py`(가짜 weft로 두 OS의 설치·업데이트·제거를 임시 홈 폴더에서 돌려 봄. Windows에서는 Git Bash의 `sh`로).
 
 설정·로그·히스토리는 실행 파일 옆 `data/`에 저장됩니다 (`WEFT_DATA_DIR`로 변경 가능).
 

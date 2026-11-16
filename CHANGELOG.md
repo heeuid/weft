@@ -5,6 +5,32 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.6.0
+
+Added
+- **install.sh / uninstall.sh for Linux and macOS**, as install.bat /
+  uninstall.bat are for Windows: for this user, no root.
+  - Linux: weft, its icon and `data/` in `~/.local/opt/weft`, and an
+    entry in the applications menu.
+  - macOS: `weft.app` and `data/` side by side in `~/Applications/weft`
+    (Launchpad, Spotlight, Dock); the app keeps its data in that `data/`,
+    not inside itself, so replacing the app leaves the data alone. Built
+    on that Mac, it opens without a security warning; its icon is made
+    with macOS's own sips and iconutil.
+  - `desktop` adds a desktop launcher, `path` a `~/.local/bin/weft` link;
+    running it again updates (a weft that is running goes on); data from
+    `./weft.sh` is brought along the first time.
+  - uninstall.sh takes away only what the install made (listed in the
+    folder's `.installed`), waits for a running weft to close, and asks
+    about the data (`purge` / `keep` to say beforehand).
+- `tools/install_test.py`: both scripts, for both systems, in a home
+  folder of their own with a stand-in weft.
+
+Not yet seen
+- weft itself has only been compiled for Linux and macOS, never run
+  there: that the menu entry or weft.app opens a window is to be seen on
+  a real desktop.
+
 ## 0.5.1
 
 Changed
