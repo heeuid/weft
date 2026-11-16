@@ -216,6 +216,10 @@ What the numbers don't show:
 | What | Test |
 |---|---|
 | Markdown rendering kept byte for byte | `md::tests::*` |
+| Lists nest as on GitHub (two spaces under "- ", three under "1. "; one is the next item); mixed kinds count every level | `md::tests::lists_nest_as_on_github` |
+| Ordered items: 1. i. a. by depth, numbered from the first one's number ("1." for each counts up), roman and letters past 26 | `md::tests::ordered_items_are_numbered_by_depth` |
+| Bullets know their depth (drawn ● ■ ○); a task's box stands for its bullet | `md::tests::bullets_know_their_depth` |
+| An item's text is further in than its parent's whatever the spaces, a paragraph of it under its text, and nothing moves when the cursor comes to the line | `md::tests::list_text_keeps_its_place` |
 | Tables: fit the width, wrap in columns, rows' source | `md::tests::tables_hide_pipes_and_align_columns`, `a_wide_table_wraps_inside_its_columns` |
 | Unsaved / saved / copied marks; Rich ⇄ Source; Read mode | `regress::editor_marks_buttons_and_read_mode` |
 | Double-click selects a word (Hangul, line ends) | `widgets::word_tests::*` |

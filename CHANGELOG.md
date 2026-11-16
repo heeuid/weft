@@ -5,6 +5,24 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.5.0
+
+Changed
+- **Markdown lists show their nesting.** Each level is indented by the
+  width its marker needs, the items inside an item starting under its
+  text, whatever spaces the source has (a level was about one space
+  wide). Bullets go ● ■ ○ by depth, numbers 1. i. a., and again. Items
+  are numbered as they come from the first one's number, so `1.` written
+  for each still shows 1, 2, 3. A task's box stands in for its bullet.
+- **What nests is what nests on GitHub** (CommonMark): an item is inside
+  the one before when indented to that one's text: two spaces under
+  `- `, three under `1. `. One space under `- ` is the next item of the
+  same list (it used to look nested, and on GitHub it is not).
+- A paragraph of an item lines up under the item's text; a line that
+  runs on from the one before no longer keeps its indent as a gap.
+- On the cursor's line the source markers show (faint) in the same room:
+  the text does not move when the cursor comes to its line.
+
 ## 0.4.2
 
 Fixed

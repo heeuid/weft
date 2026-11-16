@@ -14,8 +14,13 @@ pub const BOLD_FONT: &str = "bold";
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Deco {
-    /// "-", "*" or "+" list marker at this char index: draw a bullet there.
-    Bullet { at: usize },
+    /// "-", "*" or "+" list marker at this char index: draw a bullet in the
+    /// `col` wide column that ends where the marker is, its shape by
+    /// `depth` (filled dot, square, hollow dot, again).
+    Bullet { at: usize, depth: usize, col: f32 },
+    /// An ordered item's number, written as its depth wants ("3.", "iii.",
+    /// "c."), right-aligned just before the marker at this char index.
+    Number { at: usize, label: String },
     /// "[ ]" / "[x]" at char index `at`; `byte` is the byte of the inner char (toggle target).
     Check { at: usize, byte: usize, checked: bool },
     /// Block quote line spanning chars [start, end].
@@ -104,6 +109,36 @@ impl Ctx<'_> {
             let f = TextFormat { font_id: FontId::new(1.0, FontFamily::Proportional), color: Color32::TRANSPARENT, ..Default::default() };
             self.job.append(s, 0.0, f);
         }
+    }
+
+    /// A list item's indent and marker, its text then starting `tx` from the
+    /// left edge whatever spaces the source has. On the cursor line both show
+    /// (faint), the room made up before the marker so the text stays where
+    /// it is; elsewhere they take none (the marker is painted in the room).
+    fn lead_in(&mut self, indent: &str, marker: &str, tx: f32, st: Style, measure: &mut dyn FnMut(&str, &FontId) -> f32) {
+        if self.cursor_line {
+            self.text(indent, st);
+            let font = st.format().font_id;
+            let raw = measure(indent, &font) + measure(marker, &font);
+            let faint = Style { color: theme::text_faint(), strike: false, underline: false, background: Color32::TRANSPARENT, ..st };
+            self.job.append(marker, (tx - raw).max(0.0), faint.format());
+        } else {
+            // (Hidden, they still take a hair each: taken off the room, so
+            // the text is where it is on the cursor line, to the point.)
+            let tiny = TextFormat { font_id: FontId::new(1.0, FontFamily::Proportional), color: Color32::TRANSPARENT, ..Default::default() };
+            let hair = measure(indent, &tiny.font_id) + measure(marker, &tiny.font_id);
+            if !indent.is_empty() {
+                self.job.append(indent, 0.0, tiny.clone());
+            }
+            self.job.append(marker, (tx - hair).max(0.0), tiny);
+        }
+    }
+
+    /// A line's indent, hidden, its text then starting `x` from the left edge.
+    fn indent_to(&mut self, indent: &str, x: f32, measure: &mut dyn FnMut(&str, &FontId) -> f32) {
+        let tiny = TextFormat { font_id: FontId::new(1.0, FontFamily::Proportional), color: Color32::TRANSPARENT, ..Default::default() };
+        let hair = measure(indent, &tiny.font_id);
+        self.job.append(indent, (x - hair).max(0.0), tiny);
     }
 
     /// Invisible but keeps its normal width (room for a painted bullet/checkbox).
@@ -520,6 +555,104 @@ pub fn fence_blocks(lines: &[&str], cursor: Option<usize>) -> Vec<(usize, usize)
     pairs
 }
 
+/// A list open at the line being laid out: where its marker and its
+/// items' text are in the source (columns) and on screen (points from the
+/// left edge), and the number of its last item.
+struct ListLevel {
+    marker: usize,
+    content: usize,
+    ordered: bool,
+    n: u64,
+    x: f32,
+    tx: f32,
+}
+
+/// Where an item goes: its depth (0 at the outermost list), its number,
+/// and the columns of its marker and its text on screen.
+#[derive(Clone, Copy)]
+struct ItemPlace {
+    depth: usize,
+    n: u64,
+    x: f32,
+    tx: f32,
+}
+
+/// Columns of an indent (a tab to the next multiple of four).
+fn indent_cols(indent: &str) -> usize {
+    indent.chars().fold(0, |c, ch| if ch == '\t' { c + 4 - c % 4 } else { c + 1 })
+}
+
+/// A list item at source column `ind`, its text at `content`, with
+/// `start` its number when ordered: which list it belongs to, as in
+/// CommonMark (and GitHub). Indented to the text of the item before or
+/// further, it starts a list inside that item; less, it is the next item
+/// of the list whose marker it reaches, or of the outermost one. Its marker
+/// is drawn under the text of the item it is inside: every level as wide
+/// as its marker needs, whatever spaces the source has.
+fn list_item(lists: &mut Vec<ListLevel>, ind: usize, content: usize, start: Option<u64>, size: f32) -> ItemPlace {
+    let ordered = start.is_some();
+    let col = if ordered { size * 1.8 } else { size * 1.4 };
+    let mut sibling = None;
+    while let Some(top) = lists.last() {
+        if ind >= top.content {
+            break;
+        }
+        if ind >= top.marker || lists.len() == 1 {
+            sibling = lists.pop();
+            break;
+        }
+        lists.pop();
+    }
+    // The next item of a list counts on from the one before ("1." written
+    // for each still makes 1, 2, 3); one of another kind starts a new list
+    // in its place.
+    let (x, n) = match sibling {
+        Some(prev) => (prev.x, if ordered && prev.ordered { prev.n + 1 } else { start.unwrap_or(0) }),
+        None => (lists.last().map_or(0.0, |l| l.tx), start.unwrap_or(0)),
+    };
+    lists.push(ListLevel { marker: ind, content, ordered, n, x, tx: x + col });
+    ItemPlace { depth: lists.len() - 1, n, x, tx: x + col }
+}
+
+/// An ordered item's number as its depth writes it: 1. then i. then a.,
+/// and again.
+fn list_label(depth: usize, n: u64) -> String {
+    match depth % 3 {
+        0 => format!("{n}."),
+        1 => format!("{}.", roman(n)),
+        _ => format!("{}.", alpha(n)),
+    }
+}
+
+fn roman(mut n: u64) -> String {
+    if n == 0 || n >= 4000 {
+        return n.to_string();
+    }
+    let mut s = String::new();
+    for (v, r) in [(1000, "m"), (900, "cm"), (500, "d"), (400, "cd"), (100, "c"), (90, "xc"), (50, "l"), (40, "xl"), (10, "x"), (9, "ix"), (5, "v"), (4, "iv"), (1, "i")] {
+        while n >= v {
+            s.push_str(r);
+            n -= v;
+        }
+    }
+    s
+}
+
+/// 1 a, 26 z, 27 aa.
+fn alpha(n: u64) -> String {
+    if n == 0 {
+        return "0".into();
+    }
+    let mut n = n;
+    let mut s = Vec::new();
+    while n > 0 {
+        n -= 1;
+        s.push((b'a' + (n % 26) as u8) as char);
+        n /= 26;
+    }
+    s.iter().rev().collect()
+}
+
 fn heading_level(line: &str) -> Option<(usize, usize)> {
     let hashes = line.bytes().take_while(|&c| c == b'#').count();
     if (1..=6).contains(&hashes) && line.as_bytes().get(hashes).map(|&c| c == b' ').unwrap_or(line.len() == hashes) {
@@ -577,6 +710,8 @@ pub fn layout(
     let soft = if breaks { vec![false; lines.len()] } else { soft_breaks(&lines, cursor_line, &blocks) };
     let mut table: Option<Table> = None;
     let mut in_comment = false;
+    // The lists open at the line, outermost first (see `list_item`).
+    let mut lists: Vec<ListLevel> = Vec::new();
     for (ln, raw_line) in lines.iter().copied().enumerate() {
         let line = raw_line.strip_suffix('\n').unwrap_or(raw_line);
         let line = line.strip_suffix('\r').unwrap_or(line);
@@ -591,6 +726,25 @@ pub fn layout(
         let comment_line = fence.is_none() && (in_comment || (trimmed.starts_with("<!--") && !trimmed[4..].contains("-->")));
         if comment_line {
             in_comment = if in_comment { !line.contains("-->") } else { true };
+        }
+        // Which list this line is an item of, or which item it goes on
+        // (a line indented to an item's text); a blank line closes none.
+        let digits = trimmed.bytes().take_while(|c| c.is_ascii_digit()).count();
+        let bullet = (trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("+ ")) && !is_rule(trimmed);
+        let numbered = digits > 0 && digits <= 9 && trimmed[digits..].starts_with(". ");
+        let mut item: Option<ItemPlace> = None;
+        let mut under_item: Option<f32> = None;
+        if fence.is_none() && table.is_none() && !comment_line {
+            let ind = indent_cols(indent);
+            if bullet || numbered {
+                let start = numbered.then(|| trimmed[..digits].parse().unwrap_or(1));
+                let content = ind + if numbered { digits + 2 } else { 2 };
+                item = Some(list_item(&mut lists, ind, content, start, size));
+            } else if !trimmed.is_empty() {
+                let keep = lists.iter().position(|l| l.content > ind).unwrap_or(lists.len());
+                lists.truncate(keep);
+                under_item = lists.last().map(|l| l.tx);
+            }
         }
 
         if fence.is_none() && table.is_none() && trimmed.starts_with('|') && lines.get(ln + 1).map(|l| is_table_separator(l)).unwrap_or(false) {
@@ -752,17 +906,15 @@ pub fn layout(
             }
             cx.inline(&trimmed[n..], Style { color: theme::text_dim(), italics: true, ..body });
             decos.push(Deco::Quote { start: char_pos, end: char_pos + line_chars });
-        } else if (trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("+ ")) && !is_rule(trimmed) {
+        } else if let (true, Some(place)) = (bullet, item) {
             let marker_byte = indent.len();
-            cx.text(indent, body);
-            if cx.cursor_line {
-                cx.marker(&trimmed[..2], body);
-            } else {
-                cx.blank(&trimmed[..2], body);
-                decos.push(Deco::Bullet { at: char_at(marker_byte) });
-            }
+            cx.lead_in(indent, &trimmed[..2], place.tx, body, measure);
             let item = &trimmed[2..];
             let task = item.len() >= 3 && item.starts_with('[') && item.as_bytes()[2] == b']' && matches!(item.as_bytes()[1], b' ' | b'x' | b'X');
+            // A task's box stands for its bullet (as on GitHub).
+            if !cx.cursor_line && !task {
+                decos.push(Deco::Bullet { at: char_at(marker_byte), depth: place.depth, col: place.tx - place.x });
+            }
             if task {
                 let checked = item.as_bytes()[1] != b' ';
                 let box_byte = marker_byte + 2;
@@ -818,15 +970,28 @@ pub fn layout(
                     cx.inline(part, mono);
                 }
             }
-        } else {
-            let ordered = trimmed.bytes().take_while(|c| c.is_ascii_digit()).count();
-            if ordered > 0 && trimmed[ordered..].starts_with(". ") {
-                cx.text(indent, body);
-                cx.text(&trimmed[..ordered + 2], Style { color: theme::text_dim(), ..body });
-                cx.inline(&trimmed[ordered + 2..], body);
-            } else {
-                cx.inline(line, body);
+        } else if let (true, Some(place)) = (numbered, item) {
+            cx.lead_in(indent, &trimmed[..digits + 2], place.tx, body, measure);
+            if !cx.cursor_line {
+                decos.push(Deco::Number { at: char_at(indent.len()), label: list_label(place.depth, place.n) });
             }
+            cx.inline(&trimmed[digits + 2..], body);
+        } else if let Some(tx) = under_item.filter(|_| !(cx.cursor_line || ln > 0 && soft[ln - 1])) {
+            // A paragraph of a list item: under the item's text. (Not when
+            // the line before runs on into it: then it is the same line.)
+            if indent.is_empty() {
+                cx.inline(line, body);
+            } else {
+                cx.indent_to(indent, tx, measure);
+                cx.inline(trimmed, body);
+            }
+        } else if !cx.cursor_line && ln > 0 && soft[ln - 1] && !indent.is_empty() {
+            // It runs on from the line before, the newline between being a
+            // space: its own indent is not more room (as in CommonMark).
+            cx.marker(indent, body);
+            cx.inline(trimmed, body);
+        } else {
+            cx.inline(line, body);
         }
         if !newline.is_empty() {
             // Keep the line's own height for the newline (headings stay tall).
@@ -1147,11 +1312,104 @@ mod tests {
         assert!(here.contains("## ") && here.contains("**bold**"), "{here}");
     }
 
+    /// Where the text that starts at `byte` is, from its line's left edge:
+    /// the room before it (leading space and widths, as `mono` measures).
+    fn x_of(l: &MdLayout, byte: usize) -> f32 {
+        let mut x = 0.0;
+        for s in &l.job.sections {
+            let t = &l.job.text[s.byte_range.clone()];
+            if s.byte_range.start == byte {
+                return x + s.leading_space;
+            }
+            x += s.leading_space + mono(t, &s.format.font_id);
+            if t.contains('\n') {
+                x = 0.0;
+            }
+        }
+        panic!("no section starts at {byte}");
+    }
+
+    fn bullet_depths(l: &MdLayout) -> Vec<usize> {
+        l.decos.iter().filter_map(|d| if let Deco::Bullet { depth, .. } = d { Some(*depth) } else { None }).collect()
+    }
+
+    fn numbers(l: &MdLayout) -> Vec<String> {
+        l.decos.iter().filter_map(|d| if let Deco::Number { label, .. } = d { Some(label.clone()) } else { None }).collect()
+    }
+
+    /// Lists nest as in CommonMark (and on GitHub): an item is inside the
+    /// one before when indented to its text, else the next item of a list.
+    /// One space is not enough under "- " (two are), nor two under "1. ".
+    #[test]
+    fn lists_nest_as_on_github() {
+        let l = lay("- a\n  - b\n    - c\n  - d\n- e\n", None, 10.0, 1000.0);
+        assert_eq!(bullet_depths(&l), [0, 1, 2, 1, 0]);
+        // One space: the next item of the same list, not one inside it.
+        let l = lay("- a\n - b\n- c\n", None, 10.0, 1000.0);
+        assert_eq!(bullet_depths(&l), [0, 0, 0]);
+        // Under "1. " three spaces; two make the next item.
+        let l = lay("1. x\n   1. y\n", None, 10.0, 1000.0);
+        assert_eq!(numbers(&l), ["1.", "i."]);
+        let l = lay("1. x\n  1. y\n", None, 10.0, 1000.0);
+        assert_eq!(numbers(&l), ["1.", "2."]);
+        // Kinds mixed: depth counts every list it is inside.
+        let l = lay("- a\n  1. b\n     - c\n", None, 10.0, 1000.0);
+        assert_eq!((bullet_depths(&l), numbers(&l)), (vec![0, 2], vec!["i.".to_string()]));
+        // A paragraph after the list is not in it; a blank line keeps it open.
+        let l = lay("- a\n\n- b\n\npara\n- c\n", None, 10.0, 1000.0);
+        assert_eq!(bullet_depths(&l), [0, 0, 0]);
+    }
+
+    /// Ordered items: 1. then i. then a. by depth, numbered as they come
+    /// from the first one's number ("1." for each still counts up).
+    #[test]
+    fn ordered_items_are_numbered_by_depth() {
+        let l = lay("1. a\n   1. b\n      1. c\n      1. d\n   1. e\n1. f\n", None, 10.0, 1000.0);
+        assert_eq!(numbers(&l), ["1.", "i.", "a.", "b.", "ii.", "2."]);
+        let l = lay("3. a\n7. b\n", None, 10.0, 1000.0);
+        assert_eq!(numbers(&l), ["3.", "4."], "counted from the first");
+        assert_eq!([roman(4), roman(9), roman(14), roman(1990)], ["iv", "ix", "xiv", "mcmxc"]);
+        assert_eq!([alpha(1), alpha(26), alpha(27), alpha(52), alpha(53)], ["a", "z", "aa", "az", "ba"]);
+        // The numbers as written are hidden (the labels are painted).
+        let l = lay("1. a\n   1. b\n", None, 10.0, 1000.0);
+        assert_eq!(visible(&l), "ab");
+    }
+
+    /// Bullets by depth (the painter cycles their shape); a task's box
+    /// stands for its bullet.
+    #[test]
+    fn bullets_know_their_depth() {
+        let l = lay("- a\n  - b\n    - c\n      - d\n", None, 10.0, 1000.0);
+        assert_eq!(bullet_depths(&l), [0, 1, 2, 3]);
+        let l = lay("- [ ] t\n- u\n", None, 10.0, 1000.0);
+        assert_eq!(bullet_depths(&l), [0], "no bullet beside a box");
+        assert!(l.decos.iter().any(|d| matches!(d, Deco::Check { checked: false, .. })));
+    }
+
+    /// An item's text is further in than its parent's, whatever spaces the
+    /// source has, and where it is does not move when the cursor comes to
+    /// its line (the raw markers then show in the same room).
+    #[test]
+    fn list_text_keeps_its_place() {
+        let src = "- a\n  - b\n    - c\n1. d\n   1. e\n\n   para of d\n";
+        let byte = |s: &str| src.find(s).unwrap();
+        let away = lay(src, None, 10.0, 1000.0);
+        let (a, b, c) = (x_of(&away, byte("a\n")), x_of(&away, byte("b\n")), x_of(&away, byte("c\n")));
+        assert!(a > 0.0 && b > a + 5.0 && c > b + 5.0, "{a} {b} {c}");
+        let (d, e) = (x_of(&away, byte("d\n")), x_of(&away, byte("e\n")));
+        assert!(e > d + 5.0);
+        assert!((x_of(&away, byte("para")) - d).abs() < 0.01, "a paragraph of d is under d's text");
+        for (ln, word) in [(0, "a\n"), (1, "b\n"), (2, "c\n"), (3, "d\n"), (4, "e\n")] {
+            let here = lay(src, Some(ln), 10.0, 1000.0);
+            assert!((x_of(&here, byte(word)) - x_of(&away, byte(word))).abs() < 0.01, "line {ln} moved when the cursor came to it");
+        }
+    }
+
     #[test]
     fn decorations_for_blocks() {
         let src = "- a\n- [x] done\n> q\n```\ncode\n```\n---\n# H\n";
         let l = layout(src, None, 14.0, false, 1000.0, &mut |_| None, &mut mono, &mut fit_mono);
-        assert!(l.decos.contains(&Deco::Bullet { at: 0 }));
+        assert!(l.decos.iter().any(|d| matches!(d, Deco::Bullet { at: 0, depth: 0, .. })));
         let check = l.decos.iter().find_map(|d| match d {
             Deco::Check { byte, checked, .. } => Some((*byte, *checked)),
             _ => None,

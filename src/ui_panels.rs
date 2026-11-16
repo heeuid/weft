@@ -4346,9 +4346,26 @@ fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size:
                     let r = egui::Rect::from_min_max(pos2(origin.x + 1.0, at(start).top()), pos2(origin.x + 4.0, at(end).bottom()));
                     back.push(egui::Shape::rect_filled(r, CornerRadius::same(1), theme::tint(theme::accent(), 160)));
                 }
-                md::Deco::Bullet { at: i } => {
+                md::Deco::Bullet { at: i, depth, col } => {
+                    // In the middle of its column; by depth a filled dot, a
+                    // square, a hollow dot, and again.
                     let r = at(i);
-                    painter.circle_filled(pos2(r.left() + size * 0.35, r.center().y), size * 0.14, theme::text_dim());
+                    let c = pos2(r.left() - col * 0.5, r.center().y);
+                    match depth % 3 {
+                        0 => {
+                            painter.circle_filled(c, size * 0.14, theme::text_dim());
+                        }
+                        1 => {
+                            painter.rect_filled(egui::Rect::from_center_size(c, vec2(size * 0.24, size * 0.24)), CornerRadius::ZERO, theme::text_dim());
+                        }
+                        _ => {
+                            painter.circle_stroke(c, size * 0.13, Stroke::new(1.2_f32, theme::text_dim()));
+                        }
+                    }
+                }
+                md::Deco::Number { at: i, ref label } => {
+                    let r = at(i);
+                    painter.text(pos2(r.left() - size * 0.3, r.center().y), egui::Align2::RIGHT_CENTER, label, FontId::proportional(size), theme::text_dim());
                 }
                 md::Deco::Check { at: i, byte, checked } => {
                     let r = at(i);
