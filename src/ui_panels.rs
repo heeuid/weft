@@ -741,8 +741,12 @@ impl App {
             self.dock_grip(ui);
             // The buttons on the right get their room first; the tabs share
             // what is left (they used to run on under the buttons).
+            // In a narrow window the buttons that do not fit beside one tab
+            // and its + are left out (all of them are in the ☰ menu): they
+            // used to be drawn under the tab's + and connect buttons.
+            let for_buttons = ui.available_width() - TAB_STRIP_LEAST;
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                self.tabbar_buttons(ui);
+                self.tabbar_buttons(ui, for_buttons);
                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| self.tab_strip(ui));
             });
         });
@@ -759,7 +763,8 @@ impl App {
         // onto the buttons on the right (the palette button lost its tooltip).
         ui.spacing_mut().item_spacing.x = 2.0;
         // Room for the tabs: all of it but the + and connect buttons and a margin.
-        let room = (ui.available_width() - 4.0 - 2.0 * (22.0 + 2.0) - 2.0 - 12.0).max(80.0);
+        // (Never more than there is: past it the tabs ran under the buttons.)
+        let room = (ui.available_width() - 4.0 - 2.0 * (22.0 + 2.0) - 2.0 - 12.0).max(0.0);
         let natural: Vec<f32> = self
             .tabs
             .iter()
@@ -967,12 +972,25 @@ impl App {
     }
 
     /// The buttons at the right of the tab bar, right to left.
-    fn tabbar_buttons(&mut self, ui: &mut Ui) {
+    /// Within `width`: the ☰ menu always, the rest as far as they fit, the
+    /// least needed (palette, splits) first to go.
+    fn tabbar_buttons(&mut self, ui: &mut Ui, width: f32) {
         ui.spacing_mut().item_spacing.x = 6.0;
         ui.add_space(6.0);
+        let start = ui.cursor().right();
         self.commands_menu(ui);
+        // Room left after what is drawn so far, for one more of `w`, with
+        // the separator that ends the row.
+        let fits = |ui: &Ui, w: f32| start - ui.cursor().right() + w + 6.0 + 8.0 <= width;
+        if !fits(ui, 14.0) {
+            return;
+        }
         if ui.add(egui::Button::new(RichText::new("?").size(13.0).color(theme::text_dim())).frame(false)).on_hover_text("help (F1)").clicked() {
             self.help = if self.help.is_some() { None } else { Some(HelpState { features: false, query: String::new() }) };
+        }
+        if !fits(ui, 24.0) {
+            ui.separator();
+            return;
         }
         let fr = ui.add(egui::Button::new(RichText::new("Aa").size(12.5).color(theme::text_dim())).frame(false)).on_hover_text("fonts");
         if fr.clicked() {
@@ -982,27 +1000,40 @@ impl App {
                 self.open_font_menu();
             }
         }
+        // Each icon button is 22 wide.
+        let icon_fits = |ui: &Ui| fits(ui, 22.0);
+        if !icon_fits(ui) {
+            ui.separator();
+            return;
+        }
         let ti = if theme::is_light() { Icon::Sun } else { Icon::Moon };
         let tr = icons::button(ui, ti, "theme");
         if tr.clicked() {
             self.theme_menu = if self.theme_menu.is_some() { None } else { Some(tr.rect) };
         }
+        if !icon_fits(ui) {
+            ui.separator();
+            return;
+        }
         let ec = if self.editor.visible { theme::accent() } else { theme::text_dim() };
         if icons::button_colored(ui, Icon::Editor, "editor (Ctrl+Shift+J)", ec).clicked() {
             self.editor.visible = !self.editor.visible;
+        }
+        if !icon_fits(ui) {
+            ui.separator();
+            return;
         }
         let sc = if self.settings.sidebar { theme::accent() } else { theme::text_dim() };
         if icons::button_colored(ui, Icon::Sidebar, "side panel (Ctrl+Shift+B)", sc).clicked() {
             self.settings.sidebar = !self.settings.sidebar;
         }
-        if icons::button(ui, Icon::SplitDown, "split down (Ctrl+Shift+E)").clicked() {
-            self.split(false);
-        }
-        if icons::button(ui, Icon::SplitRight, "split right (Ctrl+Shift+D)").clicked() {
-            self.split(true);
-        }
-        if icons::button(ui, Icon::Search, "command palette (Ctrl+Shift+P)").clicked() {
-            self.palette = Some(PaletteState::new());
+        for (icon, tip, cmd) in [(Icon::SplitDown, "split down (Ctrl+Shift+E)", Cmd::SplitDown), (Icon::SplitRight, "split right (Ctrl+Shift+D)", Cmd::SplitRight), (Icon::Search, "command palette (Ctrl+Shift+P)", Cmd::Palette)] {
+            if !icon_fits(ui) {
+                break;
+            }
+            if icons::button(ui, icon, tip).clicked() {
+                self.run_cmd(cmd);
+            }
         }
         ui.separator();
     }
@@ -4018,6 +4049,10 @@ fn fit_tabs(widths: &[f32], room: f32, more: f32, active: usize) -> (Vec<usize>,
     let hidden = (0..widths.len()).filter(|i| !shown.contains(i)).collect();
     (shown, hidden)
 }
+
+/// What the tab strip needs at least beside the tab bar's buttons: one tab
+/// (90) and the + and connect buttons after it, with their margins.
+const TAB_STRIP_LEAST: f32 = 90.0 + 4.0 + 2.0 * (22.0 + 2.0) + 2.0 + 12.0 + 16.0;
 
 /// Where a dragged tab lands: the index of the tab it goes before (len: the end).
 fn tab_drop_index(rects: &[egui::Rect], x: f32) -> usize {

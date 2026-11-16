@@ -2598,7 +2598,10 @@ fn files_follow_the_terminal_that_has_the_keyboard() {
         v.sort_by(|a, b| a.1.left().total_cmp(&b.1.left()));
         (v[0], v[1])
     };
-    // (The new pane starts where the old one is; say it went somewhere else.)
+    // (The new pane starts where the old one is; say it went somewhere
+    // else, once it has said where it starts: else, late on a busy PC,
+    // that came after and undid it.)
+    assert!(h.wait_for(30.0, |h| h.app.panes[&right.0].term.cwd.is_some()), "the new pane said where it is");
     h.app.panes.get_mut(&right.0).unwrap().term.cwd = Some("/tmp/right".into());
     h.click(left.1.center());
     assert!(root(&h).is_some_and(|r| !r.ends_with("/tmp/right")), "the left pane's folder: {:?}", root(&h));
@@ -2667,30 +2670,41 @@ def after(line):
 /// drawing on was out of view: the cursor flickered while scrolling.
 #[test]
 fn the_cursor_holds_still_while_scrolling_during_redraws() {
-    let body = r#"
+    // The program redraws until the test makes this file (on a busy PC
+    // a fixed number of redraws could be over before the test looked).
+    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let stop = std::env::temp_dir().join(format!("weft-spin-stop-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)));
+    let _ = std::fs::remove_file(&stop);
+    let body = format!(
+        r#"
+import os
 def put(s):
     sys.stdout.write(s)
     sys.stdout.flush()
 def after(line):
     put(''.join('line-%02d\r\n' % i for i in range(100)))
     put('working .\r\n> typing here\r\n  hint 1\r\n  hint 2\r\n  hint 3\r\n  hint 4' + E + '[4A' + E + '[14G')
-    time.sleep(0.5)
-    for i in range(70):
+    time.sleep(0.3)
+    i = 0
+    while not os.path.exists(r'{stop}') and i < 3000:
         # The spinner is one line above the input: hide, go there, draw,
         # come back, show.
         put(E + '[?25l' + E + '[1A' + E + '[9G' + '|/-\\'[i % 4])
         time.sleep(0.006)
         put(E + '[1B' + E + '[14G' + E + '[?25h')
         time.sleep(0.02)
+        i += 1
     put(E + '[1A' + E + '[11Gdone' + E + '[1B' + E + '[14G')
-"#;
-    let (mut h, _file) = script_harness(body, json!({}));
+"#,
+        stop = stop.display()
+    );
+    let (mut h, _file) = script_harness(&body, json!({}));
     let pane = h.app.active_pane_id().unwrap();
     h.click(egui::pos2(400.0, 300.0));
     h.type_text("go");
     h.key(Key::Enter, Modifiers::NONE);
     assert!(h.wait_for(20.0, |h| h.shows("hint 4") && h.shows("> typing here")), "the screen is drawn");
-    h.wait_for(1.0, |h| h.shows("working |") || h.shows("working /"));
+    assert!(h.wait_for(20.0, |h| ["|", "/", "-", "\\"].iter().any(|s| h.shows(&format!("working {s}")))), "the spinner turns");
     // Where the cursor is at the end, not scrolled: the input line.
     let input_y = |h: &Harness| h.at("> typing here").y;
     let hold = crate::ui_term::CURSOR_HOLD;
@@ -2699,6 +2713,10 @@ def after(line):
     let end = std::time::Instant::now() + std::time::Duration::from_secs(20);
     let mut k = 0usize;
     while std::time::Instant::now() < end && !h.shows("done") {
+        // Enough seen: let the program stop.
+        if frames == 300 {
+            std::fs::write(&stop, "").unwrap();
+        }
         // The wheel, back and forth over four lines: a new place every
         // third frame.
         k += 1;
@@ -2720,7 +2738,8 @@ def after(line):
         }
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
-    assert!(h.shows("done") && frames > 50, "the redraws were seen ({frames} frames)");
+    let _ = std::fs::remove_file(&stop);
+    assert!(h.shows("done") && frames >= 300, "the redraws were seen ({frames} frames)");
     assert!(hidden > 0, "some frames came while the program had the cursor hidden");
     assert!(wrong.is_empty(), "of {frames} frames, {} had no cursor or one off the input line: {:?} (scroll, cursor at, input line at)", wrong.len(), &wrong[..wrong.len().min(8)]);
 }
@@ -2765,4 +2784,29 @@ def after(line):
     // Times go up.
     let times: Vec<f64> = lines.iter().map(|l| l[1..].split(' ').next().unwrap().parse().unwrap()).collect();
     assert!(times.windows(2).all(|w| w[0] <= w[1]));
+}
+
+/// In a narrow window the tab bar's parts do not cover each other: the
+/// tab, its +, the buttons on the right each have their own room.
+#[test]
+fn the_tab_bar_fits_a_narrow_window() {
+    let mut h = Harness::new(json!({"profiles": [crate::testkit::idle_profile("local")], "session": [{"t": "Pane", "host": "local", "cwd": null}]}));
+    for width in [330.0, 420.0, 520.0, 700.0] {
+        h.size = egui::vec2(width, 500.0);
+        h.frames(4);
+        let tab = h.texts.iter().find(|(t, r)| t.starts_with("local") && r.top() < 40.0).map(|(_, r)| *r);
+        let plus = h.icons.iter().find(|(t, _)| t.starts_with("new tab on the same host")).map(|(_, r)| *r);
+        let right: Vec<(String, egui::Rect)> = h.icons.iter().filter(|(_, r)| r.top() < 40.0).cloned().collect();
+        assert!(plus.is_some(), "at {width}: the tab's + is there");
+        let mut boxes: Vec<(String, egui::Rect)> = right;
+        if let Some(t) = tab {
+            boxes.push(("tab text".into(), t));
+        }
+        for (i, (a, ra)) in boxes.iter().enumerate() {
+            for (b, rb) in boxes.iter().skip(i + 1) {
+                assert!(!ra.shrink(1.0).intersects(rb.shrink(1.0)), "at {width}: \"{a}\" {ra:?} and \"{b}\" {rb:?} overlap");
+            }
+            assert!(ra.right() <= width + 0.5, "at {width}: \"{a}\" {ra:?} runs off the window");
+        }
+    }
 }

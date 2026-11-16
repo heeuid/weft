@@ -5,6 +5,16 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.4.1
+
+Fixed
+- **The tab bar's buttons covered each other in a narrow window**: the
+  tab's + and connect buttons were drawn under the command palette and
+  split buttons (at 330 px wide). The tabs never take more than is left
+  now, and the buttons on the right that do not fit beside one tab are
+  left out, the least needed first (palette, splits, side panel, editor,
+  theme, Aa, ?); every one of them is still in the ☰ menu.
+
 ## 0.4.0
 
 Added
