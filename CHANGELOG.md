@@ -5,6 +5,21 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.8.0
+
+Added
+- **Split panes resize from the keyboard**: Alt+Shift+←/→/↑/↓ move the
+  border of the active pane's nearest split that way, 5% at a time, as
+  far as a drag goes (10% to 90%). Like moving between panes (Alt+arrows)
+  they are weft's only while the tab is split; otherwise they reach the
+  program. The size is kept with the session. Four commands ("Resize: move
+  the pane border …"), so the keys can be changed in Keyboard shortcuts.
+
+Changed
+- **Next / previous tab is Ctrl+Tab / Ctrl+Shift+Tab** (and Alt+number).
+  Alt+Shift+←/→ did the same and now resize panes. Keys you set yourself
+  for these commands are kept.
+
 ## 0.7.0
 
 Added

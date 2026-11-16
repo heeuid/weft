@@ -9,8 +9,10 @@ use serde_json::json;
 const ALT: Modifiers = Modifiers { alt: true, ctrl: false, shift: false, mac_cmd: false, command: false };
 const ALT_SHIFT: Modifiers = Modifiers { alt: true, ctrl: false, shift: true, mac_cmd: false, command: false };
 const CTRL_SHIFT: Modifiers = Modifiers { alt: false, ctrl: true, shift: true, mac_cmd: false, command: true };
+const CTRL: Modifiers = Modifiers { alt: false, ctrl: true, shift: false, mac_cmd: false, command: true };
 
-/// Alt+1…8 go to that tab, Alt+9 to the last; Alt+Shift+←/→ step, wrapping.
+/// Alt+1…8 go to that tab, Alt+9 to the last; Ctrl+Tab and Ctrl+Shift+Tab
+/// step, wrapping.
 #[test]
 fn tab_keys() {
     let mut h = Harness::new(json!({}));
@@ -23,12 +25,12 @@ fn tab_keys() {
     assert_eq!(h.app.active_tab, 2, "Alt+9: the last");
     h.key(Key::Num2, ALT);
     assert_eq!(h.app.active_tab, 1, "Alt+2");
-    h.key(Key::ArrowLeft, ALT_SHIFT);
-    assert_eq!(h.app.active_tab, 0, "Alt+Shift+Left");
-    h.key(Key::ArrowLeft, ALT_SHIFT);
+    h.key(Key::Tab, CTRL_SHIFT);
+    assert_eq!(h.app.active_tab, 0, "Ctrl+Shift+Tab");
+    h.key(Key::Tab, CTRL_SHIFT);
     assert_eq!(h.app.active_tab, 2, "wraps to the last");
-    h.key(Key::ArrowRight, ALT_SHIFT);
-    assert_eq!(h.app.active_tab, 0, "wraps to the first");
+    h.key(Key::Tab, CTRL);
+    assert_eq!(h.app.active_tab, 0, "Ctrl+Tab wraps to the first");
 }
 
 /// Ctrl+Shift+X arrives as a Cut event (no key event): it still opens copy mode.
@@ -2587,8 +2589,8 @@ fn files_follow_the_terminal_that_has_the_keyboard() {
     // The keys.
     h.key(Key::Num3, ALT);
     assert_eq!(root(&h).as_deref(), Some("cc:/var/cc"), "Alt+3");
-    h.key(Key::ArrowLeft, ALT_SHIFT);
-    assert_eq!(root(&h).as_deref(), Some("bb:/srv/bb"), "Alt+Shift+Left");
+    h.key(Key::Tab, CTRL_SHIFT);
+    assert_eq!(root(&h).as_deref(), Some("bb:/srv/bb"), "Ctrl+Shift+Tab");
     // The tab closed: the one that has the keyboard now.
     h.command("close_pane");
     h.frames(3);
@@ -3029,4 +3031,65 @@ fn searches_open_as_they_were_last_set() {
     h.frames(2);
     h.click_text("Find");
     assert_eq!(h.app.editor.find.as_ref().map(|b| (b.mode, b.case)), Some((MatchMode::Glob, true)), "the editor's find bar, after a restart");
+}
+
+/// Split panes are resized from the keyboard: Alt+Shift+arrow moves the
+/// border of the active pane's nearest split that way by 5%, as far as a
+/// drag can (10% to 90%); the keys can be changed; with no split the keys
+/// stay the shell's.
+#[test]
+fn split_panes_resize_from_the_keyboard() {
+    let mut h = Harness::new(json!({}));
+    let pane = h.app.active_pane_id().unwrap();
+    // No split: the keys go to the program, and nothing is said.
+    h.key(Key::ArrowLeft, ALT_SHIFT);
+    assert!(h.app.toasts.is_empty(), "with one pane the key is the shell's");
+    // Left | (top / bottom): the right side split one above the other.
+    h.command("split_right");
+    h.command("split_down");
+    h.frames(3);
+    let width = |h: &Harness, id: usize| h.app.pane_rects.iter().find(|(p, _)| *p == id).unwrap().1.width();
+    let height = |h: &Harness, id: usize| h.app.pane_rects.iter().find(|(p, _)| *p == id).unwrap().1.height();
+    let bottom = h.app.active_pane_id().unwrap();
+    let ratios = |h: &Harness| match &h.app.tabs[0].root {
+        crate::app::Node::Split { ratio, b, .. } => match &**b {
+            crate::app::Node::Split { ratio: inner, .. } => (*ratio, *inner),
+            _ => panic!("the right side is split"),
+        },
+        _ => panic!("split"),
+    };
+    assert_eq!(ratios(&h), (0.5, 0.5));
+    let (w0, h0) = (width(&h, bottom), height(&h, bottom));
+    // Left: the border between left and right moves left; this pane widens.
+    h.key(Key::ArrowLeft, ALT_SHIFT);
+    h.frames(2);
+    assert!((ratios(&h).0 - 0.45).abs() < 1e-4, "{:?}", ratios(&h));
+    assert!(width(&h, bottom) > w0 + 10.0, "the pane on the right is wider");
+    // Up: the border between top and bottom moves up; this pane grows.
+    h.key(Key::ArrowUp, ALT_SHIFT);
+    h.frames(2);
+    assert!((ratios(&h).1 - 0.45).abs() < 1e-4, "{:?}", ratios(&h));
+    assert!(height(&h, bottom) > h0 + 10.0, "the bottom pane is taller");
+    // Right and down take them back.
+    h.key(Key::ArrowRight, ALT_SHIFT);
+    h.key(Key::ArrowDown, ALT_SHIFT);
+    assert!((ratios(&h).0 - 0.5).abs() < 1e-4 && (ratios(&h).1 - 0.5).abs() < 1e-4, "{:?}", ratios(&h));
+    // No further than a drag goes.
+    for _ in 0..20 {
+        h.key(Key::ArrowLeft, ALT_SHIFT);
+    }
+    assert!((ratios(&h).0 - 0.1).abs() < 1e-4, "stops at 10%: {:?}", ratios(&h));
+    // The left pane has no split above or below it: said so, nothing moved.
+    h.app.toasts.clear();
+    h.app.focus_pane(pane);
+    h.key(Key::ArrowUp, ALT_SHIFT);
+    assert!(h.app.toasts.iter().any(|t| t.text.contains("no pane above or below")), "said: {:?}", h.app.toasts.iter().map(|t| &t.text).collect::<Vec<_>>());
+    // Other keys, set in Keyboard shortcuts (settings "keys").
+    h.app.settings.keys.insert("resize_right".into(), vec!["Ctrl+Alt+L".into()]);
+    h.app.rebuild_keys();
+    h.key(Key::L, Modifiers { alt: true, ctrl: true, shift: false, mac_cmd: false, command: true });
+    assert!((ratios(&h).0 - 0.15).abs() < 1e-4, "the new key moves it: {:?}", ratios(&h));
+    // Kept with the session.
+    h.restart();
+    assert!((ratios(&h).0 - 0.15).abs() < 1e-3, "after a restart: {:?}", ratios(&h));
 }

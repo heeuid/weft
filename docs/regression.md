@@ -155,7 +155,8 @@ What the numbers don't show:
 | What | Test |
 |---|---|
 | Default keys valid and distinct | `ui_panels::tests::default_keys_are_valid_and_distinct`, `keys::tests::*` |
-| Alt+1…9, Alt+Shift+←/→ | `regress::tab_keys` |
+| Alt+1…9, Ctrl+Tab / Ctrl+Shift+Tab | `regress::tab_keys` |
+| Split panes resize from the keyboard: Alt+Shift+arrow moves the nearest border that way by 5%, stops at 10%/90%, says when there is none, takes other keys, kept with the session; with no split the keys are the shell's | `regress::split_panes_resize_from_the_keyboard` |
 | Ctrl+Shift+Z is redo in a text field | `ui_panels::tests::redo_key_stays_with_a_text_field` |
 | Tab drag reorder; narrow tab rows; which tabs a tab's menu closes | `ui_panels::tests::dragged_tab_lands_between_tabs`, `narrow_tab_rows_keep_the_open_tab`, `app::close_tests::*` |
 | Palette reopens full height, at the top | `regress::palette_reopens_full_height_at_the_top` |
@@ -190,7 +191,7 @@ What the numbers don't show:
 | Panels move anywhere; junctions; hidden keep place | `app::layout_tests::*`, `app::tests::layout_split_and_remove` |
 | Split side panels / editors; old settings load | `app::layout_tests::a_second_editor_beside_the_first`, `settings_from_before_split_panels_still_load`, `ui_term::tests::dragging_a_pane_header_moves_the_pane` (second editor by its grip) |
 | Side panels following the terminal | `ui_panels::tests::side_panels_that_follow_the_terminal_follow_it` |
-| Files follows the terminal that has the keyboard: a click on a tab, Alt+number, Alt+Shift+arrow, the tab left after one is closed, a click in a pane of a split; switched on it goes there at once, switched off it stays (a tab click left it in the folder of the tab before) | `regress::files_follow_the_terminal_that_has_the_keyboard` |
+| Files follows the terminal that has the keyboard: a click on a tab, Alt+number, Ctrl+Shift+Tab, the tab left after one is closed, a click in a pane of a split; switched on it goes there at once, switched off it stays (a tab click left it in the folder of the tab before) | `regress::files_follow_the_terminal_that_has_the_keyboard` |
 | Side panels and editors split, without overlapping | `regress::panels_split` |
 
 ## Files, search, transfer

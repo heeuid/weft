@@ -762,6 +762,27 @@ impl Node {
         }
     }
 
+    /// Move the border of the innermost split of this kind (`side_by_side`,
+    /// or one above the other) that holds pane `target` by `delta` of that
+    /// split, within the limits a drag has (0.1 to 0.9). (Whether the pane
+    /// is in this tree, whether a border was moved.)
+    pub fn nudge(&mut self, target: usize, side_by_side: bool, delta: f32) -> (bool, bool) {
+        match self {
+            Node::Leaf(id) => (*id == target, false),
+            Node::Split { vertical, ratio, a, b } => {
+                let inner = match a.nudge(target, side_by_side, delta) {
+                    (true, done) => (true, done),
+                    _ => b.nudge(target, side_by_side, delta),
+                };
+                if inner == (true, false) && *vertical == side_by_side {
+                    *ratio = (*ratio + delta).clamp(0.1, 0.9);
+                    return (true, true);
+                }
+                inner
+            }
+        }
+    }
+
     pub fn ratio_at(&mut self, path: &[bool]) -> Option<&mut f32> {
         match self {
             Node::Leaf(_) => None,
@@ -2174,6 +2195,23 @@ impl App {
                 self.on_active_changed();
                 return;
             }
+        }
+    }
+
+    /// Keyboard resizing: the border of the active pane's nearest split
+    /// that way (left/right: panes side by side; up/down: one above the
+    /// other) moves `delta` of that split, the way the arrow points. Said
+    /// when there is no such split.
+    pub fn resize_pane(&mut self, side_by_side: bool, delta: f32) {
+        let Some(id) = self.active_pane_id() else { return };
+        let Some(tab) = self.tabs.get_mut(self.active_tab) else { return };
+        // Zoomed, one pane fills the tab: nothing to resize.
+        if tab.zoomed {
+            return;
+        }
+        if !tab.root.nudge(id, side_by_side, delta).1 {
+            let way = if side_by_side { "beside it" } else { "above or below it" };
+            self.toast(format!("no pane {way} to resize against"), ToastKind::Info);
         }
     }
 

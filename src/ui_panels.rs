@@ -87,6 +87,9 @@ pub(crate) enum Cmd {
     Serial,
     /// X11 forwarding on/off for the active tab's ssh host (new tabs).
     X11,
+    /// Move the active pane's border: (panes side by side, toward the
+    /// right or down).
+    Resize(bool, bool),
     FocusLeft,
     FocusRight,
     FocusUp,
@@ -106,8 +109,8 @@ const COMMANDS: &[(Cmd, &str, &str, &[&str])] = &[
     (Cmd::ClosePane, "close_pane", "Close pane", &["Ctrl+Shift+W"]),
     (Cmd::Zoom, "zoom", "Zoom / restore pane", &["Ctrl+Shift+Z"]),
     (Cmd::FocusMode, "focus_mode", "Focus mode: terminals only (again to leave)", &["Ctrl+Shift+Enter"]),
-    (Cmd::NextTab, "next_tab", "Next tab", &["Ctrl+Tab", "Alt+Shift+Right"]),
-    (Cmd::PrevTab, "prev_tab", "Previous tab", &["Ctrl+Shift+Tab", "Alt+Shift+Left"]),
+    (Cmd::NextTab, "next_tab", "Next tab", &["Ctrl+Tab"]),
+    (Cmd::PrevTab, "prev_tab", "Previous tab", &["Ctrl+Shift+Tab"]),
     (Cmd::GoTab(0), "tab_1", "Go to tab 1", &["Alt+1"]),
     (Cmd::GoTab(1), "tab_2", "Go to tab 2", &["Alt+2"]),
     (Cmd::GoTab(2), "tab_3", "Go to tab 3", &["Alt+3"]),
@@ -117,6 +120,10 @@ const COMMANDS: &[(Cmd, &str, &str, &[&str])] = &[
     (Cmd::GoTab(6), "tab_7", "Go to tab 7", &["Alt+7"]),
     (Cmd::GoTab(7), "tab_8", "Go to tab 8", &["Alt+8"]),
     (Cmd::GoTab(usize::MAX), "tab_last", "Go to the last tab", &["Alt+9"]),
+    (Cmd::Resize(true, false), "resize_left", "Resize: move the pane border left (split)", &["Alt+Shift+Left"]),
+    (Cmd::Resize(true, true), "resize_right", "Resize: move the pane border right (split)", &["Alt+Shift+Right"]),
+    (Cmd::Resize(false, false), "resize_up", "Resize: move the pane border up (split)", &["Alt+Shift+Up"]),
+    (Cmd::Resize(false, true), "resize_down", "Resize: move the pane border down (split)", &["Alt+Shift+Down"]),
     (Cmd::FocusLeft, "focus_left", "Focus the pane on the left (split)", &["Alt+Left"]),
     (Cmd::FocusRight, "focus_right", "Focus the pane on the right (split)", &["Alt+Right"]),
     (Cmd::FocusUp, "focus_up", "Focus the pane above (split)", &["Alt+Up"]),
@@ -508,6 +515,7 @@ impl App {
             Cmd::FocusRight => self.focus_dir(1.0, 0.0),
             Cmd::FocusUp => self.focus_dir(0.0, -1.0),
             Cmd::FocusDown => self.focus_dir(0.0, 1.0),
+            Cmd::Resize(side_by_side, forward) => self.resize_pane(side_by_side, if forward { 0.05 } else { -0.05 }),
             Cmd::Help | Cmd::Features => self.help = Some(HelpState { features: c == Cmd::Features, query: String::new() }),
             Cmd::Memos => {
                 let dir = self.memo_dir();
@@ -589,7 +597,7 @@ impl App {
         // Moving between split panes only takes its keys while there is a
         // split; otherwise Alt+arrows stay the shell's.
         let multi = self.pane_rects.len() > 1;
-        let usable = |c: Cmd| multi || !matches!(c, Cmd::FocusLeft | Cmd::FocusRight | Cmd::FocusUp | Cmd::FocusDown);
+        let usable = |c: Cmd| multi || !matches!(c, Cmd::FocusLeft | Cmd::FocusRight | Cmd::FocusUp | Cmd::FocusDown | Cmd::Resize(..));
         // A bound key runs its command and never reaches the terminal.
         let keymap = &self.keymap;
         // In a text field (the editor, a search box) its own keys win: Ctrl+
@@ -4135,7 +4143,8 @@ fn group(c: Cmd) -> &'static str {
         | Cmd::FocusLeft
         | Cmd::FocusRight
         | Cmd::FocusUp
-        | Cmd::FocusDown => GROUPS[0],
+        | Cmd::FocusDown
+        | Cmd::Resize(..) => GROUPS[0],
         Cmd::Composer
         | Cmd::Find
         | Cmd::CopyMode
