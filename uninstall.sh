@@ -65,6 +65,23 @@ fi
 if [ -f "$dest/.installed" ]; then
     while IFS= read -r f; do
         [ -n "$f" ] || continue
+        case "$f" in
+            rc:*)
+                # The PATH line install.sh added to a shell's file: that
+                # line only (a file of weft's own goes whole).
+                rc=${f#rc:}
+                mark="# added by weft install.sh"
+                if [ "$(basename "$rc")" = weft.fish ]; then
+                    rm -f "$rc" && echo "  removed $rc"
+                elif [ -f "$rc" ] && grep -qF "$mark" "$rc"; then
+                    grep -vF "$mark" "$rc" >"$rc.weft.$$" || true
+                    cat "$rc.weft.$$" >"$rc"
+                    rm -f "$rc.weft.$$"
+                    echo "  took weft's PATH line out of $rc"
+                fi
+                continue
+                ;;
+        esac
         if [ -L "$f" ]; then
             case "$(readlink "$f")" in
                 "$dest"/*) rm -f "$f" && echo "  removed $f" ;;

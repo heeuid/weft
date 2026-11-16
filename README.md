@@ -49,13 +49,14 @@ TUI 그리드(날실) 사이에 GUI(씨실)를 엮어 넣은 터미널. Rust (`e
 |---|---|
 | 설치 (Linux `~/.local/opt/weft`, macOS `~/Applications/weft`) | `./install.sh` |
 | 다른 위치에 | `./install.sh /some/dir` |
-| 바탕화면 바로가기도 / PATH에도 (`~/.local/bin/weft`) | `./install.sh desktop path` |
+| 바탕화면 바로가기도 / 터미널에서 `weft`로도 | `./install.sh desktop path` |
 | 제거 (데이터는 물어봄) | 설치 폴더의 `./uninstall.sh` (또는 저장소의 `./uninstall.sh`) |
 | 데이터까지 / 데이터는 남기고 | `./uninstall.sh purge` / `./uninstall.sh keep` |
 
 - 설치: `cargo`가 있으면 먼저 빌드합니다. 다시 실행하면 업데이트입니다. 켜져 있는 weft는 그대로 돌고, 다음에 켤 때(또는 weft의 restart 버튼으로) 새 버전이 뜹니다.
 - Linux: 설치 폴더에 실행 파일, 아이콘, `data/`. 앱 메뉴에 weft가 생깁니다(`~/.local/share/applications/weft.desktop`).
 - macOS: 설치 폴더에 `weft.app`과 `data/`가 나란히 있습니다. Launchpad·Spotlight·Dock에서 쓰는 보통 앱이고, 데이터는 앱 안이 아니라 옆의 `data/`에 둡니다(앱을 바꿔도 데이터는 그대로). 그 Mac에서 빌드한 것이라 처음 열 때 보안 경고가 뜨지 않습니다. 앱 아이콘은 macOS 내장 도구(`sips`, `iconutil`)로 만듭니다.
+- `path`: `~/.local/bin/weft` 링크를 만들고, 그 폴더가 PATH에 없으면 쓰는 셸의 설정 파일에 한 줄을 넣습니다(zsh `~/.zshrc`, bash는 Linux `~/.bashrc`·macOS `~/.bash_profile`, fish `~/.config/fish/conf.d/weft.fish`, 그 밖 `~/.profile`). 어느 파일에 무엇을 넣었는지 보여 주고, 새로 연 터미널부터 적용됩니다. 제거할 때 그 줄만 뺍니다.
 - 데이터: `./weft.sh`로 쓰던 `target/release/data`가 있으면 처음 설치할 때 복사해 옵니다.
 - 제거: 설치가 만든 것(앱 메뉴 항목, 바탕화면 바로가기, PATH 링크)은 설치 폴더의 `.installed`에 적어 두었다가 그것만 지웁니다. 켜져 있는 weft가 있으면 닫을 때까지 기다립니다.
 - macOS에서 `weft.app`을 먼저 휴지통에 버렸어도(Linux에서 실행 파일을 먼저 지웠어도) 설치 폴더의 `uninstall.sh`로 나머지(바로가기, 링크, 데이터)를 정리할 수 있습니다.

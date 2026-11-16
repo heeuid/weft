@@ -5,6 +5,18 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.6.2
+
+Changed
+- **`./install.sh path` puts weft on the PATH itself**, as install.bat
+  does on Windows: when `~/.local/bin` is not on it yet, one marked line
+  goes into your shell's file (`~/.zshrc`; for bash `~/.bashrc`, on a
+  Mac `~/.bash_profile`; for fish a file of its own; else `~/.profile`),
+  and it says which file got which line. uninstall.sh takes that line
+  out and leaves the rest of the file as it was. (It only said to add
+  the folder somewhere.)
+- Without `path`, install.sh says how to get the `weft` command.
+
 ## 0.6.1
 
 Fixed

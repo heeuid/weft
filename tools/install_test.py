@@ -23,7 +23,8 @@ def check(cond, what):
 
 
 def run(repo, home, osname, *args, input_text=''):
-    env = dict(os.environ, HOME=home, WEFT_INSTALL_OS=osname, WEFT_NO_BUILD='1')
+    # The shell people mostly have: bash on Linux, zsh on a Mac.
+    env = dict(os.environ, HOME=home, WEFT_INSTALL_OS=osname, WEFT_NO_BUILD='1', SHELL='/bin/zsh' if osname == 'macos' else '/bin/bash')
     env.pop('XDG_DATA_HOME', None)
     r = subprocess.run(['sh', *args], cwd=repo, env=env, capture_output=True, text=True, input=input_text)
     if r.returncode:
@@ -55,9 +56,19 @@ def one(osname):
         version = [l.split('"')[1] for l in read(os.path.join(repo, 'Cargo.toml')).splitlines() if l.startswith('version = ')][0]
 
         dest = os.path.join(home, 'Applications', 'weft') if osname == 'macos' else os.path.join(home, '.local', 'opt', 'weft')
+        # The shell's own file, with what its owner put there.
+        rc = os.path.join(home, '.zshrc' if osname == 'macos' else '.bashrc')
+        mine = 'alias ll="ls -l"\nexport EDITOR=vim\n'
+        with open(rc, 'w', newline='\n') as f:
+            f.write(mine)
         r = run(repo, home, osname, 'install.sh', 'desktop', 'path')
         check(r.returncode == 0, 'install.sh desktop path')
         check(f'weft {version} is installed in' in r.stdout, 'it says what it installed, and where')
+        added = read(rc)
+        check(added.startswith(mine) and 'export PATH="$HOME/.local/bin:$PATH" # added by weft install.sh' in added, f'the PATH line is added to {os.path.basename(rc)}, after what was there')
+        check(os.path.basename(rc) in r.stdout and 'export PATH=' in r.stdout, 'it says which file got which line')
+        run(repo, home, osname, 'install.sh', 'path')
+        check(read(rc).count('# added by weft install.sh') == 1, 'installing again adds it no second time')
         made = read(os.path.join(dest, '.installed')).split('\n')
         if osname == 'macos':
             app = os.path.join(dest, 'weft.app', 'Contents')
@@ -92,6 +103,7 @@ def one(osname):
         left = sorted(os.listdir(dest)) if os.path.isdir(dest) else []
         check(left == ['data'], f'only the data is left ({left})')
         check(not os.path.exists(os.path.join(home, '.local', 'share', 'applications', 'weft.desktop')), 'the menu entry is gone')
+        check(read(rc).rstrip('\n') == mine.rstrip('\n'), f'the PATH line is out of {os.path.basename(rc)}, the rest as it was')
         desk = os.path.join(home, 'Desktop', 'weft.app' if osname == 'macos' else 'weft.desktop')
         if osname == 'macos' and os.path.isdir(desk) and not os.path.islink(desk):
             print('  (skip  the desktop link: this sh copies instead of linking, so it is not recognised as ours)')
@@ -118,7 +130,9 @@ def one(osname):
             check(not os.path.exists(os.path.join(home, 'Desktop', 'weft.desktop')), 'and the desktop launcher')
 
         # Again, then away with the data too.
-        check(run(repo, home, osname, 'install.sh').returncode == 0, 'install.sh after that')
+        r = run(repo, home, osname, 'install.sh')
+        check(r.returncode == 0, 'install.sh after that')
+        check('./install.sh path' in r.stdout, 'without path: how to get the `weft` command')
         check(read(os.path.join(dest, 'data', 'settings.json')) == '{"from": "weft"}', 'the kept data is picked up')
         r = run(repo, home, osname, 'uninstall.sh', 'purge')
         check(r.returncode == 0, 'uninstall.sh purge (from the source folder)')

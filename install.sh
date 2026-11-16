@@ -172,8 +172,33 @@ if [ -n "$want_path" ]; then
     note "$HOME/.local/bin/weft"
     case ":$PATH:" in
         *":$HOME/.local/bin:"*) echo "  on your PATH: weft" ;;
-        *) echo "  linked as ~/.local/bin/weft; that folder is not on your PATH yet (add it in your shell's rc file)" ;;
+        *)
+            # ~/.local/bin put on the PATH by your shell's own file, as
+            # install.bat sets the PATH on Windows; uninstall.sh takes the
+            # line out again (it is marked).
+            mark="# added by weft install.sh"
+            case "$(basename "${SHELL:-sh}")" in
+                zsh) rc="$HOME/.zshrc" ;;
+                bash) if [ "$os" = macos ]; then rc="$HOME/.bash_profile"; else rc="$HOME/.bashrc"; fi ;;
+                fish) rc="$HOME/.config/fish/conf.d/weft.fish" ;;
+                *) rc="$HOME/.profile" ;;
+            esac
+            if [ "$(basename "$rc")" = weft.fish ]; then
+                line="fish_add_path \$HOME/.local/bin $mark"
+            else
+                line="export PATH=\"\$HOME/.local/bin:\$PATH\" $mark"
+            fi
+            mkdir -p "$(dirname "$rc")"
+            if ! grep -qF "$mark" "$rc" 2>/dev/null; then
+                printf '\n%s\n' "$line" >>"$rc"
+            fi
+            note "rc:$rc"
+            echo "  on your PATH from new terminals: a line added to $rc:"
+            echo "      $line"
+            ;;
     esac
+else
+    echo "  (to run it as \`weft\` in a terminal too: ./install.sh path)"
 fi
 
 # Earlier installs' links are kept on the list until uninstall takes them.
