@@ -2951,6 +2951,11 @@ fn names_from_a_mac_show_as_syllables() {
     std::fs::write(root.join(nfd("메모 파일.md")), "# 안녕\n").unwrap();
     let dir = root.display().to_string().replace('\\', "/");
     assert!(!dir.contains("응용"), "the folder's name is decomposed, as on a Mac");
+    // The folder as a row of the tree above it (as in a home folder).
+    let home = h.dir.display().to_string().replace('\\', "/");
+    h.app.set_root("local", &home);
+    assert!(h.wait_for(20.0, |h| h.shows("응용프로그램")), "the folder's row as syllables: {:?}", h.texts.iter().map(|t| &t.0).filter(|t| t.chars().any(|c| ('\u{1100}'..='\u{11ff}').contains(&c) || ('가'..='힣').contains(&c))).collect::<Vec<_>>());
+    assert!(!h.texts.iter().any(|(t, _)| t.contains('\u{110b}')), "no letter of the row on its own");
     h.app.set_root("local", &dir);
     assert!(h.wait_for(20.0, |h| h.shows("파일.md")), "the file is listed as syllables: {:?}", h.texts.iter().map(|t| &t.0).filter(|t| t.contains(".md")).collect::<Vec<_>>());
     assert!(h.has("응용프로그램"), "and its folder in the path above");
