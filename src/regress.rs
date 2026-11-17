@@ -3148,7 +3148,9 @@ fn a_host_without_python_says_so_where_the_gui_needs_it() {
     let prof = json!({"name": "nopy", "kind": "custom", "pty": [bash, "-c"], "agent": [bash, "-c", "export PATH=/usr/bin:/bin; eval \"$1\"", "x"]});
     let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}, prof], "sidebar": true, "follow_cwd": false}));
     h.app.new_tab("nopy", None);
-    assert!(h.wait_for(30.0, |h| matches!(h.app.conns.get("nopy").map(|c| &c.status), Some(crate::host::ConnStatus::Failed(_)))), "the agent ends");
+    // (Each Python of the list is tried through Git Bash: slow on a busy
+    // machine, 30 s were not always enough.)
+    assert!(h.wait_for(120.0, |h| matches!(h.app.conns.get("nopy").map(|c| &c.status), Some(crate::host::ConnStatus::Failed(_)))), "the agent ends");
     h.frames(3);
     // The status bar: why, and the list's button.
     assert!(h.shows("agent offline: weft: no Python 3.6 or newer found on this host"), "the status bar says why");
@@ -3167,8 +3169,102 @@ fn a_host_without_python_says_so_where_the_gui_needs_it() {
     assert!(h.wait_for(30.0, |h| h.shows("hello-42")), "the terminal works");
     // The button opens the list. (The agent is tried once more after the
     // terminal's first prompt: it says the same again.)
-    assert!(h.wait_for(30.0, |h| h.shows("python…")), "the button is back");
+    assert!(h.wait_for(120.0, |h| h.shows("python…")), "the button is back");
     h.click(h.at("python…"));
     h.frames(2);
     assert!(h.app.python_window.is_some(), "python… opens the list");
+}
+
+/// Connect keeps a new profile only once it has connected (its terminal
+/// showed a prompt, or its agent came up): a try that never connected is
+/// not a profile to be found again later (one made for -p 22008 was, and
+/// the same address typed for port 22 went there). Until then it is used,
+/// but neither it nor its tab is written to settings.
+#[test]
+fn connect_keeps_a_profile_once_it_connects() {
+    let mut h = Harness::new(json!({}));
+    let on_disk = |h: &Harness| std::fs::read_to_string(h.app.data.path("settings.json")).unwrap_or_default();
+    let connect = |h: &mut Harness, target: &str| {
+        h.app.connect = Some(crate::app::ConnectState { target: target.into(), split: false, password: String::new() });
+        h.frames(2);
+        // The button (the dialog's title says Connect too, above it).
+        let button = h.texts.iter().filter(|(t, _)| t == "Connect").max_by(|a, b| a.1.center().y.total_cmp(&b.1.center().y)).map(|(_, r)| r.center()).unwrap();
+        h.click(button);
+        h.frames(3);
+    };
+    connect(&mut h, "u@h.invalid -p 2222");
+    let name = "u@h.invalid:2222";
+    let pane = h.app.panes.iter().find(|(_, p)| p.host == name).map(|(id, _)| *id).expect("its tab opened");
+    assert_eq!(h.app.profile(name).pty_argv(None, false).iter().filter(|a| *a == "2222").count(), 1, "it is used: its port");
+    assert!(!h.app.settings.profiles.iter().any(|p| p.name == name), "not kept yet");
+    h.app.save_settings();
+    assert!(!on_disk(&h).contains(name), "neither it nor its tab is in settings.json");
+    // It connected: kept, and saved.
+    h.app.panes.get_mut(&pane).unwrap().seen.1 = true;
+    h.frames(2);
+    assert!(h.app.settings.profiles.iter().any(|p| p.name == name), "kept once connected");
+    assert!(h.app.trial_profiles.is_empty());
+    assert!(on_disk(&h).contains(&format!("\"name\": \"{name}\"")), "in settings.json");
+    // A try that never connects, its tab closed: never kept.
+    connect(&mut h, "v@h.invalid");
+    let other = h.app.panes.iter().find(|(_, p)| p.host == "v@h.invalid").map(|(id, _)| *id).expect("its tab");
+    h.app.save_settings();
+    let saved = on_disk(&h);
+    assert!(!saved.contains("v@h.invalid"), "not in settings.json, nor its tab: {}", saved.lines().filter(|l| l.contains("h.invalid")).collect::<Vec<_>>().join(" | "));
+    assert!(saved.contains(&format!("\"host\": \"{name}\"")), "the kept one's tab is");
+    h.app.actions.push(crate::app::Action::ClosePane(other));
+    h.frames(3);
+    h.restart();
+    assert!(!h.app.settings.profiles.iter().any(|p| p.name == "v@h.invalid"), "gone after a restart");
+    assert!(h.app.settings.profiles.iter().any(|p| p.name == name), "the kept one stays");
+    // A Host of ~/.ssh/config picked from the list is that name whole,
+    // spaces and all; typed, text is split into a host and options.
+    let host = h.app.connect_host("my board", true);
+    let argv = h.app.profile(&host).pty_argv(None, false);
+    assert!(argv.iter().any(|a| a == "my board") && !argv.iter().any(|a| a == "board"), "one argument for ssh: {argv:?}");
+    assert!(!h.app.settings.profiles.iter().any(|p| p.name == "my board"), "kept only once it connects, too");
+    let typed = h.app.connect_host("w@h.invalid -p 2200", false);
+    assert_eq!(typed, "w@h.invalid:2200");
+}
+
+/// The password dialog: Enter in its field is Connect, as the button is
+/// (it did nothing at all); the password is then the host's.
+#[test]
+fn enter_in_the_password_dialog_connects() {
+    let mut h = Harness::new(json!({}));
+    h.app.auth_prompt = Some(("t".into(), String::new()));
+    h.frames(2);
+    h.type_text("s3cret");
+    h.frames(1);
+    assert_eq!(h.app.auth_prompt.as_ref().map(|a| a.1.as_str()), Some("s3cret"), "typed into the field");
+    h.key(Key::Enter, Modifiers::NONE);
+    h.frames(2);
+    assert!(h.app.auth_prompt.is_none(), "the dialog closed");
+    assert_eq!(h.app.secrets.get("t").as_deref().map(|s| s.as_str()), Some("s3cret"), "the password is the host's");
+}
+
+/// After a start, a session's terminals of a host that wants a password
+/// each wait at ssh's own prompt; the password given in the dialog (for
+/// the agent) now starts those again with it, instead of each asking once
+/// more. One that got in is left as it is.
+#[test]
+fn a_password_given_once_serves_the_waiting_terminals() {
+    // A stand-in ssh: with weft's ticket (a password given) it is in;
+    // without, it asks as ssh does and waits.
+    let script = "import os,sys,time\nif os.environ.get('WEFT_ASKPASS_TICKET'):\n    sys.stdout.write('logged-in\\r\\n')\nelse:\n    sys.stdout.write(\"u@h's password: \")\nsys.stdout.flush()\ntime.sleep(60)\n";
+    let prof = json!({"name": "pw", "kind": "custom", "pty": ["python", "-u", "-c", script], "agent": ["python", "-c", "0"]});
+    let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}, prof]}));
+    let ids: Vec<usize> = (0..3).map(|_| h.app.spawn_pane("pw", None)).collect();
+    h.app.new_tab("local", None);
+    let shows = |h: &Harness, id: usize, what: &str| {
+        let t = &h.app.panes[&id].term;
+        t.lines_text(t.first_line(), t.end_line() + 1).contains(what)
+    };
+    assert!(h.wait_for(20.0, |h| ids.iter().all(|&id| shows(h, id, "password:"))), "each waits at the password prompt");
+    // One of them got in (its shell showed a prompt): left alone.
+    h.app.panes.get_mut(&ids[2]).unwrap().seen.1 = true;
+    h.app.set_password("pw", "s3cret".into());
+    h.frames(2);
+    assert!(h.wait_for(20.0, |h| shows(h, ids[0], "logged-in") && shows(h, ids[1], "logged-in")), "the waiting ones started again with it");
+    assert!(!shows(&h, ids[2], "logged-in"), "the one that got in was not started again");
 }

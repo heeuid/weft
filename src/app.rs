@@ -639,6 +639,25 @@ impl Default for Settings {
     }
 }
 
+/// The terminal's line is ssh asking for a password ("u@h's password: ",
+/// "(u@h) Password: ").
+pub fn waits_for_password(t: &Term) -> bool {
+    let line = t.line(t.cursor_abs()).map(|r| r.text()).unwrap_or_default().to_lowercase();
+    line.trim_end().ends_with("password:")
+}
+
+/// A saved tab without the terminals whose host is not kept: a split
+/// left with one side is that side; nothing left is no tab.
+fn keep_panes(n: SavedNode, kept: &dyn Fn(&str) -> bool) -> Option<SavedNode> {
+    match n {
+        SavedNode::Pane { ref host, .. } => kept(host).then_some(n),
+        SavedNode::Split { vertical, ratio, a, b } => match (keep_panes(*a, kept), keep_panes(*b, kept)) {
+            (Some(a), Some(b)) => Some(SavedNode::Split { vertical, ratio, a: Box::new(a), b: Box::new(b) }),
+            (one, None) | (None, one) => one,
+        },
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(tag = "t")]
 pub enum SavedNode {
@@ -1563,6 +1582,9 @@ pub struct App {
     pub update_checked: Instant,
     /// The "Serial console…" dialog, while open.
     pub serial_dialog: Option<crate::serial_ui::SerialDialog>,
+    /// Profiles made in Connect that have not connected yet: used, not
+    /// kept in settings (nor their tabs in the session) until they do.
+    pub trial_profiles: Vec<Profile>,
     /// Which of the windows Esc closes were open last frame (a bit each),
     /// and what had the keyboard then.
     pub esc_windows: u32,
@@ -1735,6 +1757,7 @@ impl App {
             update_ready: false,
             update_checked: Instant::now(),
             serial_dialog: None,
+            trial_profiles: Vec::new(),
             console_host,
             esc_windows: 0,
             focus_before: None,
@@ -1843,6 +1866,23 @@ impl App {
         }
     }
 
+    /// A profile made in Connect is kept in settings once it has connected:
+    /// a terminal of it showed its prompt, or its agent is up.
+    pub fn keep_connected_profiles(&mut self) {
+        let connected = |app: &App, name: &str| {
+            app.panes.values().any(|p| p.host == name && p.seen.1) || app.conns.get(name).is_some_and(|c| c.status == ConnStatus::Ready)
+        };
+        let (done, rest): (Vec<Profile>, Vec<Profile>) = std::mem::take(&mut self.trial_profiles).into_iter().partition(|p| connected(self, &p.name));
+        self.trial_profiles = rest;
+        if !done.is_empty() {
+            for p in done {
+                self.data.log(&format!("profile \"{}\" kept: it connected", p.name));
+                self.settings.profiles.push(p);
+            }
+            self.save_settings();
+        }
+    }
+
     fn save_node(&self, n: &Node) -> SavedNode {
         match n {
             Node::Leaf(id) => {
@@ -1872,8 +1912,21 @@ impl App {
     }
 
     fn write_settings(&mut self, always: bool) {
-        self.settings.session = self.tabs.iter().map(|t| self.save_node(&t.root)).collect();
-        self.settings.open = self.saved_open();
+        // Not what is on a profile that has not connected yet (it is not
+        // kept: another start would take its name for a host).
+        let trial: Vec<String> = self.trial_profiles.iter().map(|p| p.name.clone()).collect();
+        let kept = |h: &str| !trial.iter().any(|t| t == h);
+        self.settings.session = self.tabs.iter().filter_map(|t| keep_panes(self.save_node(&t.root), &kept)).collect();
+        let mut open = self.saved_open();
+        open.files.retain(|f| kept(&f.host));
+        open.expanded.retain(|(h, _)| kept(h));
+        open.editor_shows.retain(|_, (h, _)| kept(h));
+        for v in open.side_views.values_mut() {
+            if v.root.as_ref().is_some_and(|(h, _)| !kept(h)) {
+                v.root = None;
+            }
+        }
+        self.settings.open = open;
         if let Ok(s) = serde_json::to_string_pretty(&self.settings) {
             if always || s != self.settings_written {
                 let _ = std::fs::write(self.data.path("settings.json"), &s);
@@ -1884,7 +1937,7 @@ impl App {
     }
 
     pub fn profile(&self, name: &str) -> Profile {
-        if let Some(p) = self.settings.profiles.iter().find(|p| p.name == name) {
+        if let Some(p) = self.settings.profiles.iter().chain(self.trial_profiles.iter()).find(|p| p.name == name) {
             return p.clone();
         }
         if name == "local" {
@@ -1926,6 +1979,7 @@ impl App {
     /// Remember a password for this session only (never saved) and retry the agent.
     pub fn set_password(&mut self, host: &str, password: String) {
         let password = zeroize::Zeroizing::new(password);
+        let given = !password.is_empty();
         if password.is_empty() {
             self.secrets.remove(host);
         } else {
@@ -1935,6 +1989,22 @@ impl App {
         self.auth_prompted.remove(host);
         if self.conns.contains_key(host) {
             self.reconnect(host);
+        }
+        // Its terminals that have not got in, waiting at ssh's own password
+        // prompt (as all of a session's do after a start) or ended: started
+        // again with it, instead of each asking for it once more. One that
+        // got in is left as it is.
+        if given {
+            let waiting: Vec<usize> = self
+                .panes
+                .iter()
+                .filter(|(_, p)| p.host == host && !p.seen.1 && (p.exited || waits_for_password(&p.term)))
+                .map(|(id, _)| *id)
+                .collect();
+            for id in waiting {
+                self.data.log(&format!("pane {id} [{host}] started again with the password given"));
+                self.actions.push(Action::Restart(id));
+            }
         }
     }
 
@@ -2725,6 +2795,7 @@ impl App {
         for t in timings {
             self.data.log(&t);
         }
+        self.keep_connected_profiles();
         if guessing {
             self.ctx.request_repaint_after(Duration::from_millis(150));
         }

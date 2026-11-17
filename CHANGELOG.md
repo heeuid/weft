@@ -5,6 +5,30 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.9.2
+
+Fixed
+- **Connect keeps a profile once it has connected** (issue #2). A try was
+  saved as a profile when Connect was pressed, whether or not it got in,
+  and a profile is found again by its name: one made for
+  `dream@10.20.20.54 -p 22008` (named by the host alone, before 0.8.1)
+  was what the same address typed for a Mac on port 22 found, so it went
+  to 22008, where the Mac's password was refused. Now a new profile is
+  used at once but written to settings (with its tabs) only when a
+  terminal of it shows its prompt or its agent comes up; a try that never
+  does is gone after a restart. Profiles already saved are left as they
+  are.
+- **Enter in the password dialog** did nothing; it is Connect now.
+- **One password for a session's terminals.** After a start, every
+  terminal of a host that wants a password waited at ssh's own prompt,
+  and the password given in the dialog went to the agent only: each had
+  to be typed again. Those still waiting (or ended) now start again with
+  it; one that got in is left as it is.
+- **Hosts in "double quotes" in ~/.ssh/config** were handed to ssh quotes
+  and all, which matched no Host; they are read as ssh reads them, a name
+  with spaces as one name. A Host picked from Connect's list is that name
+  whole (it was split at spaces like typed text).
+
 ## 0.9.1
 
 Fixed

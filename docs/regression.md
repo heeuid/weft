@@ -165,6 +165,10 @@ What the numbers don't show:
 | agent.py and serial.py stay Python 3.6 (Rocky 8's platform-python): grammar and subprocess arguments | `host::tests::remote_python_stays_3_6` |
 | "Python on remote hosts…": the list edited a line each, saved to settings and carried by the agent's command; Defaults; nine Esc-closed windows fit the mask | `regress::the_pythons_tried_on_remote_hosts_can_be_listed` |
 | A remote host with no Python: the status bar says why with a python… button that opens the list, Files and the editor say why and what to do, nothing waits for good, the terminal works; the reason is one line (it ran over lines and the end was kept) | `regress::a_host_without_python_says_so_where_the_gui_needs_it` |
+| Connect keeps a new profile once it has connected (a prompt, or its agent): before, it is used but neither it nor its tab is in settings.json; a try that never connects is gone after a restart; a Host of ~/.ssh/config picked from the list is its name whole | `regress::connect_keeps_a_profile_once_it_connects` |
+| Enter in the password dialog is Connect (it did nothing), and the password is the host's | `regress::enter_in_the_password_dialog_connects` |
+| A password given in the dialog starts again the host's terminals waiting at ssh's password prompt; one that got in is left alone | `regress::a_password_given_once_serves_the_waiting_terminals` |
+| ~/.ssh/config Host names: quoted ones without their quotes (spaces kept), `Host=`, wildcards and negations left out | `host::tests::ssh_config_host_names` |
 | Ctrl+Shift+Z is redo in a text field | `ui_panels::tests::redo_key_stays_with_a_text_field` |
 | Tab drag reorder; narrow tab rows; which tabs a tab's menu closes | `ui_panels::tests::dragged_tab_lands_between_tabs`, `narrow_tab_rows_keep_the_open_tab`, `app::close_tests::*` |
 | Palette reopens full height, at the top | `regress::palette_reopens_full_height_at_the_top` |

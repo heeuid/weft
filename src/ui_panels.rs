@@ -3693,6 +3693,10 @@ impl App {
     pub fn ui_connect(&mut self, ctx: &egui::Context) {
         let Some(mut st) = self.connect.take() else { return };
         let mut open: Option<String> = None;
+        // Picked from the list (a profile, or a Host of ~/.ssh/config): the
+        // name as it is, not split into a host and options as typed text
+        // is ("my board" is one Host).
+        let mut picked = false;
         let mut keep = true;
         let area = egui::Area::new(Id::new("connect")).anchor(Align2::CENTER_TOP, vec2(0.0, 70.0)).order(egui::Order::Foreground).show(ctx, |ui| {
             egui::Frame::popup(ui.style()).fill(theme::bg_raised()).corner_radius(CornerRadius::same(8)).inner_margin(12.0).show(ui, |ui| {
@@ -3764,6 +3768,7 @@ impl App {
                         text_fit(ui.painter(), pos2(rect.left() + 26.0, rect.center().y), &name, FontId::proportional(13.5), theme::text(), rect.width() - 36.0 - kind_w);
                         if resp.clicked() {
                             open = Some(name);
+                            picked = true;
                         }
                     }
                 });
@@ -3773,13 +3778,7 @@ impl App {
             keep = false;
         }
         if let Some(target) = open {
-            // A profile of that name, or for the same host and options, or
-            // a new one (remembered).
-            let known = self.settings.profiles.len();
-            let host = crate::host::connect_profile(&mut self.settings.profiles, &target);
-            if self.settings.profiles.len() != known {
-                self.save_settings();
-            }
+            let host = self.connect_host(&target, picked);
             if !st.password.is_empty() && host != "local" {
                 // Must be set before the pane/agent spawn so both use it.
                 self.set_password(&host, std::mem::take(&mut st.password));
@@ -3804,6 +3803,30 @@ impl App {
         }
     }
 
+    /// The host Connect opens for `target`: a profile of that name, or for
+    /// the same host and options, or a new one, kept in settings once it
+    /// has connected (a try that never did is not a profile to find
+    /// again). `picked` from the list: a Host of ~/.ssh/config is its name
+    /// whole ("my board"), not split into a host and options as typed text.
+    pub fn connect_host(&mut self, target: &str, picked: bool) -> String {
+        let mut all = self.settings.profiles.clone();
+        all.extend(self.trial_profiles.iter().cloned());
+        let known = all.len();
+        let host = if picked && target != "local" && !all.iter().any(|p| p.name == target) {
+            all.push(crate::host::Profile { name: target.into(), kind: HostKind::Ssh { target: target.into(), args: Vec::new(), x11: false } });
+            target.to_string()
+        } else {
+            crate::host::connect_profile(&mut all, target)
+        };
+        if all.len() != known {
+            if let Some(p) = all.pop() {
+                self.data.log(&format!("profile \"{}\": kept once it connects", p.name));
+                self.trial_profiles.push(p);
+            }
+        }
+        host
+    }
+
     /// "The agent needs a password" dialog (opened automatically when keys /
     /// ssh-agent are refused, or from the status bar).
     pub fn ui_auth(&mut self, ctx: &egui::Context) {
@@ -3824,10 +3847,12 @@ impl App {
                     keep = false;
                 }
                 let r = ui.add(TextEdit::singleline(&mut password).password(true).hint_text("ssh password").desired_width(f32::INFINITY));
-                r.request_focus();
-                if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) && !password.is_empty() {
+                // Enter is Connect. (Asked as "lost its focus", it never was:
+                // the field takes the focus back every frame.)
+                if (r.has_focus() || r.lost_focus()) && ui.input(|i| i.key_pressed(Key::Enter)) && !password.is_empty() {
                     submit = true;
                 }
+                r.request_focus();
                 ui.horizontal(|ui| {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui.add_enabled(!password.is_empty(), egui::Button::new("Connect")).clicked() {

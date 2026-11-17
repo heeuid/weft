@@ -461,14 +461,39 @@ pub fn ssh_config_hosts() -> Vec<String> {
     let Ok(text) = std::fs::read_to_string(Path::new(&home).join(".ssh").join("config")) else {
         return Vec::new();
     };
-    let mut out = Vec::new();
+    ssh_config_hosts_in(&text)
+}
+
+/// The `Host` names of an ssh config's text, as ssh reads them: a name in
+/// "double quotes" is the name without them (it was handed to ssh quotes
+/// and all, which then matched no Host and resolved no address).
+pub fn ssh_config_hosts_in(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
     for line in text.lines() {
         let line = line.trim();
-        let mut it = line.splitn(2, char::is_whitespace);
+        let mut it = line.splitn(2, |c: char| c.is_whitespace() || c == '=');
         if it.next().map(|k| k.eq_ignore_ascii_case("host")).unwrap_or(false) {
-            for h in it.next().unwrap_or("").split_whitespace() {
-                if !h.contains(['*', '?', '!']) && !out.iter().any(|o| o == h) {
-                    out.push(h.to_string());
+            let rest = it.next().unwrap_or("").trim_start_matches(|c: char| c.is_whitespace() || c == '=');
+            let mut words: Vec<String> = Vec::new();
+            let mut cur = String::new();
+            let mut quoted = false;
+            for c in rest.chars() {
+                match c {
+                    '"' => quoted = !quoted,
+                    c if c.is_whitespace() && !quoted => {
+                        if !cur.is_empty() {
+                            words.push(std::mem::take(&mut cur));
+                        }
+                    }
+                    c => cur.push(c),
+                }
+            }
+            if !cur.is_empty() {
+                words.push(cur);
+            }
+            for h in words {
+                if !h.contains(['*', '?', '!']) && !out.contains(&h) {
+                    out.push(h);
                 }
             }
         }
@@ -1383,6 +1408,13 @@ mod tests {
         }
         assert!(ZSH_ZSH.contains("precmd_functions") && ZSH_ZSH.contains("preexec_functions"));
         assert!(FISH_FISH.contains("fish_preexec") && FISH_FISH.contains("fish_prompt"));
+    }
+
+    /// Host names in ~/.ssh/config, quoted ones without their quotes.
+    #[test]
+    fn ssh_config_host_names() {
+        let text = "Host pi  \"54:22008__FUSE_TEST_r8\" *.lan\n  HostName 10.0.0.2\nhost=other\nHost \"my board\"\nHost !bad\nMatch all\n";
+        assert_eq!(ssh_config_hosts_in(text), vec!["pi", "54:22008__FUSE_TEST_r8", "other", "my board"]);
     }
 
     /// One host on two ports is two profiles, each running ssh with its own
