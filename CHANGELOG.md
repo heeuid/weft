@@ -5,6 +5,16 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.9.3
+
+Fixed
+- **Markdown lists in a narrow pane.** A list item's wrapped rows went
+  back to the left edge, and a first word too long for its row (a link)
+  went whole to the next row there, leaving the item's marker on a row a
+  hair tall with its bullet over the row above. A list item's text now
+  wraps under itself (a hanging indent, as on GitHub), and a word too
+  long is cut where it starts. Wide panes lay out as before.
+
 ## 0.9.2
 
 Fixed

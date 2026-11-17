@@ -8,6 +8,8 @@
 
 use crate::theme;
 use egui::text::{LayoutJob, TextFormat};
+use egui::{Galley, epaint::text::Row};
+use std::sync::Arc;
 use egui::{Color32, FontFamily, FontId, Stroke};
 
 pub const BOLD_FONT: &str = "bold";
@@ -43,6 +45,9 @@ pub enum Deco {
 pub struct MdLayout {
     pub job: LayoutJob,
     pub decos: Vec<Deco>,
+    /// Where a list item's paragraph starts (byte) and the x its text
+    /// starts at, which its wrapped rows go back to (`lay_out_hanging`).
+    pub hangs: Vec<Hang>,
 }
 
 struct Ctx<'a> {
@@ -702,6 +707,7 @@ pub fn layout(
 ) -> MdLayout {
     let mut job = LayoutJob::default();
     let mut decos = Vec::new();
+    let mut hangs = Vec::new();
     let mut char_pos = 0usize; // char index of the current line start
     let mut byte_pos = 0usize;
     let mut fence: Option<Fence> = None;
@@ -909,6 +915,7 @@ pub fn layout(
         } else if let (true, Some(place)) = (bullet, item) {
             let marker_byte = indent.len();
             cx.lead_in(indent, &trimmed[..2], place.tx, body, measure);
+            hangs.push(Hang { start: byte_pos, content: byte_pos + indent.len() + 2, hang: place.tx });
             let item = &trimmed[2..];
             let task = item.len() >= 3 && item.starts_with('[') && item.as_bytes()[2] == b']' && matches!(item.as_bytes()[1], b' ' | b'x' | b'X');
             // A task's box stands for its bullet (as on GitHub).
@@ -972,6 +979,7 @@ pub fn layout(
             }
         } else if let (true, Some(place)) = (numbered, item) {
             cx.lead_in(indent, &trimmed[..digits + 2], place.tx, body, measure);
+            hangs.push(Hang { start: byte_pos, content: byte_pos + indent.len() + digits + 2, hang: place.tx });
             if !cx.cursor_line {
                 decos.push(Deco::Number { at: char_at(indent.len()), label: list_label(place.depth, place.n) });
             }
@@ -983,6 +991,7 @@ pub fn layout(
                 cx.inline(line, body);
             } else {
                 cx.indent_to(indent, tx, measure);
+                hangs.push(Hang { start: byte_pos, content: byte_pos + indent.len(), hang: tx });
                 cx.inline(trimmed, body);
             }
         } else if !cx.cursor_line && ln > 0 && soft[ln - 1] && !indent.is_empty() {
@@ -1013,7 +1022,180 @@ pub fn layout(
     if let Some(f) = fence {
         decos.push(Deco::Code { start: f.start, end: char_pos });
     }
-    MdLayout { job, decos }
+    MdLayout { job, decos, hangs }
+}
+
+/// Lay `job` out with hanging indents: a list item's paragraph (its text to
+/// a real newline, from `start` in `hangs`) has its text, from `content`,
+/// laid out `hang` narrower and `hang` from the left edge, every row of it,
+/// as on GitHub; the marker and indent before it go on its first row. egui
+/// has no hanging indent, so such a paragraph is laid out on its own; the
+/// rest as egui does, together. The galley has the whole job's characters,
+/// rows and sections, so cursors and selections work as on one laid out
+/// at once. (Before, wrapped rows went back to the left edge, and a long
+/// first word, a link, went whole to the next row: the item's marker was
+/// left on a row of its own, a hair tall, its bullet over the row above.)
+pub fn lay_out_hanging(job: LayoutJob, hangs: &[Hang], lay: &mut dyn FnMut(LayoutJob) -> Arc<Galley>) -> Arc<Galley> {
+    let width = job.wrap.max_width;
+    let hang_at = |start: usize| hangs.iter().find(|h| h.start == start && h.hang >= 1.0 && h.hang < width * 0.8);
+    // Paragraphs; runs of those with no hang are laid out together.
+    let mut pieces: Vec<(usize, usize, Option<&Hang>)> = Vec::new();
+    let text = job.text.as_str();
+    let mut start = 0;
+    for end in text.match_indices('\n').map(|(i, _)| i + 1).chain(std::iter::once(text.len())) {
+        let h = hang_at(start);
+        match pieces.last_mut() {
+            Some(p) if h.is_none() && p.2.is_none() => p.1 = end,
+            _ => pieces.push((start, end, h)),
+        }
+        start = end;
+    }
+    if !width.is_finite() || pieces.iter().all(|p| p.2.is_none()) {
+        return lay(job);
+    }
+    let mut rows: Vec<Row> = Vec::new();
+    let mut y = 0.0;
+    let mut elided = false;
+    let mut pixels_per_point = 1.0;
+    let n = pieces.len();
+    for (k, &(a, b, h)) in pieces.iter().enumerate() {
+        let first = k == 0;
+        let mut got: Vec<Row> = match h {
+            None => {
+                let (sub, map) = sub_job(&job, a, b, width, first);
+                let g = lay(sub);
+                elided |= g.elided;
+                pixels_per_point = g.pixels_per_point;
+                g.rows.iter().cloned().map(|mut r| {
+                    shift_row(&mut r, egui::Vec2::ZERO, &map);
+                    r
+                }).collect()
+            }
+            Some(h) => {
+                let c = h.content.clamp(a, b);
+                let (lead, lead_map) = sub_job(&job, a, c, f32::INFINITY, first);
+                let (body, body_map) = sub_job(&job, c, b, (width - h.hang).max(1.0), false);
+                let lead = lay(lead);
+                let body = lay(body);
+                elided |= body.elided;
+                pixels_per_point = body.pixels_per_point;
+                let mut out: Vec<Row> = body.rows.iter().cloned().map(|mut r| {
+                    shift_row(&mut r, egui::vec2(h.hang, 0.0), &body_map);
+                    r
+                }).collect();
+                if let (Some(mut l), Some(r0)) = (lead.rows.first().cloned(), out.first_mut()) {
+                    shift_row(&mut l, egui::Vec2::ZERO, &lead_map);
+                    join_rows(l, r0);
+                }
+                out
+            }
+        };
+        // A piece ending in a newline has an empty row after it: the next
+        // piece's first row is that.
+        if k + 1 < n && got.len() > 1 && got.last().is_some_and(|r| r.glyphs.is_empty() && !r.ends_with_newline) {
+            got.pop();
+        }
+        let top = y;
+        for mut row in got {
+            shift_row(&mut row, egui::vec2(0.0, top), &[]);
+            y = row.rect.max.y;
+            rows.push(row);
+        }
+    }
+    // The empty row after a last newline, laid out alone, has no height:
+    // that of the row above (where the cursor goes at the end).
+    if let [.., above, last] = rows.as_mut_slice() {
+        if last.glyphs.is_empty() && last.rect.height() < 1.0 {
+            last.rect.max.y = last.rect.min.y + above.rect.height();
+        }
+    }
+    let mut rect = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::ZERO);
+    let mut mesh_bounds = egui::Rect::NOTHING;
+    let (mut num_vertices, mut num_indices) = (0, 0);
+    for r in &rows {
+        rect = rect.union(r.rect);
+        mesh_bounds = mesh_bounds.union(r.visuals.mesh_bounds);
+        num_vertices += r.visuals.mesh.vertices.len();
+        num_indices += r.visuals.mesh.indices.len();
+    }
+    Arc::new(Galley { job: Arc::new(job), rows, elided, rect, mesh_bounds, num_vertices, num_indices, pixels_per_point })
+}
+
+/// A list item's paragraph: where it starts (byte), where its text starts,
+/// and the x its text is at.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Hang {
+    pub start: usize,
+    pub content: usize,
+    pub hang: f32,
+}
+
+/// `job`'s bytes a..b as a job of their own, `width` wide, and for each of
+/// its sections the index of the section it came from.
+fn sub_job(job: &LayoutJob, a: usize, b: usize, width: f32, first: bool) -> (LayoutJob, Vec<u32>) {
+    let mut sub = LayoutJob {
+        text: job.text[a..b].to_string(),
+        wrap: egui::text::TextWrapping { max_width: width, ..job.wrap.clone() },
+        first_row_min_height: if first { job.first_row_min_height } else { 0.0 },
+        break_on_newline: job.break_on_newline,
+        halign: job.halign,
+        justify: job.justify,
+        round_output_to_gui: job.round_output_to_gui,
+        sections: Vec::new(),
+    };
+    let mut map = Vec::new();
+    for (i, s) in job.sections.iter().enumerate() {
+        let (s0, s1) = (s.byte_range.start, s.byte_range.end);
+        if !(s0 < b && s1 > a) {
+            continue;
+        }
+        let mut piece = s.clone();
+        piece.byte_range = s0.max(a) - a..s1.min(b) - a;
+        if s0 < a {
+            piece.leading_space = 0.0;
+        }
+        sub.sections.push(piece);
+        map.push(i as u32);
+    }
+    (sub, map)
+}
+
+/// Move a laid out row by `d`, its sections numbered as in the whole job
+/// (`map`: from its own job's; empty: already so).
+fn shift_row(row: &mut Row, d: egui::Vec2, map: &[u32]) {
+    let at = |i: u32| map.get(i as usize).copied().unwrap_or(i);
+    row.rect = row.rect.translate(d);
+    row.section_index_at_start = at(row.section_index_at_start);
+    for g in &mut row.glyphs {
+        g.pos += d;
+        g.section_index = at(g.section_index);
+    }
+    for v in &mut row.visuals.mesh.vertices {
+        v.pos += d;
+    }
+    if row.visuals.mesh_bounds.is_positive() {
+        row.visuals.mesh_bounds = row.visuals.mesh_bounds.translate(d);
+    }
+}
+
+/// `lead` (a marker and indent) put in front of `row`, one row of both.
+fn join_rows(lead: Row, row: &mut Row) {
+    let mut glyphs = lead.glyphs;
+    glyphs.append(&mut row.glyphs);
+    row.glyphs = glyphs;
+    row.section_index_at_start = lead.section_index_at_start;
+    row.rect = egui::Rect::from_min_max(egui::pos2(lead.rect.min.x.min(row.rect.min.x), row.rect.min.y), egui::pos2(row.rect.max.x.max(lead.rect.max.x), row.rect.max.y.max(row.rect.min.y + lead.rect.height())));
+    let mut mesh = lead.visuals.mesh;
+    let offset = mesh.vertices.len();
+    let index_offset = mesh.indices.len();
+    let body = std::mem::take(&mut row.visuals.mesh);
+    mesh.append(body);
+    let lead_glyphs = lead.visuals.glyph_vertex_range.clone();
+    let body_glyphs = row.visuals.glyph_vertex_range.clone();
+    row.visuals.glyph_vertex_range = if lead_glyphs.is_empty() { body_glyphs.start + offset..body_glyphs.end + offset } else { lead_glyphs.start..body_glyphs.end + offset };
+    row.visuals.glyph_index_start = if lead_glyphs.is_empty() { row.visuals.glyph_index_start + index_offset } else { lead.visuals.glyph_index_start };
+    row.visuals.mesh_bounds = lead.visuals.mesh_bounds.union(row.visuals.mesh_bounds);
+    row.visuals.mesh = mesh;
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -1148,6 +1330,99 @@ mod tests {
 
     fn lay(src: &str, cursor: Option<usize>, size: f32, wrap: f32) -> MdLayout {
         layout(src, cursor, size, false, wrap, &mut |_| None, &mut mono, &mut fit_mono)
+    }
+
+    /// Laid out with real fonts, as the editor does (hanging indents).
+    fn laid(src: &str, cursor: Option<usize>, wrap: f32) -> (MdLayout, Arc<Galley>) {
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx, crate::theme::DEFAULT_FONT, crate::theme::DEFAULT_ICON_FONT);
+        let _ = ctx.run(Default::default(), |_| {});
+        let mut measure = |t: &str, f: &FontId| ctx.fonts(|fo| fo.layout_no_wrap(t.to_owned(), f.clone(), Color32::WHITE).size().x);
+        let mut fit = |j: LayoutJob| ctx.fonts(|fo| fo.layout_job(j).size());
+        let l = layout(src, cursor, 14.0, false, wrap, &mut |_| None, &mut measure, &mut fit);
+        let mut job = l.job.clone();
+        job.wrap.max_width = wrap;
+        let g = ctx.fonts(|fo| lay_out_hanging(job, &l.hangs, &mut |j| fo.layout_job(j)));
+        (l, g)
+    }
+
+    /// The rows each char of `src` is on, and its x.
+    fn places(g: &Galley) -> Vec<(usize, f32)> {
+        let mut out = Vec::new();
+        for (r, row) in g.rows.iter().enumerate() {
+            for gl in &row.glyphs {
+                out.push((r, gl.pos.x));
+            }
+            if row.ends_with_newline {
+                out.push((r, row.rect.max.x));
+            }
+        }
+        out
+    }
+
+    /// A list item's wrapped rows start under its text, not at the left
+    /// edge, and a first word too long for the row (a link, in a narrow
+    /// pane) is cut there: it went whole to the next row at the left edge,
+    /// leaving the marker on a row a hair tall, its bullet over the row
+    /// above. The galley still has every char, row end and cursor place.
+    #[test]
+    fn list_items_wrap_under_their_text() {
+        let src = "261116 weekly meeting\n\n- **[DONE]** ~~Resolve conflicts and open~~\n  - https://github.com/dn-inc/v110-bsp/pull/106\n- a long item that wraps onto more than one row in a narrow pane\n";
+        for cursor in [None, Some(3), Some(4)] {
+            let (l, g) = laid(src, cursor, 260.0);
+            let p = places(&g);
+            assert_eq!(p.len(), src.chars().count(), "{cursor:?}: every char has its place");
+            assert_eq!(g.rows.iter().filter(|r| r.ends_with_newline).count(), src.matches('\n').count());
+            let char_of = |needle: &str| src[..src.find(needle).unwrap()].chars().count();
+            let link = char_of("https://");
+            let hang = l.hangs.iter().find(|h| src[h.content..].starts_with("https://")).unwrap().hang;
+            let (link_row, link_x) = p[link];
+            assert!((link_x - hang).abs() < 2.0, "{cursor:?}: the link starts at its item's text: {link_x} vs {hang}");
+            let marker = char_of("  - https") + 2;
+            assert_eq!(p[marker].0, link_row, "{cursor:?}: the marker is on the link's row");
+            assert!(g.rows[link_row].rect.height() > 10.0, "a whole row tall");
+            // Every row of the link and of the long item is at its hang.
+            let end = char_of("\n- a long");
+            let rows: std::collections::BTreeSet<usize> = (link..end).map(|i| p[i].0).collect();
+            assert!(rows.len() >= 2, "{cursor:?}: the link is cut over rows: {rows:?}");
+            for r in rows.iter().skip(1) {
+                assert!((g.rows[*r].glyphs[0].pos.x - hang).abs() < 2.0, "{cursor:?}: row {r} of the link at {}", g.rows[*r].glyphs[0].pos.x);
+            }
+            let long = char_of("a long item");
+            let long_hang = p[long].1;
+            let long_rows: std::collections::BTreeSet<usize> = (long..src.chars().count() - 1).map(|i| p[i].0).collect();
+            assert!(long_rows.len() >= 2, "it wraps");
+            for r in long_rows.iter().skip(1) {
+                assert!((g.rows[*r].glyphs[0].pos.x - long_hang).abs() < 2.0, "{cursor:?}: a wrapped row under the item's text");
+            }
+            // Rows go down the page, none on another.
+            for w in g.rows.windows(2) {
+                assert!(w[1].rect.min.y >= w[0].rect.max.y - 0.5, "{cursor:?}: rows in order");
+            }
+            // Cursor places come back from where they are drawn (inside
+            // text: right after a hidden marker, a hair wide, the place
+            // before it is as near, as in egui's own layout).
+            for i in [0, link + 5, link + 30, long + 3, src.chars().count() - 2] {
+                let at = g.pos_from_ccursor(egui::text::CCursor::new(i));
+                assert_eq!(g.cursor_from_pos(at.center().to_vec2()).ccursor.index, i, "{cursor:?}: cursor {i}");
+            }
+        }
+        // Wide: the same rows as egui's own, the list items fitting.
+        let (l, g) = laid(src, None, 2000.0);
+        let mut job = l.job.clone();
+        job.wrap.max_width = 2000.0;
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx, crate::theme::DEFAULT_FONT, crate::theme::DEFAULT_ICON_FONT);
+        let _ = ctx.run(Default::default(), |_| {});
+        let plain = ctx.fonts(|fo| fo.layout_job(job));
+        assert_eq!(g.rows.len(), plain.rows.len());
+        for (a, b) in g.rows.iter().zip(plain.rows.iter()) {
+            assert_eq!(a.glyphs.len(), b.glyphs.len());
+            assert!((a.rect.min.y - b.rect.min.y).abs() < 0.5 && (a.rect.height() - b.rect.height()).abs() < 0.5);
+            if let (Some(x), Some(y)) = (a.glyphs.last(), b.glyphs.last()) {
+                assert!((x.pos.x - y.pos.x).abs() < 1.0, "the same places: {} vs {}", x.pos.x, y.pos.x);
+            }
+        }
     }
 
     #[test]

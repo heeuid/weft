@@ -247,9 +247,15 @@ impl KeptGalley {
 
     /// Lay `job` out and keep the result under `id` for `key`.
     fn lay_out(ui: &Ui, id: Id, key: u64, job: LayoutJob) -> Arc<egui::Galley> {
+        Self::lay_out_with(ui, id, key, job, |ui, job| ui.fonts(|f| f.layout_job(job)))
+    }
+
+    /// `lay_out`, laid out by `how`.
+    fn lay_out_with(ui: &Ui, id: Id, key: u64, job: LayoutJob, how: impl FnOnce(&Ui, LayoutJob) -> Arc<egui::Galley>) -> Arc<egui::Galley> {
         #[cfg(test)]
         EDITOR_LAYOUTS.with(|n| n.set(n.get() + 1));
-        let (galley, atlas) = ui.fonts(|f| (f.layout_job(job), f.texture_atlas()));
+        let galley = how(ui, job);
+        let atlas = ui.fonts(|f| f.texture_atlas());
         let mut all = Self::all(ui);
         all.retain(|(i, _)| *i != id);
         all.push((id, KeptGalley { key, galley: Some(galley.clone()), atlas: Some(atlas) }));
@@ -4081,6 +4087,7 @@ struct MdCache {
     key: u64,
     job: Option<Arc<LayoutJob>>,
     decos: Arc<Vec<md::Deco>>,
+    hangs: Arc<Vec<md::Hang>>,
 }
 
 /// The markdown editor: the TextEdit edits the raw source while its layout
@@ -4371,21 +4378,23 @@ fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size:
                 return galley;
             }
             let cached: MdCache = ui.ctx().memory_mut(|m| m.data.get_temp_mut_or_default::<MdCache>(cache_id).clone());
-            let job = match cached.job {
-                Some(j) if cached.key == key => j,
+            let (job, hangs) = match cached.job {
+                Some(j) if cached.key == key => (j, cached.hangs),
                 _ => {
                     let mut measure = |t: &str, font: &FontId| ui.fonts(|f| f.layout_no_wrap(t.to_owned(), font.clone(), Color32::WHITE).size().x);
                     let mut fit = |j: egui::text::LayoutJob| ui.fonts(|f| f.layout_job(j).size());
                     let mut l = md::layout(text, cursor_line, size, breaks, fit_w, &mut |src: &str| diagram_size(ui.ctx(), src, fit_w).map(|(_, s)| s.y), &mut measure, &mut fit);
                     crate::highlight::mark_job(&mut l.job, &marks, mark_cur);
                     let j = Arc::new(l.job);
-                    ui.ctx().memory_mut(|m| m.data.insert_temp(cache_id, MdCache { key, job: Some(j.clone()), decos: Arc::new(l.decos) }));
-                    j
+                    let hangs = Arc::new(l.hangs);
+                    ui.ctx().memory_mut(|m| m.data.insert_temp(cache_id, MdCache { key, job: Some(j.clone()), decos: Arc::new(l.decos), hangs: hangs.clone() }));
+                    (j, hangs)
                 }
             };
             let mut job = (*job).clone();
             job.wrap.max_width = wrap;
-            KeptGalley::lay_out(ui, kept_id, kept_key, job)
+            // A list item's wrapped rows start under its text (hanging).
+            KeptGalley::lay_out_with(ui, kept_id, kept_key, job, |ui, job| ui.fonts(|f| md::lay_out_hanging(job, &hangs, &mut |j| f.layout_job(j))))
         };
         let before = crate::widgets::cursor_before(ui, edit_id);
         // Read mode: the text as an immutable buffer, selectable and copyable.

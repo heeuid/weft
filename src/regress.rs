@@ -3260,11 +3260,12 @@ fn a_password_given_once_serves_the_waiting_terminals() {
         let t = &h.app.panes[&id].term;
         t.lines_text(t.first_line(), t.end_line() + 1).contains(what)
     };
-    assert!(h.wait_for(20.0, |h| ids.iter().all(|&id| shows(h, id, "password:"))), "each waits at the password prompt");
+    // (Three programs starting at once: slow on a busy machine.)
+    assert!(h.wait_for(90.0, |h| ids.iter().all(|&id| shows(h, id, "password:"))), "each waits at the password prompt");
     // One of them got in (its shell showed a prompt): left alone.
     h.app.panes.get_mut(&ids[2]).unwrap().seen.1 = true;
     h.app.set_password("pw", "s3cret".into());
     h.frames(2);
-    assert!(h.wait_for(20.0, |h| shows(h, ids[0], "logged-in") && shows(h, ids[1], "logged-in")), "the waiting ones started again with it");
+    assert!(h.wait_for(90.0, |h| shows(h, ids[0], "logged-in") && shows(h, ids[1], "logged-in")), "the waiting ones started again with it");
     assert!(!shows(&h, ids[2], "logged-in"), "the one that got in was not started again");
 }

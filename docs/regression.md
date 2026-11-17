@@ -241,6 +241,7 @@ What the numbers don't show:
 | Ordered items: 1. i. a. by depth, numbered from the first one's number ("1." for each counts up), roman and letters past 26 | `md::tests::ordered_items_are_numbered_by_depth` |
 | Bullets know their depth (drawn ● ○ ■ □); a task's box stands for its bullet | `md::tests::bullets_know_their_depth` |
 | An item's text is further in than its parent's whatever the spaces, a paragraph of it under its text, and nothing moves when the cursor comes to the line | `md::tests::list_text_keeps_its_place` |
+| A list item wraps under its own text (hanging indent), a link too long for the row is cut where it starts with its marker on the same row (it went to the left edge, the bullet over the row above); every char, row end and cursor place kept; wide: as egui lays it out | `md::tests::list_items_wrap_under_their_text` |
 | Tables: fit the width, wrap in columns, rows' source | `md::tests::tables_hide_pipes_and_align_columns`, `a_wide_table_wraps_inside_its_columns` |
 | Unsaved / saved / copied marks; Rich ⇄ Source; Read mode | `regress::editor_marks_buttons_and_read_mode` |
 | Double-click selects a word (Hangul, line ends) | `widgets::word_tests::*` |
