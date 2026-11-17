@@ -64,6 +64,8 @@ pub(crate) enum Cmd {
     ThemePicker,
     Hidden,
     Settings,
+    /// "Python on remote hosts…": the Pythons tried there.
+    RemotePython,
     AgentLog,
     NewMemo,
     Memos,
@@ -176,6 +178,7 @@ const COMMANDS: &[(Cmd, &str, &str, &[&str])] = &[
     (Cmd::ConfirmUnsaved, "confirm_unsaved", "Ask before closing unsaved files: on / off", &[]),
     (Cmd::ConfirmRunning, "confirm_running", "Ask before ending running commands: on / off", &[]),
     (Cmd::Settings, "settings_file", "Open settings.json", &[]),
+    (Cmd::RemotePython, "remote_python", "Python on remote hosts… (the names and paths tried for the Files agent and serial consoles)", &[]),
     (Cmd::AgentLog, "agent_log", "Open agent log for this host", &[]),
 ];
 
@@ -451,6 +454,7 @@ impl App {
                 self.settings.show_hidden = !self.settings.show_hidden;
                 self.dir_cache.clear();
             }
+            Cmd::RemotePython => self.python_window = Some(self.settings.remote_python.join("\n")),
             Cmd::Settings => {
                 self.save_settings();
                 let p = self.data.path("settings.json").display().to_string().replace('\\', "/");
@@ -538,8 +542,8 @@ impl App {
     /// shell gets no Esc for it. (A key being bound has taken its Esc by
     /// now: that cancels the binding, not the window.)
     pub fn escape_closes_windows(&mut self, ctx: &egui::Context) {
-        let windows = [self.display_test.is_some(), self.serial_dialog.is_some(), self.font_menu.is_some(), self.memo_picker, self.keys_window.is_some(), self.records_window.is_some(), self.help.is_some()];
-        let now = windows.iter().enumerate().fold(0u8, |m, (i, open)| m | ((*open as u8) << i));
+        let windows = [self.display_test.is_some(), self.serial_dialog.is_some(), self.font_menu.is_some(), self.memo_picker, self.keys_window.is_some(), self.records_window.is_some(), self.help.is_some(), self.python_window.is_some()];
+        let now = windows.iter().enumerate().fold(0u32, |m, (i, open)| m | ((*open as u32) << i));
         // One that has just opened takes the keyboard from the terminal;
         // a click in a terminal gives it back, and Esc is then the shell's
         // again (vim beside an open Help keeps its Esc).
@@ -579,7 +583,7 @@ impl App {
             return;
         }
         // One at a time, the smaller ones (opened from the others) first.
-        if self.display_test.take().is_some() || self.serial_dialog.take().is_some() || self.font_menu.take().is_some() || std::mem::take(&mut self.memo_picker) || self.keys_window.take().is_some() || self.records_window.take().is_some() {
+        if self.display_test.take().is_some() || self.serial_dialog.take().is_some() || self.font_menu.take().is_some() || std::mem::take(&mut self.memo_picker) || self.keys_window.take().is_some() || self.records_window.take().is_some() || self.python_window.take().is_some() {
         } else {
             self.help = None;
         }
@@ -1131,10 +1135,13 @@ impl App {
                     }
                     cut(ui, host.clone(), theme::text());
                     let r = cut(ui, label, theme::text_dim());
-                    if matches!(status, ConnStatus::Failed(_)) {
-                        r.on_hover_text("Without a password the agent only uses keys / ssh-agent. Terminals work regardless.");
+                    if let ConnStatus::Failed(why) = &status {
+                        r.on_hover_text(format!("{why}\n\nWithout a password the agent only uses keys / ssh-agent. Terminals work regardless."));
                         if ui.small_button("reconnect").clicked() {
                             self.actions.push(Action::Reconnect(host.clone()));
+                        }
+                        if why.contains(crate::host::NO_PYTHON) && ui.small_button("python…").on_hover_text("the Pythons tried on remote hosts").clicked() {
+                            self.python_window = Some(self.settings.remote_python.join("\n"));
                         }
                         if !self.profile(&host).is_local() && ui.small_button("password…").clicked() {
                             self.auth_prompt = Some((host.clone(), String::new()));
@@ -2007,6 +2014,51 @@ impl App {
         }
         if let Some(p) = pick {
             self.apply_memo_pick(p);
+        }
+    }
+
+    /// "Python on remote hosts…": the names and paths tried, in order, for
+    /// the Files agent and serial consoles on a remote host; the first that
+    /// runs as Python 3.6+ is used. Saved: hosts whose agent failed connect
+    /// again.
+    pub fn ui_python_window(&mut self, ctx: &egui::Context) {
+        let Some(mut text) = self.python_window.take() else { return };
+        let mut open = true;
+        let mut save = false;
+        crate::widgets::dialog(ctx, "Python on remote hosts", vec2(520.0, 360.0)).open(&mut open).resizable(true).show(ctx, |ui| {
+            ui.label(
+                RichText::new(
+                    "The Files panel, editor, search and serial consoles run a small Python program on a remote host. \
+                     These are tried there in order; the first that is Python 3.6 or newer is used. \
+                     A name is looked up on the host's PATH; a path can have * (/opt/rh/*/root/usr/bin/python3).",
+                )
+                .size(11.5)
+                .color(theme::text_dim()),
+            );
+            ui.add_space(4.0);
+            ui.add(TextEdit::multiline(&mut text).code_editor().desired_rows(8).desired_width(f32::INFINITY).hint_text("one per line"));
+            ui.label(RichText::new("Not found anywhere: check the host has python3 (command -v python3 there) and add its name or path here.").size(11.0).color(theme::text_faint()));
+            ui.horizontal(|ui| {
+                if ui.button("Save").clicked() {
+                    save = true;
+                }
+                if ui.button("Defaults").on_hover_text(crate::host::DEFAULT_PYTHONS.join(", ")).clicked() {
+                    text = crate::host::DEFAULT_PYTHONS.join("\n");
+                }
+            });
+        });
+        if save {
+            let list: Vec<String> = text.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
+            self.settings.remote_python = if list.is_empty() { crate::host::DEFAULT_PYTHONS.iter().map(|s| s.to_string()).collect() } else { list };
+            crate::host::set_pythons(&self.settings.remote_python);
+            self.save_settings();
+            let failed: Vec<String> = self.conns.iter().filter(|(_, c)| matches!(c.status, ConnStatus::Failed(_))).map(|(h, _)| h.clone()).collect();
+            for h in &failed {
+                self.reconnect(h);
+            }
+            self.toast(if failed.is_empty() { "saved: used from the next connection".to_string() } else { format!("saved; connecting again: {}", failed.join(", ")) }, crate::app::ToastKind::Info);
+        } else if open {
+            self.python_window = Some(text);
         }
     }
 
@@ -4164,7 +4216,7 @@ fn group(c: Cmd) -> &'static str {
         | Cmd::Theme(_)
         | Cmd::Fonts
         | Cmd::MarkdownBreaks => GROUPS[3],
-        Cmd::Records | Cmd::Settings | Cmd::AgentLog | Cmd::Keys | Cmd::Restart | Cmd::ConfirmUnsaved | Cmd::ConfirmRunning => GROUPS[4],
+        Cmd::Records | Cmd::Settings | Cmd::RemotePython | Cmd::AgentLog | Cmd::Keys | Cmd::Restart | Cmd::ConfirmUnsaved | Cmd::ConfirmRunning => GROUPS[4],
         Cmd::Help | Cmd::Features | Cmd::Palette | Cmd::About | Cmd::DisplayTest | Cmd::Trace => GROUPS[5],
     }
 }

@@ -557,6 +557,13 @@ pub struct Settings {
     /// find in a terminal's scrollback.
     #[serde(default)]
     pub search: SearchModes,
+    /// Pythons tried on remote hosts, in order (host::DEFAULT_PYTHONS).
+    #[serde(default = "d_pythons")]
+    pub remote_python: Vec<String>,
+}
+
+fn d_pythons() -> Vec<String> {
+    crate::host::DEFAULT_PYTHONS.iter().map(|s| s.to_string()).collect()
 }
 
 /// See `Settings::search`.
@@ -628,7 +635,7 @@ impl Default for Settings {
                 },
             });
         }
-        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, layout: Layout::default(), show_hidden: false, show_ignored: true, find_mode: Default::default(), palette_mode: d_palette_mode(), cursor_style: Default::default(), local_shell: Default::default(), mermaid: Default::default(), follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, term_font: d_font_file(), icon_font: d_icon_font(), records: Default::default(), passwords: Default::default(), keys: Default::default(), session: Vec::new(), side_tabs: Default::default(), open: Default::default(), confirm_unsaved: true, confirm_running: true, console_host: String::new(), search: Default::default() }
+        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, layout: Layout::default(), show_hidden: false, show_ignored: true, find_mode: Default::default(), palette_mode: d_palette_mode(), cursor_style: Default::default(), local_shell: Default::default(), mermaid: Default::default(), follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, term_font: d_font_file(), icon_font: d_icon_font(), records: Default::default(), passwords: Default::default(), keys: Default::default(), session: Vec::new(), side_tabs: Default::default(), open: Default::default(), confirm_unsaved: true, confirm_running: true, console_host: String::new(), search: Default::default(), remote_python: d_pythons() }
     }
 }
 
@@ -1558,7 +1565,7 @@ pub struct App {
     pub serial_dialog: Option<crate::serial_ui::SerialDialog>,
     /// Which of the windows Esc closes were open last frame (a bit each),
     /// and what had the keyboard then.
-    pub esc_windows: u8,
+    pub esc_windows: u32,
     pub focus_before: Option<egui::Id>,
     /// The console host this weft's terminals run on (pty::choose_console_host).
     pub console_host: crate::pty::ConsoleHost,
@@ -1614,6 +1621,8 @@ pub struct App {
     pub records_host: Option<String>,
     /// The records settings window is open (with sizes measured on opening).
     pub records_window: Option<Vec<(crate::records::Item, u64)>>,
+    /// "Python on remote hosts…": the list being edited, a line each.
+    pub python_window: Option<String>,
     last_prune: Option<Instant>,
 }
 
@@ -1658,6 +1667,7 @@ impl App {
             settings.term_font = crate::theme::DEFAULT_FONT.into();
         }
         crate::records::set_switches(&settings.records);
+        crate::host::set_pythons(&settings.remote_python);
         // Before any terminal is opened.
         let console_host = crate::pty::choose_console_host(&settings.console_host);
         let settings_passwords = settings.passwords;
@@ -1750,6 +1760,7 @@ impl App {
             records_in_output: false,
             records_host: None,
             records_window: None,
+            python_window: None,
             last_prune: None,
             memo_edited: None,
             font_menu: None,

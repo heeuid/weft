@@ -459,7 +459,7 @@ def op_cwd(req):
     except OSError:
         pass
     try:
-        out = subprocess.run(["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"], capture_output=True, text=True, timeout=5).stdout
+        out = subprocess.run(["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, universal_newlines=True, timeout=5).stdout
     except (OSError, subprocess.SubprocessError):
         out = ""
     for line in out.splitlines():

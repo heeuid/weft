@@ -230,6 +230,7 @@ Windows에서 터미널은 콘솔 호스트 위에서 돕니다. weft는 **Windo
   rc는 gzip+base64로 보내 ConPTY의 약 8KB 명령줄 제한 안에 들어갑니다.
 - `posix-loopback` 프로필: Git Bash를 원격처럼 사용(ssh와 완전히 같은 경로)해서 서버 없이 시험해 볼 수 있습니다.
 - 로컬 패널은 PowerShell(+ PSReadLine 통합)이며 파일 작업은 에이전트 없이 Rust `std::fs`로 처리합니다.
+- **원격의 Python**: 에이전트와 시리얼 중계는 원격의 Python 3.6 이상으로 돕니다. 배포판마다 이름·위치가 달라서, 팔레트 `Python on remote hosts…`의 목록(한 줄에 하나: PATH의 이름이나 경로, `*` 가능)을 위에서부터 실행해 보고 3.6 이상인 첫 것을 씁니다. 기본: `python3`, `python`, `/usr/libexec/platform-python`(RHEL/Rocky 8 최소 설치), `/usr/local/bin/python3`, `/opt/homebrew/bin/python3`. 하나도 없으면 상태바에 시도한 목록과 할 일(원격에서 `command -v python3`로 확인, 또는 목록에 이름·경로 추가)이 나오고 `python…` 버튼으로 목록을 엽니다.
 
 ## 단축키
 

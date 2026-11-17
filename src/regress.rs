@@ -3098,3 +3098,39 @@ fn split_panes_resize_from_the_keyboard() {
     h.restart();
     assert!((ratios(&h).0 - 0.15).abs() < 1e-3, "after a restart: {:?}", ratios(&h));
 }
+
+/// "Python on remote hosts…": the list of Pythons tried there, edited a
+/// line each; saved, it is what the agent's command carries; Defaults
+/// brings back the built-in list.
+#[test]
+fn the_pythons_tried_on_remote_hosts_can_be_listed() {
+    let mut h = Harness::new(json!({}));
+    assert_eq!(h.app.settings.remote_python, crate::host::DEFAULT_PYTHONS.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+    h.command("remote_python");
+    h.frames(2);
+    assert!(h.shows("Python on remote hosts"), "the window");
+    assert!(h.shows("command -v python3"), "what to do when none is found");
+    let text = h.app.python_window.clone().unwrap();
+    assert!(text.starts_with("python3\npython\n/usr/libexec/platform-python"), "{text}");
+    h.app.python_window = Some("  /opt/py311/bin/python3.11\n\npython3 \n".into());
+    h.frames(1);
+    h.click(h.at("Save"));
+    h.frames(2);
+    assert_eq!(h.app.settings.remote_python, vec!["/opt/py311/bin/python3.11".to_string(), "python3".to_string()], "trimmed, empty lines out");
+    assert!(h.app.python_window.is_none(), "closed");
+    // As the agent's command carries it (the list itself is process-wide:
+    // other tests' windows set theirs meanwhile).
+    let b64 = crate::host::pythons_b64_of(&h.app.settings.remote_python);
+    let list = String::from_utf8(base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64).unwrap()).unwrap();
+    assert_eq!(list, "/opt/py311/bin/python3.11\npython3", "the agent tries these");
+    let saved = std::fs::read_to_string(h.app.data.path("settings.json")).unwrap();
+    assert!(saved.contains("/opt/py311/bin/python3.11"), "kept in settings.json");
+    // Defaults.
+    h.command("remote_python");
+    h.frames(2);
+    h.click(h.at("Defaults"));
+    h.frames(1);
+    h.click(h.at("Save"));
+    h.frames(2);
+    assert_eq!(h.app.settings.remote_python[0], "python3");
+}

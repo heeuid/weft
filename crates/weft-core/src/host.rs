@@ -71,10 +71,45 @@ fn gz_b64(s: &str) -> String {
     base64::engine::general_purpose::STANDARD.encode(e.finish().expect("gzip to memory"))
 }
 
-/// Agent bootstrap: read `<len>\n<source>` from stdin and exec it in memory.
-/// python3, else python, else RHEL/Rocky 8's own (a minimal install has no
-/// python3 command); none: it says so (the panel shows it).
-const AGENT_BOOT: &str = r#"P=; for c in python3 python /usr/libexec/platform-python; do if $c -c "" >/dev/null 2>&1; then P=$c; break; fi; done; if [ -z "$P" ]; then echo "weft: no python3 on this host (the Files panel, editor and search run on it; install python3)" >&2; exit 127; fi; exec $P -u -c "import sys;exec(sys.stdin.buffer.read(int(sys.stdin.buffer.readline())))""#;
+/// The Pythons tried on a remote host, in order, until one is 3.6 or newer
+/// (settings "remote_python", "Python on remote hosts…"): names on its PATH
+/// or paths, `*` allowed. Distributions put it in different places (a
+/// minimal RHEL / Rocky 8 has only /usr/libexec/platform-python).
+pub const DEFAULT_PYTHONS: &[&str] = &["python3", "python", "/usr/libexec/platform-python", "/usr/local/bin/python3", "/opt/homebrew/bin/python3"];
+
+static PYTHONS: std::sync::RwLock<Vec<String>> = std::sync::RwLock::new(Vec::new());
+
+/// The list the agent and the serial bridge try (empty: DEFAULT_PYTHONS).
+pub fn set_pythons(list: &[String]) {
+    *PYTHONS.write().unwrap_or_else(|e| e.into_inner()) = list.to_vec();
+}
+
+fn pythons_b64() -> String {
+    pythons_b64_of(&PYTHONS.read().unwrap_or_else(|e| e.into_inner()))
+}
+
+/// A list as the agent's and the bridge's commands carry it.
+pub fn pythons_b64_of(list: &[String]) -> String {
+    if list.is_empty() {
+        b64(&DEFAULT_PYTHONS.join("\n"))
+    } else {
+        b64(&list.join("\n"))
+    }
+}
+
+/// What a remote host says when none of the list is Python 3.6+.
+pub const NO_PYTHON: &str = "weft: no Python 3.6 or newer found on this host";
+
+/// sh: $P becomes the first of the list in $PY64 (base64, a line each; a
+/// `*` matches) that runs as Python 3.6+; none: it says what was tried and
+/// what to do, and ends.
+const FIND_PY: &str = r#"PL=$(printf %s "$PY64" | base64 -d 2>/dev/null || printf %s "$PY64" | base64 -D 2>/dev/null); P=$(printf '%s
+' "$PL" | while IFS= read -r e; do IFS='|'; set +f; for c in $e; do if "$c" -c 'import sys; sys.exit(sys.version_info < (3, 6))' >/dev/null 2>&1; then printf %s "$c"; exit 0; fi; done; done); set -f; if [ -z "$P" ]; then echo "weft: no Python 3.6 or newer found on this host (tried: $(printf %s "$PL" | tr '
+' ' ')). Check that python3 is installed there (command -v python3), or add its name or path in Python on remote hosts (command palette)." >&2; exit 127; fi"#;
+
+/// Agent bootstrap: find Python (FIND_PY), read `<len>\n<source>` from stdin
+/// and exec it in memory.
+const AGENT_BOOT: &str = r#"exec "$P" -u -c "import sys;exec(sys.stdin.buffer.read(int(sys.stdin.buffer.readline())))""#;
 
 pub fn b64(s: &str) -> String {
     base64::engine::general_purpose::STANDARD.encode(s.as_bytes())
@@ -100,7 +135,7 @@ pub fn remote_shell_command(cwd: Option<&str>) -> String {
 }
 
 pub fn agent_command() -> String {
-    posix_wrap(&[], AGENT_BOOT)
+    posix_wrap(&[("PY64", pythons_b64())], &format!("{FIND_PY}; {AGENT_BOOT}"))
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -175,8 +210,9 @@ pub const BAUDS: &[u32] = &[9600, 19200, 38400, 57600, 115200, 230400, 460800, 9
 /// itself (base64) so nothing is written on the host.
 pub fn serial_command(port: &str, baud: u32) -> String {
     let src = base64::engine::general_purpose::STANDARD.encode(SERIAL_PY);
+    let py = pythons_b64();
     format!(
-        "P=$(command -v python3 || command -v python || command -v /usr/libexec/platform-python); exec \"$P\" -c 'import base64;exec(base64.b64decode(\"{src}\"))' {} {baud}",
+        "PY64={py}; {FIND_PY}; exec \"$P\" -c 'import base64;exec(base64.b64decode(\"{src}\"))' {} {baud}",
         sh_quote(port)
     )
 }
@@ -1625,6 +1661,21 @@ print(json.dumps(out))
         }
     }
 
+    /// The agent and the bridge run on Python 3.6 (RHEL / Rocky 8's
+    /// platform-python): nothing newer in their grammar. (Their library
+    /// calls are kept to 3.6 by hand: no capture_output, no text=.)
+    #[test]
+    fn remote_python_stays_3_6() {
+        for (name, src) in [("agent.py", AGENT_PY), ("serial.py", SERIAL_PY)] {
+            assert!(!src.contains("capture_output") && !src.contains("text=True"), "{name}: 3.7+ subprocess arguments");
+            let check = "import ast,sys; ast.parse(sys.stdin.buffer.read(), feature_version=(3, 6))";
+            let Ok(mut child) = Command::new("python").args(["-c", check]).stdin(Stdio::piped()).stderr(Stdio::piped()).spawn() else { return };
+            child.stdin.take().unwrap().write_all(src.as_bytes()).unwrap();
+            let out = child.wait_with_output().unwrap();
+            assert!(out.status.success(), "{name} is not 3.6 grammar: {}", String::from_utf8_lossy(&out.stderr));
+        }
+    }
+
     #[test]
     fn serial_bridge_and_command() {
         // The bridge compiles (it runs on the remote host only: no termios here).
@@ -2107,14 +2158,38 @@ mod loopback {
         assert_eq!(ship_agent(&mut Failing), Err("send agent: disk on fire".into()), "other errors still are");
     }
 
-    /// No python3 or python: RHEL/Rocky 8's own is used, else the reason is
-    /// said.
+    /// The agent's command finds Python by the list (settings), runs the
+    /// first that is 3.6 or newer, and says what to do when none is. Here
+    /// through Git Bash with a PATH of its own: a Python under an odd name
+    /// from the list, a Python 2 before it (passed over), none at all.
     #[test]
-    fn the_agent_finds_platform_python() {
-        assert!(AGENT_BOOT.contains("for c in python3 python /usr/libexec/platform-python;"));
-        assert!(AGENT_BOOT.contains("no python3 on this host"));
+    fn the_agent_finds_python_by_the_list() {
         assert!(!agent_command().contains('"') && !agent_command().contains('\\'), "still nothing a shell or argv parser re-quotes");
-        assert!(serial_command("/dev/ttyS0", 9600).contains("command -v /usr/libexec/platform-python"));
+        assert!(serial_command("/dev/ttyS0", 9600).contains("PY64="), "the serial bridge too");
+        let (Some(b), Some(py)) = (bash(), which("python")) else { return };
+        let dir = std::env::temp_dir().join(format!("weft-find-py-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::create_dir_all(dir.join("opt/py-3.x/bin")).unwrap();
+        let unix = |p: &std::path::Path| p.display().to_string().replace('\\', "/");
+        // A Python 2 (any python that is not 3.6+ fails the check) and the
+        // real one under a name no default has.
+        std::fs::write(dir.join("bin/python3"), "#!/bin/sh\nexit 1\n").unwrap();
+        std::fs::write(dir.join("opt/py-3.x/bin/py3odd"), format!("#!/bin/sh\nexec '{}' \"$@\"\n", unix(&py))).unwrap();
+        let run = |list: &[&str]| -> String {
+            let list: Vec<String> = list.iter().map(|s| s.replace("$D", &unix(&dir))).collect();
+            let cmd = posix_wrap(&[("PY64", b64(&list.join("\n")))], &format!("{FIND_PY}; echo found=$P"));
+            let out = Command::new(&b)
+                .args(["-c", &format!("export PATH='{}/bin:/usr/bin:/bin'; eval \"$1\"", unix(&dir)), "x", &cmd])
+                .output()
+                .unwrap();
+            format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))
+        };
+        let got = run(&["python3", "python", "$D/opt/*/bin/py3odd"]);
+        assert!(got.contains(&format!("found={}/opt/py-3.x/bin/py3odd", unix(&dir))), "the odd one, by a pattern; python3 (2.x here) passed over: {got}");
+        let got = run(&["python3", "nothere"]);
+        assert!(got.contains(NO_PYTHON) && got.contains("tried: python3 nothere") && got.contains("command -v python3") && got.contains("Python on remote hosts") && !got.contains("found="), "{got}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

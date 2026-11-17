@@ -161,7 +161,9 @@ What the numbers don't show:
 | A terminal started with no locale (from the Finder) gets a UTF-8 one (the Mac's, en_US, or C.UTF-8), so `ls` shows Korean names; a set LANG/LC_ALL/LC_CTYPE is left alone | `weft_core::pty::tests::a_terminal_gets_a_utf8_locale_when_none_is_set` |
 | Sending the agent to an ssh that already ended is no error: ssh's words become the reason (a Mac showed "Broken pipe" and never asked for the password) | `host::loopback::shipping_to_an_ended_ssh_is_no_error` |
 | An agent refused before it is sent: the reason is ssh's "Permission denied", so a password is asked for | `host::loopback::an_agent_refused_before_it_is_sent_says_why` |
-| The agent and the serial bridge use RHEL/Rocky 8's platform-python when there is no python3; with none the reason is said | `host::loopback::the_agent_finds_platform_python` |
+| The agent finds Python by the list: a Python under an odd name by a `*` pattern, a Python 2 passed over; none: what was tried and what to do (Git Bash with its own PATH) | `host::loopback::the_agent_finds_python_by_the_list` |
+| agent.py and serial.py stay Python 3.6 (Rocky 8's platform-python): grammar and subprocess arguments | `host::tests::remote_python_stays_3_6` |
+| "Python on remote hosts…": the list edited a line each, saved to settings and carried by the agent's command; Defaults; nine Esc-closed windows fit the mask | `regress::the_pythons_tried_on_remote_hosts_can_be_listed` |
 | Ctrl+Shift+Z is redo in a text field | `ui_panels::tests::redo_key_stays_with_a_text_field` |
 | Tab drag reorder; narrow tab rows; which tabs a tab's menu closes | `ui_panels::tests::dragged_tab_lands_between_tabs`, `narrow_tab_rows_keep_the_open_tab`, `app::close_tests::*` |
 | Palette reopens full height, at the top | `regress::palette_reopens_full_height_at_the_top` |

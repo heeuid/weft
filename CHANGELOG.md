@@ -5,6 +5,28 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.9.0
+
+Added
+- **"Python on remote hosts…"** (palette): the Pythons tried on a remote
+  host for the Files agent and serial consoles, in order, a line each: a
+  name on its PATH or a path, `*` allowed (/opt/rh/*/root/usr/bin/python3).
+  The first that runs as Python 3.6 or newer is used, so a Python 2 named
+  python is passed over. Defaults: python3, python,
+  /usr/libexec/platform-python, /usr/local/bin/python3,
+  /opt/homebrew/bin/python3. Saving connects again the hosts whose agent
+  failed.
+- **When none is found** the agent says what it tried and what to do:
+  check python3 is there (`command -v python3`) or add its name or path
+  to the list. The status bar shows the whole reason on hover and a
+  "python…" button that opens the list.
+
+Fixed
+- The agent and the serial bridge run on Python 3.6 (RHEL / Rocky 8's
+  platform-python): lsof was called with 3.7's arguments.
+- The windows Esc closes are kept in a 32-bit mask: the 8-bit one was full
+  with this window and overflowed with one more.
+
 ## 0.8.3
 
 Fixed
