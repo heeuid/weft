@@ -3358,4 +3358,14 @@ fn hidden_tabs_are_counted_each_side() {
     assert_eq!(counts(&h), (l0 + 1, r0 - 1), "a small turn alone: not yet");
     h.wheel(mid, 0.3, Modifiers::NONE);
     assert!(h.wait_for(5.0, |h| counts(h) == (l0, r0) && whole(h)), "small turns add up to a tab: {:?}", counts(&h));
+    // At the strip's bottom, over its scroll bar (the 6 points under the
+    // tabs), too: there egui scrolled it less than a tab and it went back,
+    // only shaking.
+    let tab_bottom = h.texts.iter().find(|(t, r)| t == "local" && r.top() < 40.0).map(|(_, r)| r.bottom()).unwrap();
+    for dy in [2.0, 4.0, 5.5] {
+        let low = egui::pos2(mid.x, tab_bottom + dy);
+        let before = counts(&h);
+        h.wheel(low, -1.0, Modifiers::NONE);
+        assert!(h.wait_for(5.0, |h| counts(h) == (before.0 + 1, before.1 - 1) && whole(h)), "a notch {dy} below the titles: one tab: {:?} (was {before:?})", counts(&h));
+    }
 }

@@ -5,6 +5,15 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.10.2
+
+Fixed
+- **The wheel at the tab strip's bottom edge** (over its thin scroll bar,
+  under the tabs) still only shook it in place: weft took the wheel over
+  the tabs alone, so there egui moved the strip less than a tab and it
+  went back to the nearest tab's edge. The strip's scroll bar is part of
+  it now: a notch there moves one tab too.
+
 ## 0.10.1
 
 Fixed

@@ -10,7 +10,7 @@ members = ["crates/weft-core", "crates/weft-draw"]
 
 # One version for weft and its crates: raised here, with CHANGELOG.md.
 [workspace.package]
-version = "0.10.1"
+version = "0.10.2"
 license = "MIT"
 
 [dependencies]

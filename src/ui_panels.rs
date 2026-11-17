@@ -1029,9 +1029,13 @@ impl App {
                     }
                 });
             });
-            // Where the strip is, for the wheel next frame.
+            // Where the strip is, for the wheel next frame: its width, the
+            // tab bar's whole height (its scroll bar is below the tabs:
+            // there egui took the wheel, moved it less than a tab, and it
+            // went back, shaking).
             let max = (out.content_size.x - out.inner_rect.width()).max(0.0);
-            ui.data_mut(|d| d.insert_temp(strip_id, (out.inner_rect, out.state.offset.x, max)));
+            let area = egui::Rect::from_x_y_ranges(out.inner_rect.x_range(), ui.min_rect().union(out.inner_rect).y_range());
+            ui.data_mut(|d| d.insert_temp(strip_id, (area, out.state.offset.x, max)));
             // At rest (no wheel, no button held, no tab being dragged): on
             // the nearest tab's edge.
             if overflow && dragging.is_none() {
