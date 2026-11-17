@@ -5,6 +5,22 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.9.1
+
+Fixed
+- **A host with no Python said only the end of why.** Its reason ran over
+  several lines and the panels kept the last: "agent offline:
+  /opt/homebrew/bin/python3). Check that…", and the status bar's
+  "python…" button did not show. The agent's command is run as `eval` of
+  it unquoted, which made the newlines written in it spaces (in `tr` and
+  `printf`), so the list it had tried was printed a line each. The reason
+  is one line now, what is wrong first: "weft: no Python 3.6 or newer
+  found on this host: the Files panel, editor and search need one. Check
+  python3 is installed there (command -v python3), or add its name or path
+  in Python on remote hosts (command palette). Tried: …". weft's own
+  reason stays over what ssh says after it. Finding Python was not
+  affected.
+
 ## 0.9.0
 
 Added

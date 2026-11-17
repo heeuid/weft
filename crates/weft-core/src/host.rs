@@ -103,9 +103,7 @@ pub const NO_PYTHON: &str = "weft: no Python 3.6 or newer found on this host";
 /// sh: $P becomes the first of the list in $PY64 (base64, a line each; a
 /// `*` matches) that runs as Python 3.6+; none: it says what was tried and
 /// what to do, and ends.
-const FIND_PY: &str = r#"PL=$(printf %s "$PY64" | base64 -d 2>/dev/null || printf %s "$PY64" | base64 -D 2>/dev/null); P=$(printf '%s
-' "$PL" | while IFS= read -r e; do IFS='|'; set +f; for c in $e; do if "$c" -c 'import sys; sys.exit(sys.version_info < (3, 6))' >/dev/null 2>&1; then printf %s "$c"; exit 0; fi; done; done); set -f; if [ -z "$P" ]; then echo "weft: no Python 3.6 or newer found on this host (tried: $(printf %s "$PL" | tr '
-' ' ')). Check that python3 is installed there (command -v python3), or add its name or path in Python on remote hosts (command palette)." >&2; exit 127; fi"#;
+const FIND_PY: &str = r#"PL=$(printf %s "$PY64" | base64 -d 2>/dev/null || printf %s "$PY64" | base64 -D 2>/dev/null); P=$(printf '%s\n' "$PL" | while IFS= read -r e; do IFS='|'; set +f; for c in $e; do if "$c" -c 'import sys; sys.exit(sys.version_info < (3, 6))' >/dev/null 2>&1; then printf %s "$c"; exit 0; fi; done; done); set -f; if [ -z "$P" ]; then T=; for e in $PL; do T="$T $e"; done; echo "weft: no Python 3.6 or newer found on this host: the Files panel, editor and search need one. Check python3 is installed there (command -v python3), or add its name or path in Python on remote hosts (command palette). Tried:$T" >&2; exit 127; fi"#;
 
 /// Agent bootstrap: find Python (FIND_PY), read `<len>\n<source>` from stdin
 /// and exec it in memory.
@@ -717,7 +715,11 @@ impl Conn {
                         }
                         AgentMsg::Stderr(s) => {
                             logs.push(format!("stderr: {s}"));
-                            self.stderr_tail = s;
+                            // weft's own word on why (no Python…) stays the
+                            // reason over what ssh says after it.
+                            if !self.stderr_tail.starts_with("weft: ") || s.starts_with("weft: ") {
+                                self.stderr_tail = s;
+                            }
                         }
                         AgentMsg::Exit => exited = true,
                     }
@@ -2188,7 +2190,10 @@ mod loopback {
         let got = run(&["python3", "python", "$D/opt/*/bin/py3odd"]);
         assert!(got.contains(&format!("found={}/opt/py-3.x/bin/py3odd", unix(&dir))), "the odd one, by a pattern; python3 (2.x here) passed over: {got}");
         let got = run(&["python3", "nothere"]);
-        assert!(got.contains(NO_PYTHON) && got.contains("tried: python3 nothere") && got.contains("command -v python3") && got.contains("Python on remote hosts") && !got.contains("found="), "{got}");
+        let said: Vec<&str> = got.lines().filter(|l| l.starts_with("weft: ")).collect();
+        assert_eq!(said.len(), 1, "the reason on one line (the status bar keeps one): {got}");
+        assert!(said[0].starts_with(NO_PYTHON) && said[0].ends_with("Tried: python3 nothere") && said[0].contains("command -v python3") && said[0].contains("Python on remote hosts") && !got.contains("found="), "{got}");
+        assert!(!FIND_PY.contains('\n'), "no newline in the script: eval of it unquoted makes it a space");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

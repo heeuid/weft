@@ -3134,3 +3134,41 @@ fn the_pythons_tried_on_remote_hosts_can_be_listed() {
     h.frames(2);
     assert_eq!(h.app.settings.remote_python[0], "python3");
 }
+
+/// A remote host with no Python: its terminal works as ever; the panels
+/// that need the agent say why they can't (no Python, what was tried,
+/// what to do), and nothing waits for good.
+#[test]
+fn a_host_without_python_says_so_where_the_gui_needs_it() {
+    let bash = "C:/Program Files/Git/bin/bash.exe";
+    if !std::path::Path::new(bash).is_file() {
+        return;
+    }
+    // The agent's side has a PATH with no Python on it (Git Bash has none).
+    let prof = json!({"name": "nopy", "kind": "custom", "pty": [bash, "-c"], "agent": [bash, "-c", "export PATH=/usr/bin:/bin; eval \"$1\"", "x"]});
+    let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}, prof], "sidebar": true, "follow_cwd": false}));
+    h.app.new_tab("nopy", None);
+    assert!(h.wait_for(30.0, |h| matches!(h.app.conns.get("nopy").map(|c| &c.status), Some(crate::host::ConnStatus::Failed(_)))), "the agent ends");
+    h.frames(3);
+    // The status bar: why, and the list's button.
+    assert!(h.shows("agent offline: weft: no Python 3.6 or newer found on this host"), "the status bar says why");
+    let said = |h: &Harness| h.texts.iter().any(|(t, _)| t.contains("no Python 3.6 or newer") && t.contains("command -v python3") && t.contains("Python on remote hosts") && t.contains("Tried: python3 python"));
+    // Files: the whole reason, what to do.
+    h.app.set_root("nopy", "/tmp");
+    assert!(h.wait_for(10.0, said), "Files says why and what to do");
+    // The editor: the same, not a file loading for good.
+    h.app.open_file("nopy", "/etc/hosts", 1);
+    assert!(h.wait_for(10.0, |h| h.app.editor.files.iter().all(|f| !f.loading)), "nothing waits for good");
+    // The terminal works as ever: once its shell has shown a prompt, a
+    // command runs. (Sent to it: the editor just opened has the keyboard.)
+    let pane = h.app.panes.iter().find(|(_, p)| p.host == "nopy").map(|(id, _)| *id).unwrap();
+    assert!(h.wait_for(60.0, |h| !h.app.panes[&pane].term.blocks.is_empty()), "the shell's prompt");
+    h.app.panes.get_mut(&pane).unwrap().send(b"echo hello-$((40+2))\r");
+    assert!(h.wait_for(30.0, |h| h.shows("hello-42")), "the terminal works");
+    // The button opens the list. (The agent is tried once more after the
+    // terminal's first prompt: it says the same again.)
+    assert!(h.wait_for(30.0, |h| h.shows("python…")), "the button is back");
+    h.click(h.at("python…"));
+    h.frames(2);
+    assert!(h.app.python_window.is_some(), "python… opens the list");
+}

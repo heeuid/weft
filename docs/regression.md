@@ -164,6 +164,7 @@ What the numbers don't show:
 | The agent finds Python by the list: a Python under an odd name by a `*` pattern, a Python 2 passed over; none: what was tried and what to do (Git Bash with its own PATH) | `host::loopback::the_agent_finds_python_by_the_list` |
 | agent.py and serial.py stay Python 3.6 (Rocky 8's platform-python): grammar and subprocess arguments | `host::tests::remote_python_stays_3_6` |
 | "Python on remote hosts…": the list edited a line each, saved to settings and carried by the agent's command; Defaults; nine Esc-closed windows fit the mask | `regress::the_pythons_tried_on_remote_hosts_can_be_listed` |
+| A remote host with no Python: the status bar says why with a python… button that opens the list, Files and the editor say why and what to do, nothing waits for good, the terminal works; the reason is one line (it ran over lines and the end was kept) | `regress::a_host_without_python_says_so_where_the_gui_needs_it` |
 | Ctrl+Shift+Z is redo in a text field | `ui_panels::tests::redo_key_stays_with_a_text_field` |
 | Tab drag reorder; narrow tab rows; which tabs a tab's menu closes | `ui_panels::tests::dragged_tab_lands_between_tabs`, `narrow_tab_rows_keep_the_open_tab`, `app::close_tests::*` |
 | Palette reopens full height, at the top | `regress::palette_reopens_full_height_at_the_top` |
