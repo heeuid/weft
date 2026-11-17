@@ -72,7 +72,9 @@ fn gz_b64(s: &str) -> String {
 }
 
 /// Agent bootstrap: read `<len>\n<source>` from stdin and exec it in memory.
-const AGENT_BOOT: &str = r#"P=python3; $P -c "" >/dev/null 2>&1 || P=python; exec $P -u -c "import sys;exec(sys.stdin.buffer.read(int(sys.stdin.buffer.readline())))""#;
+/// python3, else python, else RHEL/Rocky 8's own (a minimal install has no
+/// python3 command); none: it says so (the panel shows it).
+const AGENT_BOOT: &str = r#"P=; for c in python3 python /usr/libexec/platform-python; do if $c -c "" >/dev/null 2>&1; then P=$c; break; fi; done; if [ -z "$P" ]; then echo "weft: no python3 on this host (the Files panel, editor and search run on it; install python3)" >&2; exit 127; fi; exec $P -u -c "import sys;exec(sys.stdin.buffer.read(int(sys.stdin.buffer.readline())))""#;
 
 pub fn b64(s: &str) -> String {
     base64::engine::general_purpose::STANDARD.encode(s.as_bytes())
@@ -174,7 +176,7 @@ pub const BAUDS: &[u32] = &[9600, 19200, 38400, 57600, 115200, 230400, 460800, 9
 pub fn serial_command(port: &str, baud: u32) -> String {
     let src = base64::engine::general_purpose::STANDARD.encode(SERIAL_PY);
     format!(
-        "P=$(command -v python3 || command -v python); exec \"$P\" -c 'import base64;exec(base64.b64decode(\"{src}\"))' {} {baud}",
+        "P=$(command -v python3 || command -v python || command -v /usr/libexec/platform-python); exec \"$P\" -c 'import base64;exec(base64.b64decode(\"{src}\"))' {} {baud}",
         sh_quote(port)
     )
 }
@@ -715,6 +717,21 @@ impl Drop for Conn {
     }
 }
 
+/// Ship the agent source through stdin: it is exec'd in memory remotely.
+/// ssh may have ended before taking it (keys refused: "Permission denied",
+/// no python…): that is no error here, what ssh said is read from its
+/// stderr and becomes the reason, so a password is asked for. (A Mac's
+/// pipe holds 16 KB, less than the agent: there it failed with only "send
+/// agent: Broken pipe".)
+fn ship_agent(stdin: &mut impl Write) -> Result<(), String> {
+    let header = format!("{}\n", AGENT_PY.len());
+    match stdin.write_all(header.as_bytes()).and_then(|_| stdin.write_all(AGENT_PY.as_bytes())).and_then(|_| stdin.flush()) {
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        Err(e) => Err(format!("send agent: {e}")),
+        Ok(()) => Ok(()),
+    }
+}
+
 fn spawn_agent(argv: &[String], env: &[(String, String)], wake: impl Fn() + Send + Clone + 'static) -> Result<Backend, String> {
     let mut cmd = Command::new(&argv[0]);
     cmd.args(&argv[1..]).envs(env.iter().cloned()).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -727,13 +744,7 @@ fn spawn_agent(argv: &[String], env: &[(String, String)], wake: impl Fn() + Send
     let mut stdin = child.stdin.take().ok_or("no stdin")?;
     let stdout = child.stdout.take().ok_or("no stdout")?;
     let stderr = child.stderr.take().ok_or("no stderr")?;
-    // Ship the agent source through stdin: it is exec'd in memory remotely.
-    let header = format!("{}\n", AGENT_PY.len());
-    stdin
-        .write_all(header.as_bytes())
-        .and_then(|_| stdin.write_all(AGENT_PY.as_bytes()))
-        .and_then(|_| stdin.flush())
-        .map_err(|e| format!("send agent: {e}"))?;
+    ship_agent(&mut stdin)?;
     let (tx, rx) = mpsc::channel();
     let tx2 = tx.clone();
     let wake2 = wake.clone();
@@ -2047,6 +2058,63 @@ mod loopback {
         let took = started.elapsed();
         eprintln!("dropping a pane took {took:?}");
         assert!(took < Duration::from_millis(100), "closing a pane blocked the UI for {took:?}");
+    }
+
+    /// ssh refused before the agent was sent (keys not accepted, here with
+    /// the agent's stdin closed): the reason is what ssh said, so weft asks
+    /// for a password; it was "send agent: Broken pipe" on a Mac.
+    #[test]
+    fn an_agent_refused_before_it_is_sent_says_why() {
+        let Some(b) = bash() else { return };
+        let script = "exec 0<&-; echo 'user@host: Permission denied (publickey,password).' >&2; sleep 1".to_string();
+        let prof = Profile { name: "refused".into(), kind: HostKind::Custom { pty: vec![b.clone(), "-c".into()], agent: vec![b, "-c".into(), script] } };
+        let data = DataDir { root: std::env::temp_dir().join(format!("weft-test-refused-{}", std::process::id())) };
+        let _ = std::fs::create_dir_all(data.root.join("logs"));
+        let mut c = Conn::open(prof, &data, || {}, None);
+        let end = Instant::now() + Duration::from_secs(20);
+        while !matches!(c.status, ConnStatus::Failed(_)) && Instant::now() < end {
+            c.poll();
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        match &c.status {
+            ConnStatus::Failed(why) => assert!(why.contains("Permission denied") && !why.contains("Broken pipe"), "{why}"),
+            s => panic!("{s:?}"),
+        }
+        drop(c);
+        let _ = std::fs::remove_dir_all(&data.root);
+    }
+
+    /// Sending the agent to an ssh that has already ended (its end of the
+    /// pipe closed) is not the failure: ssh's own words are.
+    #[test]
+    fn shipping_to_an_ended_ssh_is_no_error() {
+        let Some(b) = bash() else { return };
+        let mut child = Command::new(b).args(["-c", "exit 255"]).stdin(Stdio::piped()).spawn().unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        let _ = child.wait();
+        let raw = stdin.write_all(AGENT_PY.as_bytes()).and_then(|_| stdin.flush());
+        assert_eq!(raw.map_err(|e| e.kind()), Err(std::io::ErrorKind::BrokenPipe), "nobody at the other end");
+        assert_eq!(ship_agent(&mut stdin), Ok(()));
+        struct Failing;
+        impl Write for Failing {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("disk on fire"))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        assert_eq!(ship_agent(&mut Failing), Err("send agent: disk on fire".into()), "other errors still are");
+    }
+
+    /// No python3 or python: RHEL/Rocky 8's own is used, else the reason is
+    /// said.
+    #[test]
+    fn the_agent_finds_platform_python() {
+        assert!(AGENT_BOOT.contains("for c in python3 python /usr/libexec/platform-python;"));
+        assert!(AGENT_BOOT.contains("no python3 on this host"));
+        assert!(!agent_command().contains('"') && !agent_command().contains('\\'), "still nothing a shell or argv parser re-quotes");
+        assert!(serial_command("/dev/ttyS0", 9600).contains("command -v /usr/libexec/platform-python"));
     }
 
     #[test]

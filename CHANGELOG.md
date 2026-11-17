@@ -5,6 +5,20 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.8.3
+
+Fixed
+- **On a Mac, a host that wants a password showed "agent offline: send
+  agent: Broken pipe" in Files** instead of asking for it (issue #1). With
+  keys refused, ssh ends at once; a Mac's pipe holds 16 KB, less than the
+  agent weft sends, so sending it failed and what ssh said was dropped.
+  Now ssh's own words are the reason ("Permission denied…"), and the
+  password dialog opens as on Windows and Linux.
+- **Files on RHEL / Rocky Linux 8**: a minimal install has no `python3`
+  command, only /usr/libexec/platform-python; the agent (and a serial
+  console's bridge) now use it. With no python at all the panel says so
+  instead of ending without a word.
+
 ## 0.8.2
 
 Fixed
