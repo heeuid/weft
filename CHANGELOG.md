@@ -5,6 +5,19 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.10.0
+
+Added
+- **Tabs out of sight are counted.** When there are more terminal tabs
+  than fit (they scroll sideways), the tab bar shows how many are out of
+  sight on each side, `‹ 3` and `5 ›`, and how many there are in all
+  (`12 tabs`); the two counts are each side's own (`‹ 4`, `5 ›`). An
+  arrow brings the next hidden tab into view without switching to it; an
+  arrow with none to show is dimmed. The strip shows whole tabs and comes
+  to rest on a tab's edge, after an arrow, a wheel or the scroll bar (a
+  tab was left cut in two at an end, its dot gone). With room for every
+  tab, none of it is shown.
+
 ## 0.9.3
 
 Fixed

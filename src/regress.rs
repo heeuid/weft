@@ -3269,3 +3269,85 @@ fn a_password_given_once_serves_the_waiting_terminals() {
     assert!(h.wait_for(90.0, |h| shows(h, ids[0], "logged-in") && shows(h, ids[1], "logged-in")), "the waiting ones started again with it");
     assert!(!shows(&h, ids[2], "logged-in"), "the one that got in was not started again");
 }
+
+/// More tabs than fit: how many are out of sight on each side (‹ 3, 5 ›)
+/// and how many there are in all; an arrow brings the next one into view
+/// without switching to it. With room for all, none of it.
+#[test]
+fn hidden_tabs_are_counted_each_side() {
+    let mut h = Harness::new(json!({"profiles": [crate::testkit::idle_profile("local")], "session": [{"t": "Pane", "host": "local", "cwd": null}, {"t": "Pane", "host": "local", "cwd": null}]}));
+    h.size = egui::vec2(900.0, 500.0);
+    h.frames(4);
+    assert!(!h.texts.iter().any(|(t, _)| t.ends_with(" tabs") || t.starts_with("‹ ")), "two tabs fit: nothing more");
+    for _ in 0..10 {
+        h.command("new_tab");
+    }
+    h.size = egui::vec2(700.0, 500.0);
+    h.frames(6);
+    let count = |h: &Harness, pre: &str| -> Option<usize> {
+        h.texts.iter().find_map(|(t, r)| (r.top() < 40.0).then(|| t.strip_prefix(pre).or_else(|| t.strip_suffix(pre))).flatten().and_then(|n| n.trim().parse().ok()))
+    };
+    assert!(h.shows("12 tabs"), "how many in all");
+    let (left, right) = (count(&h, "‹ ").unwrap(), count(&h, " ›").unwrap());
+    assert!(left > 0 && left + right < 12, "the active one in view, others out of sight: {left} on the left, {right} on the right");
+    let active = h.app.active_tab;
+    // The left arrow brings the next one in, one at a time.
+    let at = h.texts.iter().find(|(t, r)| t.starts_with("‹ ") && r.top() < 40.0).map(|(_, r)| r.center()).unwrap();
+    h.click(at);
+    // (The strip scrolls there smoothly, over a few frames.)
+    assert!(h.wait_for(5.0, |h| count(h, "‹ ").is_some_and(|l| l < left)), "it scrolls");
+    let (l2, r2) = (count(&h, "‹ ").unwrap(), count(&h, " ›").unwrap());
+    assert!(l2 < left && r2 > 0, "one more in view on the left: {l2} / {r2} (was {left} / {right})");
+    assert_eq!(h.app.active_tab, active, "the tab in use stays the same");
+    for _ in 0..20 {
+        let Some(at) = h.texts.iter().find(|(t, r)| t.starts_with("‹ ") && r.top() < 40.0).map(|(_, r)| r.center()) else { break };
+        let before = count(&h, "‹ ");
+        if before == Some(0) {
+            break;
+        }
+        h.click(at);
+        h.wait_for(5.0, |h| count(h, "‹ ") != before);
+    }
+    assert_eq!(count(&h, "‹ "), Some(0), "at the first tab");
+    let r_end = count(&h, " ›").unwrap();
+    assert!(r_end > 0 && r_end < 12, "the rest on the right: {r_end}");
+    // And to the right again.
+    let at = h.texts.iter().find(|(t, r)| t.ends_with(" ›") && r.top() < 40.0).map(|(_, r)| r.center()).unwrap();
+    h.click(at);
+    assert!(h.wait_for(5.0, |h| count(h, " ›").is_some_and(|r| r < r_end)), "one more in view on the right");
+    // The strip comes to rest on a tab's edge, by the arrows or a wheel
+    // turned any amount: no tab cut in two at either end (one was, its dot
+    // gone).
+    let whole = |h: &Harness| {
+        let start = h.texts.iter().find(|(t, r)| t.starts_with("‹ ") && r.top() < 40.0).map(|(_, r)| r.right()).unwrap();
+        let end = h.texts.iter().find(|(t, r)| t.ends_with(" ›") && r.top() < 40.0).map(|(_, r)| r.left()).unwrap();
+        // The titles drawn in the strip (those scrolled away are drawn
+        // too, clipped out of sight).
+        let titles: Vec<f32> = h.texts.iter().filter(|(t, r)| t == "local" && r.top() < 40.0 && r.right() > start && r.left() < end).map(|(_, r)| r.left()).collect();
+        let first = titles.iter().cloned().fold(f32::INFINITY, f32::min);
+        let last = titles.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        // A tab's title is 22 px into it; each tab is 90 wide, 2 apart.
+        let ok = !titles.is_empty() && first - 22.0 >= start - 0.5 && last - 22.0 + 90.0 <= end + 0.5 && titles.iter().all(|x| ((x - first) / 92.0 - ((x - first) / 92.0).round()).abs() < 0.02);
+        if !ok {
+            eprintln!("strip {start}..{end}: tabs from {:?}", titles.iter().map(|x| x - 22.0).collect::<Vec<_>>());
+        }
+        ok
+    };
+    assert!(whole(&h), "after the arrows");
+    // Over the strip (between the arrows; a title scrolled away is drawn
+    // there too, out of sight).
+    let mid = {
+        let start = h.texts.iter().find(|(t, r)| t.starts_with("‹ ") && r.top() < 40.0).map(|(_, r)| r.right()).unwrap();
+        let end = h.texts.iter().find(|(t, r)| t.ends_with(" ›") && r.top() < 40.0).map(|(_, r)| r.left()).unwrap();
+        let y = h.texts.iter().find(|(t, r)| t == "local" && r.top() < 40.0).map(|(_, r)| r.center().y).unwrap();
+        egui::pos2((start + end) / 2.0, y)
+    };
+    for lines in [-0.37, -1.6, 0.9] {
+        h.wheel(mid, lines, Modifiers::NONE);
+        assert!(h.wait_for(5.0, whole), "after a wheel turned by {lines}");
+    }
+    // (And a wheel does move it.)
+    let before = (count(&h, "‹ "), count(&h, " ›"));
+    h.wheel(mid, -4.0, Modifiers::NONE);
+    assert!(h.wait_for(5.0, |h| (count(h, "‹ "), count(h, " ›")) != before && whole(h)), "a wheel turned further moves it, onto a tab's edge: {before:?}");
+}

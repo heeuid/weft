@@ -783,6 +783,38 @@ impl App {
         // Room for the tabs: all of it but the + and connect buttons and a margin.
         // (Never more than there is: past it the tabs ran under the buttons.)
         let room = (ui.available_width() - 4.0 - 2.0 * (22.0 + 2.0) - 2.0 - 12.0).max(0.0);
+        // More tabs than fit, even at their narrowest: they scroll, and how
+        // many are out of sight each way (‹ 3, 5 ›) and how many there are
+        // in all are shown, the arrows bringing the next one into view.
+        let overflow = n_tabs > 1 && n_tabs as f32 * (TAB_MIN_W + 2.0) > room;
+        let hidden_id = Id::new("tab-hidden");
+        let (hid_left, hid_right): (usize, usize) = if overflow { ui.data(|d| d.get_temp(hidden_id)).unwrap_or((0, 0)) } else { (0, 0) };
+        let reveal_id = Id::new("tab-reveal-to");
+        let reveal_to: Option<usize> = ui.data_mut(|d| d.remove_temp(reveal_id));
+        let total_label = format!("{n_tabs} tabs");
+        let total_w = ui.painter().layout_no_wrap(total_label.clone(), FontId::proportional(11.0), theme::text_faint()).size().x + 6.0;
+        let room = if overflow { (room - 2.0 * (TAB_ARROW_W + 2.0) - total_w - 2.0).max(0.0) } else { room };
+        // Overflowing, every tab is as narrow as it goes (TAB_MIN_W): the
+        // strip shows a whole number of them, and comes to rest at a tab's
+        // edge (a wheel or the scroll bar left it anywhere, a tab cut in
+        // two at an end, its dot gone).
+        let step = TAB_MIN_W + 2.0;
+        let room = if overflow { (((room + 2.0) / step).floor().max(1.0) * step - 2.0).min(room.max(TAB_MIN_W)) } else { room };
+        let snap_id = Id::new("tab-snap");
+        let snap_to: Option<f32> = ui.data_mut(|d| d.remove_temp(snap_id));
+        let arrow = |ui: &mut Ui, text: String, n: usize, tip: &str| {
+            let color = if n > 0 { theme::text_dim() } else { theme::tint(theme::text_faint(), 90) };
+            let (rect, resp) = ui.allocate_exact_size(vec2(TAB_ARROW_W, 28.0), if n > 0 { Sense::click() } else { Sense::hover() });
+            if n > 0 && resp.hovered() {
+                ui.painter().rect_filled(rect.shrink2(vec2(0.0, 3.0)), CornerRadius::same(4), theme::bg_hover());
+            }
+            ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, FontId::proportional(11.5), color);
+            resp.on_hover_text(format!("{tip} ({n_tabs} tabs in all)")).clicked()
+        };
+        if overflow && arrow(ui, format!("‹ {hid_left}"), hid_left, &format!("{hid_left} more tab(s) to the left: click to see the next")) {
+            ui.data_mut(|d| d.insert_temp(reveal_id, hid_left - 1));
+            ui.ctx().request_repaint();
+        }
         let natural: Vec<f32> = self
             .tabs
             .iter()
@@ -791,7 +823,7 @@ impl App {
             .collect();
         let total: f32 = natural.iter().sum::<f32>() + 2.0 * n_tabs as f32;
         // Too wide: every tab gets the same share, but not less than 90.
-        let cap = if total > room { (room / n_tabs.max(1) as f32 - 2.0).max(90.0) } else { f32::INFINITY };
+        let cap = if total > room { (room / n_tabs.max(1) as f32 - 2.0).max(TAB_MIN_W) } else { f32::INFINITY };
         let drag_id = Id::new("tab-drag");
         let mut dragging: Option<usize> = ui.data(|d| d.get_temp(drag_id));
         let last_active_id = Id::new("tab-last-active");
@@ -804,7 +836,11 @@ impl App {
             scroll.bar_width = 3.0;
             scroll.bar_inner_margin = 1.0;
             scroll.bar_outer_margin = 0.0;
-            ScrollArea::horizontal().id_salt("term-tabs").max_width(room).auto_shrink([true, true]).drag_to_scroll(false).show(ui, |ui| {
+            let mut area = ScrollArea::horizontal().id_salt("term-tabs").max_width(room).auto_shrink([true, true]).drag_to_scroll(false).animated(!overflow);
+            if let Some(x) = snap_to {
+                area = area.horizontal_scroll_offset(x);
+            }
+            let out = area.show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
                     let mut rects: Vec<egui::Rect> = Vec::with_capacity(n_tabs);
@@ -821,7 +857,7 @@ impl App {
                         let w = natural[ti].min(cap);
                         let (rect, resp) = ui.allocate_exact_size(vec2(w, 28.0), Sense::click_and_drag());
                         rects.push(rect);
-                        if active && reveal {
+                        if active && reveal || reveal_to == Some(ti) {
                             ui.scroll_to_rect(rect, None);
                         }
                         // contains_pointer, not hovered(): the close button drawn on hover
@@ -905,6 +941,17 @@ impl App {
                             }
                         });
                     }
+                    // The tabs out of sight each way (more than half of
+                    // one hidden), for the arrows next frame.
+                    if overflow {
+                        let clip = ui.clip_rect();
+                        let left = rects.iter().filter(|r| r.is_positive() && r.center().x < clip.left()).count();
+                        let right = rects.iter().filter(|r| r.is_positive() && r.center().x > clip.right()).count();
+                        if (left, right) != (hid_left, hid_right) {
+                            ui.data_mut(|d| d.insert_temp(hidden_id, (left, right)));
+                            ui.ctx().request_repaint();
+                        }
+                    }
                     // Dragging: where it would land, between tabs; it moves on release.
                     if let Some(from) = dragging {
                         let pointer = ui.input(|i| i.pointer.interact_pos());
@@ -956,11 +1003,32 @@ impl App {
                     }
                 });
             });
+            // At rest (no wheel, no button held, no tab being dragged): on
+            // the nearest tab's edge.
+            if overflow && dragging.is_none() {
+                let x = out.state.offset.x;
+                let busy = ui.input(|i| i.smooth_scroll_delta != egui::Vec2::ZERO || i.raw_scroll_delta != egui::Vec2::ZERO || i.pointer.any_down());
+                let max = (out.content_size.x - out.inner_rect.width()).max(0.0);
+                let snapped = ((x / step).round() * step).clamp(0.0, max);
+                if !busy && (x - snapped).abs() > 0.5 {
+                    ui.data_mut(|d| d.insert_temp(snap_id, snapped));
+                    ui.ctx().request_repaint();
+                }
+            }
         });
         ui.data_mut(|d| match dragging {
             Some(i) => d.insert_temp(drag_id, i),
             None => d.remove::<usize>(drag_id),
         });
+        if overflow {
+            if arrow(ui, format!("{hid_right} ›"), hid_right, &format!("{hid_right} more tab(s) to the right: click to see the next")) {
+                ui.data_mut(|d| d.insert_temp(reveal_id, n_tabs - hid_right));
+                ui.ctx().request_repaint();
+            }
+            let (rect, resp) = ui.allocate_exact_size(vec2(total_w, 28.0), Sense::hover());
+            ui.painter().text(rect.center(), Align2::CENTER_CENTER, total_label, FontId::proportional(11.0), theme::text_faint());
+            resp.on_hover_text(format!("{n_tabs} tabs open ({hid_left} out of sight on the left, {hid_right} on the right)"));
+        }
         ui.add_space(4.0);
         if icons::button(ui, Icon::Plus, "new tab on the same host (Ctrl+Shift+T)").clicked() {
             self.run_cmd(Cmd::NewTab);
@@ -4154,6 +4222,12 @@ fn fit_tabs(widths: &[f32], room: f32, more: f32, active: usize) -> (Vec<usize>,
 
 /// What the tab strip needs at least beside the tab bar's buttons: one tab
 /// (90) and the + and connect buttons after it, with their margins.
+/// The ‹ 3 / 5 › beside a tab strip too long for its room.
+const TAB_ARROW_W: f32 = 34.0;
+
+/// A terminal tab at its narrowest (when there are more than fit).
+const TAB_MIN_W: f32 = 90.0;
+
 const TAB_STRIP_LEAST: f32 = 90.0 + 4.0 + 2.0 * (22.0 + 2.0) + 2.0 + 12.0 + 16.0;
 
 /// Where a dragged tab lands: the index of the tab it goes before (len: the end).
