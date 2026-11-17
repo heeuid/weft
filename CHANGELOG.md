@@ -5,6 +5,15 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.10.1
+
+Fixed
+- **The mouse wheel over the tab strip** hardly moved it: a notch scrolled
+  less than half a tab, and the strip, resting on the nearest tab's edge,
+  went back where it was. A notch now moves it one tab; smaller turns (a
+  touchpad's) add up to one. The scroll bar still drags it, to rest on an
+  edge.
+
 ## 0.10.0
 
 Added

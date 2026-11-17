@@ -801,7 +801,33 @@ impl App {
         let step = TAB_MIN_W + 2.0;
         let room = if overflow { (((room + 2.0) / step).floor().max(1.0) * step - 2.0).min(room.max(TAB_MIN_W)) } else { room };
         let snap_id = Id::new("tab-snap");
-        let snap_to: Option<f32> = ui.data_mut(|d| d.remove_temp(snap_id));
+        let mut snap_to: Option<f32> = ui.data_mut(|d| d.remove_temp(snap_id));
+        // The wheel over the strip moves it a tab at a time. (Left to the
+        // scroll area, a notch moved it less than half a tab, and resting
+        // on the nearest edge put it back where it was.) Small turns, a
+        // touchpad's, add up to a tab.
+        let strip_id = Id::new("tab-strip-at");
+        if overflow {
+            let at: Option<(egui::Rect, f32, f32)> = ui.data(|d| d.get_temp(strip_id));
+            let pointer = ui.input(|i| i.pointer.hover_pos());
+            if let Some(((_, offset, max), _)) = at.zip(pointer).filter(|((r, _, _), p)| r.contains(*p)) {
+                let raw = ui.input(|i| i.raw_scroll_delta.x + i.raw_scroll_delta.y);
+                ui.ctx().input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
+                if raw != 0.0 {
+                    let wheel_id = Id::new("tab-wheel");
+                    let turned: f32 = ui.data(|d| d.get_temp(wheel_id)).unwrap_or(0.0) + raw;
+                    if turned.abs() >= TAB_WHEEL_NOTCH / 2.0 {
+                        let tabs = (turned.abs() / TAB_WHEEL_NOTCH).round().max(1.0);
+                        let from = snap_to.unwrap_or((offset / step).round() * step);
+                        snap_to = Some((from - turned.signum() * tabs * step).clamp(0.0, max));
+                        ui.data_mut(|d| d.insert_temp(wheel_id, 0.0_f32));
+                        ui.ctx().request_repaint();
+                    } else {
+                        ui.data_mut(|d| d.insert_temp(wheel_id, turned));
+                    }
+                }
+            }
+        }
         let arrow = |ui: &mut Ui, text: String, n: usize, tip: &str| {
             let color = if n > 0 { theme::text_dim() } else { theme::tint(theme::text_faint(), 90) };
             let (rect, resp) = ui.allocate_exact_size(vec2(TAB_ARROW_W, 28.0), if n > 0 { Sense::click() } else { Sense::hover() });
@@ -1003,6 +1029,9 @@ impl App {
                     }
                 });
             });
+            // Where the strip is, for the wheel next frame.
+            let max = (out.content_size.x - out.inner_rect.width()).max(0.0);
+            ui.data_mut(|d| d.insert_temp(strip_id, (out.inner_rect, out.state.offset.x, max)));
             // At rest (no wheel, no button held, no tab being dragged): on
             // the nearest tab's edge.
             if overflow && dragging.is_none() {
@@ -4227,6 +4256,10 @@ const TAB_ARROW_W: f32 = 34.0;
 
 /// A terminal tab at its narrowest (when there are more than fit).
 const TAB_MIN_W: f32 = 90.0;
+
+/// A mouse wheel's notch, in points of scroll (egui gives a line 40): one
+/// tab along the tab strip.
+const TAB_WHEEL_NOTCH: f32 = 40.0;
 
 const TAB_STRIP_LEAST: f32 = 90.0 + 4.0 + 2.0 * (22.0 + 2.0) + 2.0 + 12.0 + 16.0;
 

@@ -3342,12 +3342,20 @@ fn hidden_tabs_are_counted_each_side() {
         let y = h.texts.iter().find(|(t, r)| t == "local" && r.top() < 40.0).map(|(_, r)| r.center().y).unwrap();
         egui::pos2((start + end) / 2.0, y)
     };
-    for lines in [-0.37, -1.6, 0.9] {
-        h.wheel(mid, lines, Modifiers::NONE);
-        assert!(h.wait_for(5.0, whole), "after a wheel turned by {lines}");
-    }
-    // (And a wheel does move it.)
-    let before = (count(&h, "‹ "), count(&h, " ›"));
-    h.wheel(mid, -4.0, Modifiers::NONE);
-    assert!(h.wait_for(5.0, |h| (count(h, "‹ "), count(h, " ›")) != before && whole(h)), "a wheel turned further moves it, onto a tab's edge: {before:?}");
+    // The wheel: a notch moves it one tab (it moved less than half of
+    // one, and resting on a tab's edge put it back); small turns add up.
+    let counts = |h: &Harness| (count(h, "‹ ").unwrap(), count(h, " ›").unwrap());
+    let (l0, r0) = counts(&h);
+    assert!(r0 >= 2, "room to the right: {l0} / {r0}");
+    h.wheel(mid, -1.0, Modifiers::NONE);
+    assert!(h.wait_for(5.0, |h| counts(h) == (l0 + 1, r0 - 1) && whole(h)), "a notch down: one tab right: {:?}", counts(&h));
+    h.wheel(mid, -1.0, Modifiers::NONE);
+    assert!(h.wait_for(5.0, |h| counts(h) == (l0 + 2, r0 - 2) && whole(h)), "and another: {:?}", counts(&h));
+    h.wheel(mid, 1.0, Modifiers::NONE);
+    assert!(h.wait_for(5.0, |h| counts(h) == (l0 + 1, r0 - 1) && whole(h)), "a notch up: one tab back: {:?}", counts(&h));
+    h.wheel(mid, 0.3, Modifiers::NONE);
+    h.frames(3);
+    assert_eq!(counts(&h), (l0 + 1, r0 - 1), "a small turn alone: not yet");
+    h.wheel(mid, 0.3, Modifiers::NONE);
+    assert!(h.wait_for(5.0, |h| counts(h) == (l0, r0) && whole(h)), "small turns add up to a tab: {:?}", counts(&h));
 }
