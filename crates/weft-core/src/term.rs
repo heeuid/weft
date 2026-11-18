@@ -1758,6 +1758,13 @@ impl SyncOutput {
         }
     }
 
+    /// All that is held, at once (the program has ended: no end of its
+    /// update is coming).
+    pub fn take(&mut self) -> Vec<u8> {
+        self.since = None;
+        std::mem::take(&mut self.held)
+    }
+
     /// While an update is held: when to look again (it may time out).
     pub fn due(&self, now: Instant) -> Option<std::time::Duration> {
         self.since.map(|at| Self::LIMIT.saturating_sub(now.duration_since(at)))

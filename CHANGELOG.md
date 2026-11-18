@@ -5,6 +5,38 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.10.6
+
+Fixed
+- **Windows ssh hosts get weft's terminal and its Files, editor and
+  search** (issue #3), not only a plain ssh. A host's shell is found by
+  trying, and kept with its profile (`"shell"`): weft's POSIX command
+  first; where it cannot run (cmd says "'exec' is not recognized…" in its
+  own language), Windows': PowerShell, with weft's integration (prompt
+  and command marks, the folder followed, a tab's folder kept), started
+  from cmd or PowerShell alike; where neither runs, a shell weft does not
+  support: a plain ssh, said so. A kept shell that fails is not the end:
+  the ones not tried yet in that run are (a host put in again with
+  another system), and one kept as unsupported is tried again once a run,
+  as its first terminal opens. Terminals of a host failing together are
+  one failure, not one per shell. ssh's own failures (no connection, keys
+  or password refused) are told by ssh's own words, which are English
+  everywhere; its exit code could not tell them (cmd runs the pieces of
+  weft's POSIX command it can and ends with whatever the last one did,
+  255 too), read half a second after the terminal ends (Windows' console
+  passes the last output on after the process has ended). A profile from
+  0.10.5 marked "plain" is a Windows host.
+- **The agent on a Windows host** finds Python by the same list as on any
+  host (Python on remote hosts…; `py` is in the default list now) and
+  says the same when there is none, with Windows' check (`where python`).
+  There it searches without grep, lists processes, memory and disk the
+  Windows way, and takes PowerShell's folders (`/C:/…`). The terminal's
+  "go to this folder" and quoting speak PowerShell there. A serial console
+  through a Windows host says it needs a POSIX one (the bridge is POSIX).
+- What weft puts on a command line is checked to stay under 8000 bytes
+  (Windows' console takes about 8 KB, cmd 8191 characters); the agent
+  itself goes through ssh's stdin, of any size.
+
 ## 0.10.5
 
 Fixed

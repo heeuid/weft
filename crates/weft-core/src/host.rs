@@ -75,7 +75,7 @@ fn gz_b64(s: &str) -> String {
 /// (settings "remote_python", "Python on remote hosts…"): names on its PATH
 /// or paths, `*` allowed. Distributions put it in different places (a
 /// minimal RHEL / Rocky 8 has only /usr/libexec/platform-python).
-pub const DEFAULT_PYTHONS: &[&str] = &["python3", "python", "/usr/libexec/platform-python", "/usr/local/bin/python3", "/opt/homebrew/bin/python3"];
+pub const DEFAULT_PYTHONS: &[&str] = &["python3", "python", "py", "/usr/libexec/platform-python", "/usr/local/bin/python3", "/opt/homebrew/bin/python3"];
 
 static PYTHONS: std::sync::RwLock<Vec<String>> = std::sync::RwLock::new(Vec::new());
 
@@ -97,8 +97,96 @@ pub fn pythons_b64_of(list: &[String]) -> String {
     }
 }
 
-/// What the panels say for a host whose shell is not POSIX.
-pub const NOT_POSIX: &str = "this host's shell is not a POSIX one (Windows' cmd or PowerShell?): the Files panel, editor and search run on sh and Python there; the terminal works, without weft's shell integration";
+/// What the panels say for a host whose shell is none weft knows.
+pub const UNSUPPORTED_SHELL: &str = "this host's shell is not one weft supports (a POSIX sh, or Windows' cmd or PowerShell): the Files panel, editor and search do not run there; the terminal is a plain ssh, without weft's shell integration";
+
+/// The shell a remote host runs commands with (ssh's command, or what a
+/// custom transport is given). weft's terminal integration and agent
+/// start with a command in its language; which one it is, is found by
+/// trying (App::shell_failed) and kept with the profile.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RemoteShell {
+    /// sh, bash, zsh, fish, ksh…: what weft's commands are written in.
+    #[default]
+    Posix,
+    /// Windows' cmd or PowerShell (Windows' OpenSSH): weft starts
+    /// PowerShell there, with its integration, and the agent through it.
+    Windows,
+    /// Neither: the terminal is a plain ssh, without weft's integration,
+    /// and there is no agent (UNSUPPORTED_SHELL).
+    Other,
+}
+
+impl RemoteShell {
+    pub fn is_posix(&self) -> bool {
+        *self == RemoteShell::Posix
+    }
+}
+
+/// PowerShell's -EncodedCommand: the script as UTF-16LE, in base64.
+fn ps_encoded(script: &str) -> String {
+    let utf16: Vec<u8> = script.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+    base64::engine::general_purpose::STANDARD.encode(utf16)
+}
+
+/// A folder as weft keeps it ("/C:/Users/me", or msys's "/c/Users/me") as
+/// Windows writes it ("C:/Users/me").
+pub fn windows_path(p: &str) -> String {
+    let b = p.as_bytes();
+    if b.len() >= 3 && b[0] == b'/' && b[1].is_ascii_alphabetic() && b[2] == b':' {
+        return p[1..].to_string();
+    }
+    if b.len() >= 2 && b[0] == b'/' && b[1].is_ascii_alphabetic() && (b.len() == 2 || b[2] == b'/') {
+        return format!("{}:{}", &p[1..2], if b.len() == 2 { "/" } else { &p[2..] });
+    }
+    p.to_string()
+}
+
+/// A Windows host's terminal: PowerShell (from cmd or PowerShell alike),
+/// saying it has started (as weft's sh one does), in `cwd`, with weft's
+/// integration (shell/pwsh.ps1: prompt marks, the folder).
+pub fn windows_shell_command(cwd: Option<&str>) -> String {
+    let mut s = String::from("[Console]::Write([char]27 + ']7777;{\"t\":\"shell\",\"name\":\"powershell\",\"pid\":' + $PID + '}' + [char]7)\n");
+    if let Some(c) = cwd {
+        s.push_str(&format!("Set-Location -LiteralPath '{}' -ErrorAction SilentlyContinue\n", windows_path(c).replace('\'', "''")));
+    }
+    s.push_str(PWSH_PS1);
+    format!("powershell -NoLogo -NoExit -EncodedCommand {}", ps_encoded(&s))
+}
+
+/// PowerShell: the first of the list (PY64) that runs as Python 3.6+, as
+/// FIND_PY does in sh; none: what was tried and what to do. Then the agent
+/// as on any host: its source on stdin, run in memory.
+const WIN_AGENT_PS: &str = r#"$ErrorActionPreference = 'SilentlyContinue'
+$list = @([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('PY64')) -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+$py = $null
+foreach ($e in $list) {
+    $cands = if ($e -match '[*?]') { @(Resolve-Path -Path $e | ForEach-Object { $_.Path }) } else { @($e) }
+    foreach ($c in $cands) {
+        try {
+            & $c -c 'import sys; sys.exit(sys.version_info < (3, 6))' *> $null
+            if ($LASTEXITCODE -eq 0) { $py = $c; break }
+        } catch { }
+    }
+    if ($py) { break }
+}
+if (-not $py) {
+    [Console]::Error.WriteLine('weft: no Python 3.6 or newer found on this host: the Files panel, editor and search need one. Check Python is installed there (where python), or add its name or path in Python on remote hosts (command palette). Tried: ' + ($list -join ' '))
+    exit 127
+}
+& $py -u -c 'import sys;exec(sys.stdin.buffer.read(int(sys.stdin.buffer.readline())))'
+exit $LASTEXITCODE
+"#;
+
+/// A Windows host's agent: WIN_AGENT_PS with the list of Pythons.
+pub fn windows_agent_command() -> String {
+    windows_agent_command_of(&PYTHONS.read().unwrap_or_else(|e| e.into_inner()))
+}
+
+pub fn windows_agent_command_of(list: &[String]) -> String {
+    format!("powershell -NoLogo -NoProfile -NonInteractive -EncodedCommand {}", ps_encoded(&WIN_AGENT_PS.replace("PY64", &pythons_b64_of(list))))
+}
 
 /// What a remote host says when none of the list is Python 3.6+.
 pub const NO_PYTHON: &str = "weft: no Python 3.6 or newer found on this host";
@@ -139,6 +227,11 @@ pub fn agent_command() -> String {
     posix_wrap(&[("PY64", pythons_b64())], &format!("{FIND_PY}; {AGENT_BOOT}"))
 }
 
+/// `agent_command` with these Pythons.
+pub fn agent_command_of(list: &[String]) -> String {
+    posix_wrap(&[("PY64", pythons_b64_of(list))], &format!("{FIND_PY}; {AGENT_BOOT}"))
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum HostKind {
@@ -150,11 +243,13 @@ pub enum HostKind {
         /// X11 forwarding: GUI programs run there show here (see x11.rs).
         #[serde(default)]
         x11: bool,
-        /// Its shell is not a POSIX one (Windows' cmd or PowerShell): the
-        /// terminal is a plain `ssh -tt`, without weft's shell integration,
-        /// and there is no agent (see `NOT_POSIX`). Set when weft's command
-        /// failed there.
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        /// The shell it runs commands with: weft's terminal and agent start
+        /// in its language. Found by trying, kept here; can be set by hand.
+        #[serde(default, skip_serializing_if = "RemoteShell::is_posix")]
+        shell: RemoteShell,
+        /// weft 0.10.5's word for a host whose shell was not POSIX: read as
+        /// `shell: windows` (Profile::remote_shell), not written again.
+        #[serde(default, skip_serializing)]
         plain: bool,
     },
     /// Any command that behaves like `ssh HOST CMD` (receives the remote
@@ -162,8 +257,10 @@ pub enum HostKind {
     Custom {
         pty: Vec<String>,
         agent: Vec<String>,
-        /// As Ssh's: the pty command alone, no agent.
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        /// As Ssh's.
+        #[serde(default, skip_serializing_if = "RemoteShell::is_posix")]
+        shell: RemoteShell,
+        #[serde(default, skip_serializing)]
         plain: bool,
     },
     /// A serial console (UART): `port` on the host named `via` ("local": a
@@ -222,8 +319,13 @@ pub const BAUDS: &[u32] = &[9600, 19200, 38400, 57600, 115200, 230400, 460800, 9
 /// The remote command for a serial console: the bridge, sent in the command
 /// itself (base64) so nothing is written on the host.
 pub fn serial_command(port: &str, baud: u32) -> String {
+    serial_command_of(port, baud, &PYTHONS.read().unwrap_or_else(|e| e.into_inner()).clone())
+}
+
+/// `serial_command` with these Pythons.
+pub fn serial_command_of(port: &str, baud: u32, list: &[String]) -> String {
     let src = base64::engine::general_purpose::STANDARD.encode(SERIAL_PY);
-    let py = pythons_b64();
+    let py = pythons_b64_of(list);
     format!(
         "PY64={py}; {FIND_PY}; exec \"$P\" -c 'import base64;exec(base64.b64decode(\"{src}\"))' {} {baud}",
         sh_quote(port)
@@ -250,18 +352,30 @@ impl Profile {
         let mut parts = target.split_whitespace().map(String::from);
         let host = parts.next().unwrap_or_default();
         let args: Vec<String> = parts.collect();
-        Profile { name: ssh_name(&host, &args), kind: HostKind::Ssh { target: host, args, x11: false, plain: false } }
+        Profile { name: ssh_name(&host, &args), kind: HostKind::Ssh { target: host, args, x11: false, shell: RemoteShell::Posix, plain: false } }
     }
 
-    /// Its shell is not a POSIX one (see HostKind::Ssh's `plain`).
-    pub fn not_posix(&self) -> bool {
-        matches!(self.kind, HostKind::Ssh { plain: true, .. } | HostKind::Custom { plain: true, .. })
+    /// The shell a remote host runs commands with (POSIX for this PC and
+    /// a serial port, which have none of their own). 0.10.5's `plain` is
+    /// Windows.
+    pub fn remote_shell(&self) -> RemoteShell {
+        match &self.kind {
+            HostKind::Ssh { shell, plain, .. } | HostKind::Custom { shell, plain, .. } => {
+                if *plain && shell.is_posix() {
+                    RemoteShell::Windows
+                } else {
+                    *shell
+                }
+            }
+            HostKind::Local | HostKind::Serial { .. } => RemoteShell::Posix,
+        }
     }
 
-    /// Mark it so: `plain`, its terminals plain, no agent.
-    pub fn set_not_posix(&mut self) {
-        if let HostKind::Ssh { plain, .. } | HostKind::Custom { plain, .. } = &mut self.kind {
-            *plain = true;
+    /// Keep what its shell was found to be.
+    pub fn set_remote_shell(&mut self, to: RemoteShell) {
+        if let HostKind::Ssh { shell, plain, .. } | HostKind::Custom { shell, plain, .. } = &mut self.kind {
+            *shell = to;
+            *plain = false;
         }
     }
 
@@ -274,7 +388,7 @@ impl Profile {
     pub fn pty_argv(&self, cwd: Option<&str>, password: bool) -> Vec<String> {
         match &self.kind {
             HostKind::Local => local_shell(LocalShell::Auto).0,
-            HostKind::Ssh { target, args, x11, plain } => {
+            HostKind::Ssh { target, args, x11, .. } => {
                 let mut v = vec!["ssh".to_string(), "-tt".to_string()];
                 if password {
                     v.extend(["-o".to_string(), "NumberOfPasswordPrompts=1".to_string()]);
@@ -285,16 +399,12 @@ impl Profile {
                 }
                 v.extend(args.iter().cloned());
                 v.push(target.clone());
-                if !plain {
-                    v.push(remote_shell_command(cwd));
-                }
+                v.extend(self.shell_command(cwd));
                 v
             }
-            HostKind::Custom { pty, plain, .. } => {
+            HostKind::Custom { pty, .. } => {
                 let mut v = pty.clone();
-                if !plain {
-                    v.push(remote_shell_command(cwd));
-                }
+                v.extend(self.shell_command(cwd));
                 v
             }
             // Built from the host it is reached through (App::start_pty).
@@ -302,10 +412,32 @@ impl Profile {
         }
     }
 
+    /// The command a terminal of it starts with, in its shell's language
+    /// (none: a plain ssh, its own shell as it is).
+    fn shell_command(&self, cwd: Option<&str>) -> Option<String> {
+        match self.remote_shell() {
+            RemoteShell::Posix => Some(remote_shell_command(cwd)),
+            RemoteShell::Windows => Some(windows_shell_command(cwd)),
+            RemoteShell::Other => None,
+        }
+    }
+
     /// argv for a serial console on a remote host: this host's terminal
-    /// command with the bridge instead of a shell.
+    /// command with the bridge instead of a shell (a POSIX host's only:
+    /// the bridge is termios; none elsewhere, see App::start_serial).
     pub fn serial_argv(&self, port: &str, baud: u32, password: bool) -> Vec<String> {
-        let cmd = serial_command(port, baud);
+        self.serial_argv_with(port, baud, password, None)
+    }
+
+    /// `serial_argv`, the bridge run by one of these Pythons.
+    pub fn serial_argv_with(&self, port: &str, baud: u32, password: bool, pythons: Option<&[String]>) -> Vec<String> {
+        if !self.remote_shell().is_posix() {
+            return Vec::new();
+        }
+        let cmd = match pythons {
+            Some(list) => serial_command_of(port, baud, list),
+            None => serial_command(port, baud),
+        };
         match &self.kind {
             HostKind::Ssh { target, args, .. } => {
                 let mut v = vec!["ssh".to_string(), "-tt".to_string()];
@@ -330,6 +462,11 @@ impl Profile {
     /// password it never prompts (keys / ssh-agent only); with one, the
     /// password is answered by weft's askpass.
     pub fn agent_argv(&self, password: bool) -> Option<Vec<String>> {
+        self.agent_argv_with(password, None)
+    }
+
+    /// `agent_argv`, its agent trying these Pythons (none: the process's).
+    pub fn agent_argv_with(&self, password: bool, pythons: Option<&[String]>) -> Option<Vec<String>> {
         match &self.kind {
             // A serial console has no file system of its own: served locally.
             HostKind::Local | HostKind::Serial { .. } => None,
@@ -338,20 +475,38 @@ impl Profile {
                 let mut v: Vec<String> = ["ssh", "-T", "-o", auth, "-o", "ConnectTimeout=10"].iter().map(|s| s.to_string()).collect();
                 v.extend(args.iter().cloned());
                 v.push(target.clone());
-                v.push(agent_command());
+                v.push(self.agent_command(pythons));
                 Some(v)
             }
             HostKind::Custom { agent, .. } => {
                 let mut v = agent.clone();
-                v.push(agent_command());
+                v.push(self.agent_command(pythons));
                 Some(v)
             }
         }
     }
 
+    /// The agent's command, in its shell's language.
+    fn agent_command(&self, pythons: Option<&[String]>) -> String {
+        let process = PYTHONS.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let list = pythons.unwrap_or(&process);
+        match self.remote_shell() {
+            RemoteShell::Windows => windows_agent_command_of(list),
+            _ => agent_command_of(list),
+        }
+    }
+
+    /// PowerShell's quoting and commands: this PC's terminals, and a
+    /// Windows host's.
+    fn speaks_powershell(&self) -> bool {
+        self.is_local() || self.remote_shell() == RemoteShell::Windows
+    }
+
     /// Shell command that changes directory, quoted for this host's shell.
     pub fn cd_command(&self, path: &str) -> String {
-        if self.is_local() {
+        if self.remote_shell() == RemoteShell::Windows {
+            format!("Set-Location -LiteralPath '{}'", windows_path(path).replace('\'', "''"))
+        } else if self.is_local() {
             format!("Set-Location -LiteralPath '{}'", path.replace('\'', "''"))
         } else {
             format!("cd -- {}", sh_quote(path))
@@ -359,7 +514,7 @@ impl Profile {
     }
 
     pub fn quote_path(&self, path: &str) -> String {
-        if self.is_local() {
+        if self.speaks_powershell() {
             if path.contains([' ', '\'', '(', ')', '&', ';']) {
                 format!("'{}'", path.replace('\'', "''"))
             } else {
@@ -644,11 +799,20 @@ pub struct Conn {
     stderr_tail: String,
     /// Failures for requests that could not even be sent; delivered by `poll`.
     backend_failures: Vec<Value>,
+    /// The Pythons its agent tries (settings "remote_python"; none: the
+    /// process's list, set_pythons).
+    pub pythons: Option<Vec<String>>,
 }
 
 impl Conn {
     pub fn open(profile: Profile, data: &DataDir, wake: impl Fn() + Send + Clone + 'static, password: Option<String>) -> Conn {
+        Self::open_with_pythons(profile, data, wake, password, None)
+    }
+
+    /// `open`, its agent trying these Pythons.
+    pub fn open_with_pythons(profile: Profile, data: &DataDir, wake: impl Fn() + Send + Clone + 'static, password: Option<String>, pythons: Option<Vec<String>>) -> Conn {
         let mut conn = Conn {
+            pythons,
             log_dir: data.path("logs"),
             log: None,
             profile,
@@ -667,15 +831,15 @@ impl Conn {
     /// it; `None`: keys / ssh-agent only, never prompt.
     pub fn connect(&mut self, wake: impl Fn() + Send + Clone + 'static, password: Option<String>) {
         self.stderr_tail.clear();
-        // Its shell is not POSIX (Windows): the agent cannot run there.
-        if self.profile.not_posix() {
-            self.write_log(&format!("no agent: {NOT_POSIX}"));
-            self.status = ConnStatus::Failed(NOT_POSIX.into());
+        // A shell weft does not know: the agent cannot start there.
+        if self.profile.remote_shell() == RemoteShell::Other {
+            self.write_log(&format!("no agent: {UNSUPPORTED_SHELL}"));
+            self.status = ConnStatus::Failed(UNSUPPORTED_SHELL.into());
             self.backend = Backend::Dead;
             return;
         }
         let env = password.as_deref().map(askpass_env).unwrap_or_default();
-        match self.profile.agent_argv(password.is_some()) {
+        match self.profile.agent_argv_with(password.is_some(), self.pythons.as_deref()) {
             None => {
                 self.status = ConnStatus::Ready;
                 self.info = local_hello();
@@ -1448,6 +1612,112 @@ mod tests {
         assert!(FISH_FISH.contains("fish_preexec") && FISH_FISH.contains("fish_prompt"));
     }
 
+    /// A Windows host's terminal and agent commands: PowerShell, from cmd
+    /// or PowerShell alike, saying it started, in the folder asked, with
+    /// weft's integration; the agent finding Python by the same list and
+    /// saying the same when there is none (but `where python`). 0.10.5's
+    /// "plain" is a Windows host. Its folders are Windows' paths.
+    #[test]
+    fn windows_hosts_get_powershell() {
+        let decode = |cmd: &str| -> String {
+            let b64 = cmd.rsplit(' ').next().unwrap();
+            let bytes = base64::engine::general_purpose::STANDARD.decode(b64).unwrap();
+            String::from_utf16(&bytes.chunks(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect::<Vec<_>>()).unwrap()
+        };
+        let term = windows_shell_command(Some("/C:/Users/me/it's"));
+        assert!(term.starts_with("powershell -NoLogo -NoExit -EncodedCommand "));
+        let script = decode(&term);
+        assert!(script.contains("]7777;{\"t\":\"shell\""), "it says it started");
+        assert!(script.contains("Set-Location -LiteralPath 'C:/Users/me/it''s'"), "in the folder: {script}");
+        assert!(script.contains("133;A") && script.contains("]7;file://"), "weft's integration");
+        let agent = decode(&windows_agent_command_of(&["py".into(), "C:/Python3*/python.exe".into()]));
+        assert!(agent.contains(&format!("FromBase64String('{}')", b64("py\nC:/Python3*/python.exe"))));
+        assert!(agent.contains(NO_PYTHON) && agent.contains("where python") && agent.contains("Python on remote hosts"));
+        assert_eq!(windows_path("/C:/Users/me"), "C:/Users/me");
+        assert_eq!(windows_path("/c/Users/me"), "c:/Users/me");
+        assert_eq!(windows_path("/d"), "d:/");
+        assert_eq!(windows_path("C:/x"), "C:/x");
+        // The kinds of shell, kept; 0.10.5's plain read as Windows.
+        let old: Profile = serde_json::from_str(r#"{"name": "w", "kind": "ssh", "target": "u@w", "plain": true}"#).unwrap();
+        assert_eq!(old.remote_shell(), RemoteShell::Windows);
+        assert!(old.pty_argv(None, false).last().unwrap().starts_with("powershell "), "its terminal is PowerShell");
+        assert!(old.agent_argv(false).unwrap().last().unwrap().starts_with("powershell "), "and its agent");
+        assert!(old.serial_argv("COM3", 9600, false).is_empty(), "no serial bridge (termios)");
+        assert_eq!(old.cd_command("/C:/x y"), "Set-Location -LiteralPath 'C:/x y'");
+        let saved = serde_json::to_string(&{
+            let mut p = old.clone();
+            p.set_remote_shell(RemoteShell::Windows);
+            p
+        })
+        .unwrap();
+        assert!(saved.contains("\"shell\":\"windows\"") && !saved.contains("plain"), "{saved}");
+        let mut other = Profile::ssh("u@h");
+        assert_eq!(other.remote_shell(), RemoteShell::Posix);
+        assert!(!serde_json::to_string(&other).unwrap().contains("shell"), "POSIX is not written");
+        other.set_remote_shell(RemoteShell::Other);
+        assert_eq!(other.pty_argv(None, false).last().unwrap(), "u@h", "a plain ssh");
+    }
+
+    /// What weft puts on a command line stays well under the limits there:
+    /// Windows' console (ConPTY) takes about 8 KB, cmd 8191 characters.
+    /// (The agent itself goes through ssh's stdin, any size: a pipe's
+    /// buffer only says how much at once.)
+    #[test]
+    fn the_commands_fit_a_command_line() {
+        let long_cwd = "/home/someone/a/fairly/long/path/to/a/project/folder/with/more/in/it";
+        for (what, cmd) in [
+            ("POSIX terminal", remote_shell_command(Some(long_cwd))),
+            ("POSIX agent", agent_command()),
+            ("Windows terminal", windows_shell_command(Some(long_cwd))),
+            ("Windows agent", windows_agent_command()),
+            ("serial bridge", serial_command("/dev/ttyUSB0", 115200)),
+        ] {
+            assert!(cmd.len() < 8000, "{what}: {} bytes", cmd.len());
+        }
+    }
+
+    /// The agent's parts for a Windows host, run here on Windows' Python:
+    /// search with no grep, processes, memory and disk.
+    #[test]
+    #[cfg(windows)]
+    fn the_agent_runs_on_windows() {
+        let Some(py) = which("python.exe").filter(|p| !p.display().to_string().contains("WindowsApps")) else { return };
+        let dir = std::env::temp_dir().join(format!("weft-win-agent-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::create_dir_all(dir.join(".hidden")).unwrap();
+        std::fs::write(dir.join("src").join("a.txt"), "one\nTwo needle\nthree\n").unwrap();
+        std::fs::write(dir.join(".hidden").join("b.txt"), "needle\n").unwrap();
+        std::fs::write(dir.join("bin.dat"), b"needle\0\x01").unwrap();
+        let probe = format!(
+            r#"
+import json, os, sys
+src = open(r'{agent}', encoding='utf-8').read().replace('\nmain()\n', '\n')
+g = {{'__name__': 'agent'}}
+exec(compile(src, 'agent.py', 'exec'), g)
+hits = g['_grep_python'](r'{dir}', 'NEEDLE', True, False, 50)
+procs = g['op_procs']({{}})['procs']
+mine = [p for p in procs if p[0] == os.getpid()]
+s = g['op_sys']({{'path': r'{dir}'}})
+print(json.dumps({{'hits': hits, 'mine': mine, 'sys': s, 'path': g['_path']('/C:/Windows')}}))
+"#,
+            agent = concat!(env!("CARGO_MANIFEST_DIR"), "/../../remote/agent.py"),
+            dir = dir.display()
+        );
+        let out = Command::new(py).args(["-c", &probe]).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+        let hits = v["hits"].as_array().unwrap();
+        assert_eq!(hits.len(), 1, "one hit: not in .hidden, not in a binary file: {hits:?}");
+        assert!(hits[0][0].as_str().unwrap().ends_with("a.txt") && hits[0][1] == 2 && hits[0][2] == "Two needle");
+        let mine = v["mine"].as_array().unwrap();
+        assert_eq!(mine.len(), 1, "its own process among them");
+        assert!(mine[0][6].as_str().unwrap().to_lowercase().contains("python"), "{mine:?}");
+        assert!(v["sys"]["mem_total"].as_u64().unwrap_or(0) > 0 && v["sys"]["disk_total"].as_u64().unwrap_or(0) > 0, "{}", v["sys"]);
+        assert_eq!(v["path"].as_str().unwrap().to_lowercase(), "c:\\windows");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Host names in ~/.ssh/config, quoted ones without their quotes.
     #[test]
     fn ssh_config_host_names() {
@@ -1481,7 +1751,7 @@ mod tests {
         assert_eq!(profiles.len(), 3);
         // A profile made before, named by the host alone, is found by its
         // host and options, under that name.
-        let mut old = vec![Profile { name: "u@h".into(), kind: HostKind::Ssh { target: "u@h".into(), args: args(&["-p", "22008"]), x11: false, plain: false } }];
+        let mut old = vec![Profile { name: "u@h".into(), kind: HostKind::Ssh { target: "u@h".into(), args: args(&["-p", "22008"]), x11: false, shell: RemoteShell::Posix, plain: false } }];
         assert_eq!(connect_profile(&mut old, "u@h -p 22008"), "u@h");
         assert_eq!(connect_profile(&mut old, "u@h -p 22024"), "u@h:22024");
         assert_eq!(old.len(), 2);
@@ -1855,7 +2125,7 @@ mod loopback {
 
     fn profile() -> Option<Profile> {
         let b = bash()?;
-        Some(Profile { name: "loop".into(), kind: HostKind::Custom { pty: vec![b.clone(), "-c".into()], agent: vec![b, "-c".into()], plain: false } })
+        Some(Profile { name: "loop".into(), kind: HostKind::Custom { pty: vec![b.clone(), "-c".into()], agent: vec![b, "-c".into()], shell: RemoteShell::Posix, plain: false } })
     }
 
     fn pump(pty: &mut Pty, t: &mut Term, p: &mut vte::Parser, until: impl Fn(&Term) -> bool, secs: u64) -> bool {
@@ -2190,7 +2460,7 @@ mod loopback {
     fn an_agent_refused_before_it_is_sent_says_why() {
         let Some(b) = bash() else { return };
         let script = "exec 0<&-; echo 'user@host: Permission denied (publickey,password).' >&2; sleep 1".to_string();
-        let prof = Profile { name: "refused".into(), kind: HostKind::Custom { pty: vec![b.clone(), "-c".into()], agent: vec![b, "-c".into(), script], plain: false } };
+        let prof = Profile { name: "refused".into(), kind: HostKind::Custom { pty: vec![b.clone(), "-c".into()], agent: vec![b, "-c".into(), script], shell: RemoteShell::Posix, plain: false } };
         let data = DataDir { root: std::env::temp_dir().join(format!("weft-test-refused-{}", std::process::id())) };
         let _ = std::fs::create_dir_all(data.root.join("logs"));
         let mut c = Conn::open(prof, &data, || {}, None);

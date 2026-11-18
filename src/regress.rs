@@ -3126,7 +3126,7 @@ fn the_pythons_tried_on_remote_hosts_can_be_listed() {
     assert!(h.shows("Python on remote hosts"), "the window");
     assert!(h.shows("command -v python3"), "what to do when none is found");
     let text = h.app.python_window.clone().unwrap();
-    assert!(text.starts_with("python3\npython\n/usr/libexec/platform-python"), "{text}");
+    assert!(text.starts_with("python3\npython\npy\n/usr/libexec/platform-python"), "{text}");
     h.app.python_window = Some("  /opt/py311/bin/python3.11\n\npython3 \n".into());
     h.frames(1);
     h.click(h.at("Save"));
@@ -3418,61 +3418,102 @@ fn the_graphics_backend_is_chosen_and_kept() {
     assert_eq!(crate::renderer_setting(&saved).as_deref(), Some(""));
 }
 
-/// An ssh host whose shell is not POSIX (Windows' cmd): weft's shell
-/// command fails there ("'exec' is not recognized…", in cmd's own
-/// language) and ssh ends with its code, not ssh's own 255. The terminal
-/// starts again as a plain ssh and works; the profile keeps that (after a
-/// restart it opens plain at once); the panels say why there is no agent.
-/// ssh's own failure (255: no connection, refused) is left as it is.
+/// The shell a remote host runs commands with is found by trying, and
+/// kept: weft's POSIX command first; it fails there (code 1, not ssh's own
+/// 255), so Windows' (PowerShell); neither works: a shell weft does not
+/// support, a plain ssh. Here `cmd /c` stands for a Windows host (Windows'
+/// OpenSSH runs a command so): the terminal is PowerShell with weft's
+/// integration (a command runs, its folder followed), the agent runs on
+/// Python found by the list (Files lists a folder), and with no Python on
+/// the list it says so as on any host. After a restart it opens so at once.
 #[test]
-fn a_host_whose_shell_is_not_posix_opens_plain() {
-    // A stand-in for ssh to a Windows host: given a command (weft's), cmd's
-    // complaint and code 1; given none, a cmd prompt that echoes lines.
-    let windows = "import sys,time\nif len(sys.argv) > 1:\n    sys.stdout.write(\"'exec' is not recognized as an internal or external command,\\r\\noperable program or batch file.\\r\\n\")\n    sys.stdout.flush()\n    time.sleep(0.2)\n    sys.exit(1)\nsys.stdout.write('Microsoft Windows [Version 10.0]\\r\\nC:\\\\Users\\\\me>')\nsys.stdout.flush()\nfor line in sys.stdin:\n    sys.stdout.write('ran ' + line.strip() + '\\r\\nC:\\\\Users\\\\me>')\n    sys.stdout.flush()\n";
+#[cfg(windows)]
+fn a_windows_host_gets_powershell_and_the_agent() {
+    let Some(_) = crate::host::which("python.exe").filter(|p| !p.display().to_string().contains("WindowsApps")) else { return };
+    // Neither POSIX nor Windows: fails any command, a prompt without one.
+    let odd = "import sys\nif len(sys.argv) > 1:\n    sys.stdout.write('unknown command\\r\\n')\n    sys.stdout.flush()\n    sys.exit(1)\nsys.stdout.write('odd> ')\nsys.stdout.flush()\nimport time\ntime.sleep(60)\n";
     let unreachable = "import sys\nsys.stdout.write('ssh: connect to host 10.0.0.9 port 22: Connection refused\\r\\n')\nsys.stdout.flush()\nsys.exit(255)\n";
-    let prof = |name: &str, script: &str| json!({"name": name, "kind": "custom", "pty": ["python", "-u", "-c", script], "agent": ["python", "-c", "0"]});
-    let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}, prof("win", windows), prof("down", unreachable)]}));
-    h.app.new_tab("win", None);
-    let pane = h.app.active_pane_id().unwrap();
+    let py = |name: &str, script: &str| json!({"name": name, "kind": "custom", "pty": ["python", "-u", "-c", script], "agent": ["python", "-c", "0"]});
+    let win = json!({"name": "win", "kind": "custom", "pty": ["cmd", "/c"], "agent": ["cmd", "/c"]});
+    // Kept as Windows, POSIX now (Git Bash, no PowerShell on its PATH).
+    let bash = "C:/Program Files/Git/bin/bash.exe";
+    let sh = json!([bash, "-c", "export PATH=/usr/bin:/bin; eval \"$1\"", "x"]);
+    let was_win = json!({"name": "waswin", "kind": "custom", "pty": sh, "agent": sh, "shell": "windows"});
+    let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}, win, py("odd", odd), py("down", unreachable), was_win], "remote_python": ["python"], "sidebar": true, "follow_cwd": false}));
     let shows = |h: &Harness, id: usize, what: &str| h.app.panes.get(&id).is_some_and(|p| {
         let t = &p.term;
         t.lines_text(t.first_line(), t.end_line() + 1).contains(what)
     });
-    assert!(h.wait_for(60.0, |h| shows(h, pane, "C:\\Users\\me>") && !h.app.panes[&pane].exited), "started again as a plain session: a cmd prompt");
-    assert!(h.app.profile("win").not_posix(), "the profile is marked");
-    let saved = std::fs::read_to_string(h.app.data.path("settings.json")).unwrap();
-    assert!(saved.contains("\"plain\": true"), "kept in settings.json");
-    // Said (a toast, gone after a while on a busy machine) and logged.
-    let logged = std::fs::read_dir(h.app.data.path("logs")).into_iter().flatten().flatten().filter_map(|e| std::fs::read_to_string(e.path()).ok()).any(|l| l.contains("[win]: weft's shell command ended with 1 before the shell started: not a POSIX shell"));
-    assert!(logged, "in the log");
-    // The terminal works.
-    h.app.panes.get_mut(&pane).unwrap().send(b"dir\r");
-    assert!(h.wait_for(20.0, |h| shows(h, pane, "ran dir")), "it takes commands");
-    // The panels: why there is no agent.
-    assert!(h.wait_for(20.0, |h| matches!(h.app.conns.get("win").map(|c| &c.status), Some(crate::host::ConnStatus::Failed(e)) if e == crate::host::NOT_POSIX)), "the agent's reason");
+    let status = |h: &Harness, host: &str| h.app.conns.get(host).map(|c| c.status.clone());
+    h.app.new_tab("win", None);
+    let pane = h.app.active_pane_id().unwrap();
+    // PowerShell, with weft's integration: it said it started, its prompt
+    // was marked.
+    assert!(h.wait_for(90.0, |h| h.app.panes[&pane].shell_pid.is_some() && h.app.panes[&pane].seen.1), "PowerShell with weft's integration");
+    assert_eq!(h.app.profile("win").remote_shell(), crate::host::RemoteShell::Windows, "found and kept");
+    assert!(std::fs::read_to_string(h.app.data.path("settings.json")).unwrap().contains("\"shell\": \"windows\""));
+    h.app.panes.get_mut(&pane).unwrap().send(b"Write-Output ('hi-' + (40 + 2))\r");
+    assert!(h.wait_for(30.0, |h| shows(h, pane, "hi-42")), "a command runs");
+    assert!(h.wait_for(10.0, |h| h.app.panes[&pane].term.cwd.as_deref().is_some_and(|c| c.contains(':'))), "its folder, followed: {:?}", h.app.panes[&pane].term.cwd);
+    // The agent: Python by the list; Files lists a folder.
+    assert!(h.wait_for(90.0, |h| matches!(status(h, "win"), Some(crate::host::ConnStatus::Ready))), "the agent: {:?}", status(&h, "win"));
+    let dir = h.dir.join("listed");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("from-windows.txt"), "x").unwrap();
+    h.app.set_root("win", &dir.display().to_string().replace('\\', "/"));
+    assert!(h.wait_for(30.0, |h| h.shows("from-windows.txt")), "Files lists it");
+    // No Python on the list: said as on any host, with Windows' check.
+    h.app.set_remote_python(vec!["no-such-python".into()]);
+    h.app.reconnect("win");
+    assert!(h.wait_for(90.0, |h| matches!(status(h, "win"), Some(crate::host::ConnStatus::Failed(e)) if e.starts_with(crate::host::NO_PYTHON) && e.contains("where python") && e.contains("Tried: no-such-python"))), "{:?}", status(&h, "win"));
     h.frames(2);
-    assert!(h.shows("agent offline: this host's shell is not a POSIX one"), "in the status bar");
-    // After a restart it opens plain at once (no failed try first).
+    assert!(h.shows("python…"), "the list's button");
+    h.app.set_remote_python(vec!["python".into()]);
+    // After a restart: PowerShell at once (weft's POSIX command not tried).
     h.restart();
     let again = h.app.panes.iter().find(|(_, p)| p.host == "win").map(|(id, _)| *id).expect("the session's tab");
-    assert!(h.wait_for(60.0, |h| shows(h, again, "C:\\Users\\me>")), "plain at once");
-    assert!(!shows(&h, again, "not recognized"), "weft's command was not sent");
-    // ssh's own failure: left as it is, not taken for a Windows host.
+    assert!(h.wait_for(90.0, |h| h.app.panes[&again].seen.1), "PowerShell at once");
+    assert!(!shows(&h, again, "is not recognized"), "weft's POSIX command was not sent");
+    // A shell weft does not know: after both tries, a plain ssh; said so.
+    h.app.new_tab("odd", None);
+    let odd_pane = h.app.active_pane_id().unwrap();
+    assert!(h.wait_for(90.0, |h| shows(h, odd_pane, "odd>") && !h.app.panes[&odd_pane].exited), "a plain session at last");
+    assert_eq!(h.app.profile("odd").remote_shell(), crate::host::RemoteShell::Other);
+    assert!(h.wait_for(30.0, |h| matches!(status(h, "odd"), Some(crate::host::ConnStatus::Failed(e)) if e == crate::host::UNSUPPORTED_SHELL)), "{:?}", status(&h, "odd"));
+    // Kept as Windows, but POSIX now: PowerShell fails, POSIX is tried
+    // (not given up on), found and kept.
+    if std::path::Path::new(bash).is_file() {
+        h.app.new_tab("waswin", None);
+        let ww = h.app.active_pane_id().unwrap();
+        assert!(h.wait_for(90.0, |h| h.app.panes[&ww].started_as == crate::host::RemoteShell::Posix && h.app.panes[&ww].seen.1 && !h.app.panes[&ww].exited), "POSIX, its prompt");
+        assert_eq!(h.app.profile("waswin").remote_shell(), crate::host::RemoteShell::Posix, "found and kept");
+        h.app.close_pane(ww);
+    }
+    // Two terminals of a host failing together: the second (started for
+    // the shell already given up on) starts again for the one tried now,
+    // not taken as that one failing.
+    h.app.settings.profiles.iter_mut().filter(|p| p.name == "win").for_each(|p| p.set_remote_shell(crate::host::RemoteShell::Posix));
+    h.app.shells_tried.remove("win");
+    h.app.conns.remove("win");
+    let w1 = h.app.spawn_pane("win", None);
+    let w2 = h.app.spawn_pane("win", None);
+    assert!(h.wait_for(90.0, |h| [w1, w2].iter().all(|id| h.app.panes[id].seen.1)), "both PowerShell");
+    assert_eq!(h.app.profile("win").remote_shell(), crate::host::RemoteShell::Windows);
+    h.app.close_pane(w1);
+    h.app.close_pane(w2);
+    // ssh's own failure: left as it is.
     h.app.new_tab("down", None);
     let down = h.app.active_pane_id().unwrap();
     assert!(h.wait_for(60.0, |h| h.app.panes[&down].exited), "it ended");
     h.frames(5);
-    assert!(!h.app.profile("down").not_posix(), "255 is ssh's own failure");
+    assert_eq!(h.app.profile("down").remote_shell(), crate::host::RemoteShell::Posix, "255 is ssh's own failure");
     assert!(shows(&h, down, "Connection refused"), "its message stays");
-    // Made in Connect: kept at once (it connected; its prompt never comes,
-    // plain).
-    let mut fresh = h.app.profile("win");
-    fresh.name = "win-new".into();
-    if let crate::host::HostKind::Custom { plain, .. } = &mut fresh.kind {
-        *plain = false;
-    }
-    h.app.trial_profiles.push(fresh);
-    h.app.new_tab("win-new", None);
-    assert!(h.wait_for(60.0, |h| h.app.settings.profiles.iter().any(|p| p.name == "win-new" && p.not_posix())), "kept, marked");
-    assert!(h.app.trial_profiles.is_empty());
+    // The next run: one kept as unsupported is tried again as it opens
+    // (it may have a shell weft supports now); still none: plain again.
+    h.restart();
+    let odd_again = h.app.panes.iter().find(|(_, p)| p.host == "odd").map(|(id, _)| *id).expect("the session's tab");
+    assert!(h.wait_for(90.0, |h| h.app.profile("odd").remote_shell() == crate::host::RemoteShell::Other && h.app.panes.get(&odd_again).is_some_and(|p| p.started_as == crate::host::RemoteShell::Other)), "tried again, plain at last");
+    assert!(h.wait_for(30.0, |h| shows(h, odd_again, "odd>")), "a plain session");
+    let log = std::fs::read_dir(h.app.data.path("logs")).unwrap().filter_map(|e| std::fs::read_to_string(e.ok()?.path()).ok()).collect::<String>();
+    assert!(log.contains("[odd]: kept as a shell weft does not support; trying a POSIX sh and Windows' PowerShell again"), "said in the log");
 }

@@ -333,11 +333,17 @@ impl Pty {
     }
 
     /// The process's exit code, once it has ended (None while it runs, and
-    /// for a serial port).
-    pub fn exit_code(&mut self) -> Option<u32> {
-        if self.code.is_none() {
-            if let Some(Ok(Some(status))) = self.child.as_mut().map(|c| c.try_wait()) {
-                self.code = Some(status.exit_code());
+    /// for a serial port). The terminal is seen to close a moment before
+    /// the process's code can be read: asked for `wait`, it waits that
+    /// long for it (the code was taken for none, and a Windows host's
+    /// failed command went unseen).
+    pub fn exit_code(&mut self, wait: std::time::Duration) -> Option<u32> {
+        let until = std::time::Instant::now() + wait;
+        while self.code.is_none() {
+            match self.child.as_mut().map(|c| c.try_wait()) {
+                Some(Ok(Some(status))) => self.code = Some(status.exit_code()),
+                Some(Ok(None)) if std::time::Instant::now() < until => std::thread::sleep(std::time::Duration::from_millis(10)),
+                _ => break,
             }
         }
         self.code

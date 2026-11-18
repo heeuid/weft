@@ -2148,7 +2148,7 @@ impl App {
             );
             ui.add_space(4.0);
             ui.add(TextEdit::multiline(&mut text).code_editor().desired_rows(8).desired_width(f32::INFINITY).hint_text("one per line"));
-            ui.label(RichText::new("Not found anywhere: check the host has python3 (command -v python3 there) and add its name or path here.").size(11.0).color(theme::text_faint()));
+            ui.label(RichText::new("Not found anywhere: check the host has Python 3 (command -v python3 there; on Windows, where python) and add its name or path here. The same list serves Linux, macOS and Windows hosts.").size(11.0).color(theme::text_faint()));
             ui.horizontal(|ui| {
                 if ui.button("Save").clicked() {
                     save = true;
@@ -2160,8 +2160,7 @@ impl App {
         });
         if save {
             let list: Vec<String> = text.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
-            self.settings.remote_python = if list.is_empty() { crate::host::DEFAULT_PYTHONS.iter().map(|s| s.to_string()).collect() } else { list };
-            crate::host::set_pythons(&self.settings.remote_python);
+            self.set_remote_python(list);
             self.save_settings();
             let failed: Vec<String> = self.conns.iter().filter(|(_, c)| matches!(c.status, ConnStatus::Failed(_))).map(|(h, _)| h.clone()).collect();
             for h in &failed {
@@ -3984,7 +3983,7 @@ impl App {
         all.extend(self.trial_profiles.iter().cloned());
         let known = all.len();
         let host = if picked && target != "local" && !all.iter().any(|p| p.name == target) {
-            all.push(crate::host::Profile { name: target.into(), kind: HostKind::Ssh { target: target.into(), args: Vec::new(), x11: false, plain: false } });
+            all.push(crate::host::Profile { name: target.into(), kind: HostKind::Ssh { target: target.into(), args: Vec::new(), x11: false, shell: Default::default(), plain: false } });
             target.to_string()
         } else {
             crate::host::connect_profile(&mut all, target)

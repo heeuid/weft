@@ -1,6 +1,6 @@
 //! Application state and logic (no drawing here; see ui_term.rs / ui_panels.rs).
 
-use crate::host::{self, Conn, ConnStatus, DataDir, HostKind, Profile};
+use crate::host::{self, RemoteShell, Conn, ConnStatus, DataDir, HostKind, Profile};
 use crate::pty::Pty;
 use crate::term::{BlockState, Term, TermEvent};
 use egui::Rect;
@@ -636,6 +636,7 @@ impl Default for Settings {
                 kind: HostKind::Custom {
                     pty: vec![git_bash.into(), "-c".into()],
                     agent: vec![git_bash.into(), "-c".into()],
+                    shell: Default::default(),
                     plain: false,
                 },
             });
@@ -649,6 +650,29 @@ impl Default for Settings {
 pub fn waits_for_password(t: &Term) -> bool {
     let line = t.line(t.cursor_abs()).map(|r| r.text()).unwrap_or_default().to_lowercase();
     line.trim_end().ends_with("password:")
+}
+
+/// What ssh itself says when it could not connect or log in (OpenSSH's
+/// words are English on every system); none of it: ssh got in, and what
+/// failed ran on the host.
+pub fn ssh_failed(said: &str) -> bool {
+    const SSH_WORDS: &[&str] = &[
+        "ssh: ",
+        "Permission denied",
+        "Host key verification failed",
+        "Connection closed by",
+        "Connection reset by",
+        "Connection refused",
+        "Connection timed out",
+        "kex_exchange_identification",
+        "Too many authentication failures",
+        "Received disconnect from",
+        "Unable to negotiate",
+        "Bad owner or permissions",
+        "No route to host",
+        "Could not resolve hostname",
+    ];
+    SSH_WORDS.iter().any(|w| said.contains(w))
 }
 
 /// A saved tab without the terminals whose host is not kept: a split
@@ -1033,6 +1057,9 @@ pub struct Pane {
     /// The remote shell's process (from the bootstrap), for its directory
     /// when the shell has no integration.
     pub shell_pid: Option<u64>,
+    /// The remote shell its terminal was started for (what its profile
+    /// said then).
+    pub started_as: RemoteShell,
     /// The zsh integration was typed in for this shell start.
     pub injected: bool,
     /// Startup timing logged: first output, first prompt.
@@ -1045,6 +1072,9 @@ pub struct Pane {
     pub parser: vte::Parser,
     pub pty: Option<Pty>,
     pub exited: bool,
+    /// Ended before its shell started: when to see why (what it said
+    /// comes in a moment after the process ends, on Windows' console).
+    pub judge_at: Option<Instant>,
     pub spawn_error: Option<String>,
     pub initial_cwd: Option<String>,
     /// Visual rows scrolled back from the bottom.
@@ -1080,6 +1110,7 @@ impl Pane {
         Pane {
             sync: Default::default(),
             shell_pid: None,
+            started_as: RemoteShell::Posix,
             injected: false,
             id,
             host: host.to_string(),
@@ -1087,6 +1118,7 @@ impl Pane {
             parser: vte::Parser::new(),
             pty: None,
             exited: false,
+            judge_at: None,
             spawn_error: None,
             initial_cwd: cwd,
             scroll: 0,
@@ -1593,6 +1625,9 @@ pub struct App {
     /// Profiles made in Connect that have not connected yet: used, not
     /// kept in settings (nor their tabs in the session) until they do.
     pub trial_profiles: Vec<Profile>,
+    /// The shells tried on each host in this run (its terminal ended before
+    /// the shell started), so a failure goes on to one not tried yet.
+    pub shells_tried: HashMap<String, Vec<RemoteShell>>,
     /// Which of the windows Esc closes were open last frame (a bit each),
     /// and what had the keyboard then.
     pub esc_windows: u32,
@@ -1770,6 +1805,7 @@ impl App {
             update_checked: Instant::now(),
             serial_dialog: None,
             trial_profiles: Vec::new(),
+            shells_tried: HashMap::new(),
             console_host,
             esc_windows: 0,
             focus_before: None,
@@ -1881,47 +1917,111 @@ impl App {
     }
 
     /// A terminal of an ssh (or custom) host ended before weft's shell
-    /// integration started there. Not with ssh's own failure (code 255: no
-    /// connection, refused keys or password), but with the code of the
-    /// command weft sent (`exec sh -c …`): the host ran it and could not.
-    /// Its shell is not a POSIX one: Windows' cmd ("'exec' is not
-    /// recognized…", in its own language) or PowerShell. The profile is
-    /// marked so (kept with it), the terminal starts again as a plain
-    /// `ssh -tt`, and the panels say why they have no agent there.
-    fn not_posix_host(&mut self, id: usize, host: &str, code: Option<u32>) {
-        let Some(code) = code.filter(|c| *c != 255 && *c != 0) else { return };
-        let profile = self.profile(host);
-        if !matches!(profile.kind, HostKind::Ssh { .. } | HostKind::Custom { .. }) || profile.not_posix() {
+    /// integration started there, not as it should (code 0) and not with
+    /// ssh's own failure (no connection, refused keys or password: said in
+    /// ssh's own words, which are English everywhere; its code, 255, says
+    /// nothing on its own, as cmd ends with whatever the last piece of
+    /// weft's command it ran did): the host ran weft's command and its
+    /// shell could not. Which
+    /// shell it is, is found by trying in turn and kept with the profile:
+    /// a POSIX sh (weft's `exec sh -c …`), else Windows' cmd or PowerShell
+    /// (cmd's "'exec' is not recognized…", in its own language: weft starts
+    /// PowerShell there), else one weft does not know (a plain ssh, no
+    /// agent). The terminal starts again, and the agent, as the shell is.
+    /// How long after a terminal ends what it said is read (ssh's own
+    /// error: Windows' console passes the last output on after the
+    /// process has ended; without it, ssh's failure was taken for the
+    /// shell's).
+    const JUDGE_AFTER: Duration = Duration::from_millis(500);
+
+    fn shell_failed(&mut self, id: usize, host: &str, code: Option<u32>, said: &str) {
+        let Some(code) = code.filter(|c| *c != 0) else { return };
+        if ssh_failed(said) {
             return;
         }
+        let profile = self.profile(host);
+        if !matches!(profile.kind, HostKind::Ssh { .. } | HostKind::Custom { .. }) {
+            return;
+        }
+        let current = profile.remote_shell();
+        // Started for a shell already given up on (another terminal of the
+        // host failed first): it starts again for the one tried now.
+        if self.panes.get(&id).is_some_and(|p| p.started_as != current) {
+            self.actions.push(Action::Restart(id));
+            return;
+        }
+        if current == RemoteShell::Other {
+            return;
+        }
+        let tried = self.shells_tried.entry(host.to_string()).or_default();
+        if !tried.contains(&current) {
+            tried.push(current);
+        }
+        // The ones weft supports not tried yet in this run, in turn (a
+        // saved one may be wrong: the host was put in again with another
+        // system); none left: a shell weft does not support.
+        let next = [RemoteShell::Posix, RemoteShell::Windows].into_iter().find(|s| !tried.contains(s)).unwrap_or(RemoteShell::Other);
+        let was = match current {
+            RemoteShell::Posix => "a POSIX sh",
+            _ => "Windows' cmd or PowerShell",
+        };
+        let now = match next {
+            RemoteShell::Posix => "trying a POSIX sh",
+            RemoteShell::Windows => "trying Windows' PowerShell",
+            RemoteShell::Other => "a shell weft does not support: a plain ssh, without its shell integration; Files, editor and search do not run there",
+        };
+        self.data.log(&format!("pane {id} [{host}]: weft's command for {was} ended with {code} before the shell started; {now}"));
+        self.mark_shell(host, next);
+        if next == RemoteShell::Other {
+            self.toast(format!("{host}: {}", crate::host::UNSUPPORTED_SHELL), ToastKind::Info);
+        }
+        self.actions.push(Action::Restart(id));
+    }
+
+    /// A host kept as one whose shell weft does not support is tried again
+    /// once a run, as its first terminal opens (it may have one now; with a
+    /// plain ssh nothing fails, so nothing else would find out).
+    fn recheck_shell(&mut self, host: &str) {
+        if self.shells_tried.contains_key(host) {
+            return;
+        }
+        let profile = self.profile(host);
+        if !matches!(profile.kind, HostKind::Ssh { .. } | HostKind::Custom { .. }) {
+            return;
+        }
+        self.shells_tried.insert(host.to_string(), Vec::new());
+        if profile.remote_shell() == RemoteShell::Other {
+            self.data.log(&format!("[{host}]: kept as a shell weft does not support; trying a POSIX sh and Windows' PowerShell again"));
+            self.mark_shell(host, RemoteShell::Posix);
+        }
+    }
+
+    /// The host's shell is (to be tried as) this one: kept with its
+    /// profile, and its connection's copy, whose agent starts again.
+    fn mark_shell(&mut self, host: &str, to: RemoteShell) {
+        let profile = self.profile(host);
         let mut kept = false;
         for p in self.settings.profiles.iter_mut().filter(|p| p.name == host) {
-            p.set_not_posix();
+            p.set_remote_shell(to);
             kept = true;
         }
-        // One made in Connect has connected: the host ran weft's command
-        // (its prompt or agent never come, plain). Kept now.
+        // One made in Connect has connected: the host ran weft's command.
+        // Kept now (with a plain shell its prompt is never seen).
         if let Some(i) = self.trial_profiles.iter().position(|p| p.name == host) {
             let mut p = self.trial_profiles.remove(i);
-            p.set_not_posix();
+            p.set_remote_shell(to);
             self.data.log(&format!("profile \"{host}\" kept: it connected"));
             self.settings.profiles.push(p);
             kept = true;
         }
         if !kept {
             // A host known by its name alone (~/.ssh/config): it becomes a
-            // profile, so the mark stays with it.
-            let mut p = profile.clone();
-            p.set_not_posix();
+            // profile, so what was found stays with it.
+            let mut p = profile;
+            p.set_remote_shell(to);
             self.settings.profiles.push(p);
-            kept = true;
         }
-        if kept {
-            self.save_settings();
-        }
-        self.data.log(&format!("pane {id} [{host}]: weft's shell command ended with {code} before the shell started: not a POSIX shell (Windows?); started again as a plain ssh"));
-        self.toast(format!("{host}: its shell is not a POSIX one (Windows?), so the terminal is a plain ssh, without weft's shell integration; Files, editor and search do not run there"), ToastKind::Info);
-        self.actions.push(Action::Restart(id));
+        self.save_settings();
         // The connection keeps its own copy of the profile.
         let marked = self.profile(host);
         if let Some(c) = self.conns.get_mut(host) {
@@ -2027,8 +2127,19 @@ impl App {
     pub fn ensure_conn(&mut self, host: &str) {
         if !self.conns.contains_key(host) {
             let secret = self.secrets.get(host).map(|s| s.to_string());
-            let conn = Conn::open(self.profile(host), &self.data, self.wake(), secret);
+            let conn = Conn::open_with_pythons(self.profile(host), &self.data, self.wake(), secret, Some(self.settings.remote_python.clone()));
             self.conns.insert(host.to_string(), conn);
+        }
+    }
+
+    /// The Pythons tried on remote hosts (settings "remote_python"): kept,
+    /// and given to every connection (each has its own: they no longer
+    /// read one list of the whole program).
+    pub fn set_remote_python(&mut self, list: Vec<String>) {
+        self.settings.remote_python = if list.is_empty() { crate::host::DEFAULT_PYTHONS.iter().map(|s| s.to_string()).collect() } else { list };
+        crate::host::set_pythons(&self.settings.remote_python);
+        for c in self.conns.values_mut() {
+            c.pythons = Some(self.settings.remote_python.clone());
         }
     }
 
@@ -2077,6 +2188,7 @@ impl App {
     pub fn spawn_pane(&mut self, host: &str, cwd: Option<String>) -> usize {
         let id = self.next_pane;
         self.next_pane += 1;
+        self.recheck_shell(host);
         self.ensure_conn(host);
         let mut pane = Pane::new(id, host, cwd);
         self.start_pty(&mut pane);
@@ -2097,6 +2209,7 @@ impl App {
             return;
         }
         let secret = if prof.is_local() { None } else { self.secrets.get(&pane.host) };
+        pane.started_as = prof.remote_shell();
         let mut argv = prof.pty_argv(pane.initial_cwd.as_deref(), secret.is_some());
         let mut env = secret.as_deref().map(|s| host::askpass_env(s)).unwrap_or_default();
         if prof.is_local() {
@@ -2163,11 +2276,14 @@ impl App {
         } else {
             let through = self.profile(via);
             let secret = self.secrets.get(via);
-            let argv = through.serial_argv(port, baud, secret.is_some());
+            let argv = through.serial_argv_with(port, baud, secret.is_some(), Some(&self.settings.remote_python));
             let env = secret.as_deref().map(|s| host::askpass_env(s)).unwrap_or_default();
             self.data.log(&format!("pane {} serial {via}:{port} at {baud} over {}", pane.id, argv.first().cloned().unwrap_or_default()));
             if argv.is_empty() {
-                Err(format!("{via}: serial consoles go through ssh or a custom transport"))
+                Err(match through.remote_shell() {
+                    crate::host::RemoteShell::Posix => format!("{via}: serial consoles go through ssh or a custom transport"),
+                    _ => format!("{via}: a serial console on a remote host needs a POSIX shell there (Linux, macOS); {via}'s is Windows' or one weft does not support"),
+                })
             } else {
                 Pty::spawn(&argv, None, &env, pane.term.cols as u16, pane.term.rows as u16, self.wake_term())
             }
@@ -2787,7 +2903,7 @@ impl App {
             self.ctx.request_repaint_after(d.max(Duration::from_millis(200)));
         }
         let mut events: Vec<(usize, TermEvent)> = Vec::new();
-        let mut never_started: Vec<(usize, String, Option<u32>)> = Vec::new();
+        let mut never_started: Vec<(usize, String, Option<u32>, String)> = Vec::new();
         let mut new_history: Vec<(String, String)> = Vec::new();
         let mut new_records: Vec<crate::records::Record> = Vec::new();
         let mut timings: Vec<String> = Vec::new();
@@ -2799,11 +2915,17 @@ impl App {
             if let Some(pty) = pane.pty.as_mut() {
                 // An app's synchronized update (DEC 2026) comes in whole.
                 let now = Instant::now();
+                // Seen ended before the read: its last output (ssh's own
+                // error, say) is in this read, not left for after the end.
+                let ended = pty.exited();
                 let read = pty.read();
                 if let (Some(t), false) = (pane.trace.as_mut(), read.is_empty()) {
                     t.output(&read);
                 }
-                let bytes = pane.sync.push(&read, now);
+                let mut bytes = pane.sync.push(&read, now);
+                if ended {
+                    bytes.extend(pane.sync.take());
+                }
                 if let Some(d) = pane.sync.due(now) {
                     self.ctx.request_repaint_after(d);
                 }
@@ -2824,13 +2946,22 @@ impl App {
                         pane.scroll += (pane.term.end_line() - before) as usize;
                     }
                 }
-                if !pane.exited && pty.exited() {
+                if !pane.exited && ended {
                     pane.exited = true;
                     // Ended before weft's shell said it had started, or a
-                    // prompt showed: what ran it there? (see not_posix_host)
+                    // prompt showed: what ran it there? (see shell_failed)
                     if pane.shell_pid.is_none() && !pane.seen.1 {
-                        never_started.push((*id, pane.host.clone(), pty.exit_code()));
+                        pane.judge_at = Some(now + Self::JUDGE_AFTER);
+                        self.ctx.request_repaint_after(Self::JUDGE_AFTER);
                     }
+                }
+                if pane.judge_at.is_some_and(|at| now >= at) {
+                    pane.judge_at = None;
+                    let t = &pane.term;
+                    let said = t.lines_text(t.first_line(), t.end_line() + 1);
+                    never_started.push((*id, pane.host.clone(), pty.exit_code(Duration::from_millis(300)), said));
+                } else if let Some(at) = pane.judge_at {
+                    self.ctx.request_repaint_after(at - now);
                 }
             }
             for e in std::mem::take(&mut pane.term.events) {
@@ -2865,8 +2996,8 @@ impl App {
         for t in timings {
             self.data.log(&t);
         }
-        for (id, host, code) in never_started {
-            self.not_posix_host(id, &host, code);
+        for (id, host, code, said) in never_started {
+            self.shell_failed(id, &host, code, &said);
         }
         self.keep_connected_profiles();
         if guessing {

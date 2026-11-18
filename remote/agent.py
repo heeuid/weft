@@ -37,8 +37,11 @@ def send(obj):
 
 def _path(p):
     p = p or "."
-    # Windows python behind an msys/cygwin shell sees /c/Users style paths.
-    if os.name == "nt" and len(p) >= 3 and p[0] == "/" and p[2] == "/" and p[1].isalpha():
+    # Windows python behind an msys/cygwin shell sees /c/Users style paths;
+    # a Windows host's PowerShell says /C:/Users (its folder, OSC 7).
+    if os.name == "nt" and len(p) >= 3 and p[0] == "/" and p[1].isalpha() and p[2] == ":":
+        p = p[1:]
+    elif os.name == "nt" and len(p) >= 3 and p[0] == "/" and p[2] == "/" and p[1].isalpha():
         p = p[1] + ":" + p[2:]
     return os.path.abspath(os.path.expanduser(p))
 
@@ -309,7 +312,36 @@ def op_complete(req):
     return {"dir": d, "prefix": prefix, "names": names[:500]}
 
 
+def _procs_windows():
+    """Windows' processes, as op_procs gives them (no CPU %: it takes two
+    readings; no user: asking each process for its owner is slow)."""
+    # A line each, its fields joined by a tab ([char]9: no escapes to quote).
+    script = ("Get-CimInstance Win32_Process | ForEach-Object { @($_.ProcessId, $_.ParentProcessId, $_.WorkingSetSize, "
+              "$(if ($_.CreationDate) { [int]((Get-Date) - $_.CreationDate).TotalSeconds } else { 0 }), "
+              "$(if ($_.CommandLine) { $_.CommandLine } else { $_.Name })) -join [char]9 }")
+    out = subprocess.run(["powershell", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False).stdout.decode("utf-8", "replace")
+    total, _ = _meminfo()
+    rows = []
+    for line in out.splitlines():
+        parts = line.split("\t", 4)
+        if len(parts) < 5:
+            continue
+        try:
+            pid, ppid, ws, secs = int(parts[0]), int(parts[1]), int(parts[2] or 0), int(parts[3] or 0)
+        except ValueError:
+            continue
+        d, rest = divmod(secs, 86400)
+        h, rest = divmod(rest, 3600)
+        m, s = divmod(rest, 60)
+        etime = ("%d-" % d if d else "") + ("%02d:%02d:%02d" % (h, m, s) if d or h else "%02d:%02d" % (m, s))
+        rows.append([pid, ppid, "", 0.0, round(100.0 * ws / total, 1) if total else 0.0, etime, parts[4].strip()])
+    return rows
+
+
 def op_procs(req):
+    if os.name == "nt":
+        return {"procs": _procs_windows()}
     # POSIX ps; the column set is supported by procps and BSD ps alike.
     out = subprocess.run(
         ["ps", "-A", "-o", "pid=,ppid=,user=,pcpu=,pmem=,etime=,args="],
@@ -335,6 +367,22 @@ def op_kill(req):
 
 
 def _meminfo():
+    if os.name == "nt":
+        # GlobalMemoryStatusEx: total and available physical memory.
+        try:
+            import ctypes
+
+            class MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong), ("ullTotalPhys", ctypes.c_ulonglong),
+                            ("ullAvailPhys", ctypes.c_ulonglong), ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                            ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong), ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+            st = MEMORYSTATUSEX()
+            st.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st)):
+                return st.ullTotalPhys, st.ullTotalPhys - st.ullAvailPhys
+        except (OSError, AttributeError, ValueError):
+            pass
+        return None, None
     try:
         info = {}
         with open("/proc/meminfo") as f:
@@ -358,9 +406,9 @@ def op_sys(req):
     if total:
         res["mem_total"], res["mem_used"] = total, used
     try:
-        vfs = os.statvfs(_path(req.get("path")))
-        res["disk_total"] = vfs.f_blocks * vfs.f_frsize
-        res["disk_free"] = vfs.f_bavail * vfs.f_frsize
+        import shutil
+        du = shutil.disk_usage(_path(req.get("path")))
+        res["disk_total"], res["disk_free"] = du.total, du.free
     except (OSError, AttributeError):
         pass
     try:
@@ -370,10 +418,47 @@ def op_sys(req):
     return res
 
 
+def _grep_python(root, pattern, icase, hidden, limit):
+    """grep -rnIE in Python, where there is no grep (a Windows host): the
+    same folders left out, binary files skipped, the pattern as Python's re
+    reads it (the extended syntax grep -E has, near enough)."""
+    import re
+    rx = re.compile(pattern, re.IGNORECASE if icase else 0)
+    skip = {".git", "node_modules", "target"}
+    hits = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d not in skip and (hidden or not d.startswith(".")))
+        for name in sorted(filenames):
+            if not hidden and name.startswith("."):
+                continue
+            path = os.path.join(dirpath, name)
+            try:
+                with open(path, "rb") as f:
+                    data = f.read(16 * 1024 * 1024)
+            except OSError:
+                continue
+            if b"\0" in data[:8192]:
+                continue
+            for num, line in enumerate(data.decode("utf-8", "replace").splitlines(), 1):
+                if rx.search(line):
+                    hits.append([path, num, line[:400]])
+                    if len(hits) >= limit:
+                        return hits
+    return hits
+
+
 def op_grep(req):
     pattern = req["pattern"]
     root = _path(req.get("path"))
     limit = int(req.get("limit", 500))
+    if not req.get("regex"):
+        literal = "".join("\\" + c if c in ".[]()*+?{}|^$\\" else c for c in pattern)
+    else:
+        literal = pattern
+    import shutil
+    if not shutil.which("grep"):
+        hits = _grep_python(root, literal, bool(req.get("icase")), bool(req.get("hidden")), limit)
+        return {"root": root, "pattern": literal, "hits": hits, "truncated": len(hits) >= limit}
     cmd = ["grep", "-rnIH", "--exclude-dir=.git", "--exclude-dir=node_modules", "--exclude-dir=target"]
     if req.get("icase"):
         cmd.append("-i")
