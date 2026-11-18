@@ -3984,7 +3984,7 @@ impl App {
         all.extend(self.trial_profiles.iter().cloned());
         let known = all.len();
         let host = if picked && target != "local" && !all.iter().any(|p| p.name == target) {
-            all.push(crate::host::Profile { name: target.into(), kind: HostKind::Ssh { target: target.into(), args: Vec::new(), x11: false } });
+            all.push(crate::host::Profile { name: target.into(), kind: HostKind::Ssh { target: target.into(), args: Vec::new(), x11: false, plain: false } });
             target.to_string()
         } else {
             crate::host::connect_profile(&mut all, target)

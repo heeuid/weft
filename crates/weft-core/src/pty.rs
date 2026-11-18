@@ -122,6 +122,8 @@ pub struct Pty {
     reported: bool,
     /// Columns and rows it was opened with.
     opened: (u16, u16),
+    /// The process's exit code, once it has ended.
+    code: Option<u32>,
 }
 
 /// These bytes with their first cursor position report kept inside a screen
@@ -240,7 +242,7 @@ impl Pty {
                 wake();
             }
         });
-        Ok(Pty { master: Some(pair.master), writer, rx, child: Some(child), exited, closed: Arc::new(AtomicBool::new(false)), reported: false, opened: (cols, rows) })
+        Ok(Pty { master: Some(pair.master), writer, rx, child: Some(child), exited, closed: Arc::new(AtomicBool::new(false)), reported: false, opened: (cols, rows), code: None })
     }
 
     /// A serial port (COM3, /dev/ttyUSB0) as the terminal's other end, opened
@@ -290,7 +292,7 @@ impl Pty {
             exited2.store(true, Ordering::SeqCst);
             wake();
         });
-        Ok(Pty { master: None, writer: dev, rx, child: None, exited, closed, reported: true, opened: (0, 0) })
+        Ok(Pty { master: None, writer: dev, rx, child: None, exited, closed, reported: true, opened: (0, 0), code: None })
     }
 
     pub fn write(&mut self, bytes: &[u8]) {
@@ -328,6 +330,17 @@ impl Pty {
             }
         }
         out
+    }
+
+    /// The process's exit code, once it has ended (None while it runs, and
+    /// for a serial port).
+    pub fn exit_code(&mut self) -> Option<u32> {
+        if self.code.is_none() {
+            if let Some(Ok(Some(status))) = self.child.as_mut().map(|c| c.try_wait()) {
+                self.code = Some(status.exit_code());
+            }
+        }
+        self.code
     }
 
     pub fn exited(&mut self) -> bool {

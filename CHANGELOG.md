@@ -5,6 +5,23 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.10.5
+
+Fixed
+- **ssh to a Windows host** ended at once with cmd's "'exec' is not
+  recognized… not a batch file" (in its own language), and "Connection
+  closed" (issue #3). weft's terminal starts its shell integration with a
+  POSIX command (`exec sh -c …`), which Windows' cmd or PowerShell cannot
+  run. When a terminal of an ssh host ends before that integration
+  started, with the code of the command (not ssh's own 255: no
+  connection, keys or password refused), the host's shell is taken to be
+  not POSIX: the terminal starts again as a plain `ssh -tt`, which works
+  (without weft's shell integration: prompt marks, the folder followed),
+  and the profile keeps it (`"plain": true`), so it opens plain at once
+  from then on. The Files panel, editor and search say they do not run
+  there (they need sh and Python 3), instead of cmd's words. A profile
+  made in Connect is kept then: it did connect.
+
 ## 0.10.4
 
 Fixed

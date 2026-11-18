@@ -3417,3 +3417,62 @@ fn the_graphics_backend_is_chosen_and_kept() {
     let saved = std::fs::read_to_string(h.app.data.path("settings.json")).unwrap();
     assert_eq!(crate::renderer_setting(&saved).as_deref(), Some(""));
 }
+
+/// An ssh host whose shell is not POSIX (Windows' cmd): weft's shell
+/// command fails there ("'exec' is not recognized…", in cmd's own
+/// language) and ssh ends with its code, not ssh's own 255. The terminal
+/// starts again as a plain ssh and works; the profile keeps that (after a
+/// restart it opens plain at once); the panels say why there is no agent.
+/// ssh's own failure (255: no connection, refused) is left as it is.
+#[test]
+fn a_host_whose_shell_is_not_posix_opens_plain() {
+    // A stand-in for ssh to a Windows host: given a command (weft's), cmd's
+    // complaint and code 1; given none, a cmd prompt that echoes lines.
+    let windows = "import sys,time\nif len(sys.argv) > 1:\n    sys.stdout.write(\"'exec' is not recognized as an internal or external command,\\r\\noperable program or batch file.\\r\\n\")\n    sys.stdout.flush()\n    time.sleep(0.2)\n    sys.exit(1)\nsys.stdout.write('Microsoft Windows [Version 10.0]\\r\\nC:\\\\Users\\\\me>')\nsys.stdout.flush()\nfor line in sys.stdin:\n    sys.stdout.write('ran ' + line.strip() + '\\r\\nC:\\\\Users\\\\me>')\n    sys.stdout.flush()\n";
+    let unreachable = "import sys\nsys.stdout.write('ssh: connect to host 10.0.0.9 port 22: Connection refused\\r\\n')\nsys.stdout.flush()\nsys.exit(255)\n";
+    let prof = |name: &str, script: &str| json!({"name": name, "kind": "custom", "pty": ["python", "-u", "-c", script], "agent": ["python", "-c", "0"]});
+    let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}, prof("win", windows), prof("down", unreachable)]}));
+    h.app.new_tab("win", None);
+    let pane = h.app.active_pane_id().unwrap();
+    let shows = |h: &Harness, id: usize, what: &str| h.app.panes.get(&id).is_some_and(|p| {
+        let t = &p.term;
+        t.lines_text(t.first_line(), t.end_line() + 1).contains(what)
+    });
+    assert!(h.wait_for(60.0, |h| shows(h, pane, "C:\\Users\\me>") && !h.app.panes[&pane].exited), "started again as a plain session: a cmd prompt");
+    assert!(h.app.profile("win").not_posix(), "the profile is marked");
+    let saved = std::fs::read_to_string(h.app.data.path("settings.json")).unwrap();
+    assert!(saved.contains("\"plain\": true"), "kept in settings.json");
+    // Said (a toast, gone after a while on a busy machine) and logged.
+    let logged = std::fs::read_dir(h.app.data.path("logs")).into_iter().flatten().flatten().filter_map(|e| std::fs::read_to_string(e.path()).ok()).any(|l| l.contains("[win]: weft's shell command ended with 1 before the shell started: not a POSIX shell"));
+    assert!(logged, "in the log");
+    // The terminal works.
+    h.app.panes.get_mut(&pane).unwrap().send(b"dir\r");
+    assert!(h.wait_for(20.0, |h| shows(h, pane, "ran dir")), "it takes commands");
+    // The panels: why there is no agent.
+    assert!(h.wait_for(20.0, |h| matches!(h.app.conns.get("win").map(|c| &c.status), Some(crate::host::ConnStatus::Failed(e)) if e == crate::host::NOT_POSIX)), "the agent's reason");
+    h.frames(2);
+    assert!(h.shows("agent offline: this host's shell is not a POSIX one"), "in the status bar");
+    // After a restart it opens plain at once (no failed try first).
+    h.restart();
+    let again = h.app.panes.iter().find(|(_, p)| p.host == "win").map(|(id, _)| *id).expect("the session's tab");
+    assert!(h.wait_for(60.0, |h| shows(h, again, "C:\\Users\\me>")), "plain at once");
+    assert!(!shows(&h, again, "not recognized"), "weft's command was not sent");
+    // ssh's own failure: left as it is, not taken for a Windows host.
+    h.app.new_tab("down", None);
+    let down = h.app.active_pane_id().unwrap();
+    assert!(h.wait_for(60.0, |h| h.app.panes[&down].exited), "it ended");
+    h.frames(5);
+    assert!(!h.app.profile("down").not_posix(), "255 is ssh's own failure");
+    assert!(shows(&h, down, "Connection refused"), "its message stays");
+    // Made in Connect: kept at once (it connected; its prompt never comes,
+    // plain).
+    let mut fresh = h.app.profile("win");
+    fresh.name = "win-new".into();
+    if let crate::host::HostKind::Custom { plain, .. } = &mut fresh.kind {
+        *plain = false;
+    }
+    h.app.trial_profiles.push(fresh);
+    h.app.new_tab("win-new", None);
+    assert!(h.wait_for(60.0, |h| h.app.settings.profiles.iter().any(|p| p.name == "win-new" && p.not_posix())), "kept, marked");
+    assert!(h.app.trial_profiles.is_empty());
+}

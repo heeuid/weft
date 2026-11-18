@@ -636,6 +636,7 @@ impl Default for Settings {
                 kind: HostKind::Custom {
                     pty: vec![git_bash.into(), "-c".into()],
                     agent: vec![git_bash.into(), "-c".into()],
+                    plain: false,
                 },
             });
         }
@@ -1879,6 +1880,56 @@ impl App {
         }
     }
 
+    /// A terminal of an ssh (or custom) host ended before weft's shell
+    /// integration started there. Not with ssh's own failure (code 255: no
+    /// connection, refused keys or password), but with the code of the
+    /// command weft sent (`exec sh -c …`): the host ran it and could not.
+    /// Its shell is not a POSIX one: Windows' cmd ("'exec' is not
+    /// recognized…", in its own language) or PowerShell. The profile is
+    /// marked so (kept with it), the terminal starts again as a plain
+    /// `ssh -tt`, and the panels say why they have no agent there.
+    fn not_posix_host(&mut self, id: usize, host: &str, code: Option<u32>) {
+        let Some(code) = code.filter(|c| *c != 255 && *c != 0) else { return };
+        let profile = self.profile(host);
+        if !matches!(profile.kind, HostKind::Ssh { .. } | HostKind::Custom { .. }) || profile.not_posix() {
+            return;
+        }
+        let mut kept = false;
+        for p in self.settings.profiles.iter_mut().filter(|p| p.name == host) {
+            p.set_not_posix();
+            kept = true;
+        }
+        // One made in Connect has connected: the host ran weft's command
+        // (its prompt or agent never come, plain). Kept now.
+        if let Some(i) = self.trial_profiles.iter().position(|p| p.name == host) {
+            let mut p = self.trial_profiles.remove(i);
+            p.set_not_posix();
+            self.data.log(&format!("profile \"{host}\" kept: it connected"));
+            self.settings.profiles.push(p);
+            kept = true;
+        }
+        if !kept {
+            // A host known by its name alone (~/.ssh/config): it becomes a
+            // profile, so the mark stays with it.
+            let mut p = profile.clone();
+            p.set_not_posix();
+            self.settings.profiles.push(p);
+            kept = true;
+        }
+        if kept {
+            self.save_settings();
+        }
+        self.data.log(&format!("pane {id} [{host}]: weft's shell command ended with {code} before the shell started: not a POSIX shell (Windows?); started again as a plain ssh"));
+        self.toast(format!("{host}: its shell is not a POSIX one (Windows?), so the terminal is a plain ssh, without weft's shell integration; Files, editor and search do not run there"), ToastKind::Info);
+        self.actions.push(Action::Restart(id));
+        // The connection keeps its own copy of the profile.
+        let marked = self.profile(host);
+        if let Some(c) = self.conns.get_mut(host) {
+            c.profile = marked;
+            self.reconnect(host);
+        }
+    }
+
     /// A profile made in Connect is kept in settings once it has connected:
     /// a terminal of it showed its prompt, or its agent is up.
     pub fn keep_connected_profiles(&mut self) {
@@ -2736,6 +2787,7 @@ impl App {
             self.ctx.request_repaint_after(d.max(Duration::from_millis(200)));
         }
         let mut events: Vec<(usize, TermEvent)> = Vec::new();
+        let mut never_started: Vec<(usize, String, Option<u32>)> = Vec::new();
         let mut new_history: Vec<(String, String)> = Vec::new();
         let mut new_records: Vec<crate::records::Record> = Vec::new();
         let mut timings: Vec<String> = Vec::new();
@@ -2774,6 +2826,11 @@ impl App {
                 }
                 if !pane.exited && pty.exited() {
                     pane.exited = true;
+                    // Ended before weft's shell said it had started, or a
+                    // prompt showed: what ran it there? (see not_posix_host)
+                    if pane.shell_pid.is_none() && !pane.seen.1 {
+                        never_started.push((*id, pane.host.clone(), pty.exit_code()));
+                    }
                 }
             }
             for e in std::mem::take(&mut pane.term.events) {
@@ -2807,6 +2864,9 @@ impl App {
         }
         for t in timings {
             self.data.log(&t);
+        }
+        for (id, host, code) in never_started {
+            self.not_posix_host(id, &host, code);
         }
         self.keep_connected_profiles();
         if guessing {

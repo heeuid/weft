@@ -230,6 +230,7 @@ Windows에서 터미널은 콘솔 호스트 위에서 돕니다. weft는 **Windo
   rc는 gzip+base64로 보내 ConPTY의 약 8KB 명령줄 제한 안에 들어갑니다.
 - `posix-loopback` 프로필: Git Bash를 원격처럼 사용(ssh와 완전히 같은 경로)해서 서버 없이 시험해 볼 수 있습니다.
 - 로컬 패널은 PowerShell(+ PSReadLine 통합)이며 파일 작업은 에이전트 없이 Rust `std::fs`로 처리합니다.
+- **Windows ssh 호스트**(셸이 cmd/PowerShell): weft의 셸 연동 명령은 POSIX 셸용이라 거기서 실패합니다. 그러면(ssh 자체 실패인 종료 코드 255가 아닐 때) 그 터미널을 평범한 `ssh -tt`로 다시 열고 프로필에 기억(`"plain": true`)해서 다음부터는 처음부터 그렇게 엽니다. 터미널은 정상으로 쓰지만 weft의 셸 연동(프롬프트 표시, 폴더 따라가기)은 없고, Files·에디터·검색은 sh와 Python이 필요해 그 호스트에서는 쓸 수 없다고 표시합니다.
 
 ### 그래픽 백엔드
 

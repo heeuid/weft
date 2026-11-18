@@ -97,6 +97,9 @@ pub fn pythons_b64_of(list: &[String]) -> String {
     }
 }
 
+/// What the panels say for a host whose shell is not POSIX.
+pub const NOT_POSIX: &str = "this host's shell is not a POSIX one (Windows' cmd or PowerShell?): the Files panel, editor and search run on sh and Python there; the terminal works, without weft's shell integration";
+
 /// What a remote host says when none of the list is Python 3.6+.
 pub const NO_PYTHON: &str = "weft: no Python 3.6 or newer found on this host";
 
@@ -147,10 +150,22 @@ pub enum HostKind {
         /// X11 forwarding: GUI programs run there show here (see x11.rs).
         #[serde(default)]
         x11: bool,
+        /// Its shell is not a POSIX one (Windows' cmd or PowerShell): the
+        /// terminal is a plain `ssh -tt`, without weft's shell integration,
+        /// and there is no agent (see `NOT_POSIX`). Set when weft's command
+        /// failed there.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        plain: bool,
     },
     /// Any command that behaves like `ssh HOST CMD` (receives the remote
     /// command string as its last argument), e.g. `["wsl", "-e", "sh", "-c"]`.
-    Custom { pty: Vec<String>, agent: Vec<String> },
+    Custom {
+        pty: Vec<String>,
+        agent: Vec<String>,
+        /// As Ssh's: the pty command alone, no agent.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        plain: bool,
+    },
     /// A serial console (UART): `port` on the host named `via` ("local": a
     /// COM port opened by weft; a remote host: remote/serial.py run there).
     Serial { via: String, port: String, baud: u32 },
@@ -235,7 +250,19 @@ impl Profile {
         let mut parts = target.split_whitespace().map(String::from);
         let host = parts.next().unwrap_or_default();
         let args: Vec<String> = parts.collect();
-        Profile { name: ssh_name(&host, &args), kind: HostKind::Ssh { target: host, args, x11: false } }
+        Profile { name: ssh_name(&host, &args), kind: HostKind::Ssh { target: host, args, x11: false, plain: false } }
+    }
+
+    /// Its shell is not a POSIX one (see HostKind::Ssh's `plain`).
+    pub fn not_posix(&self) -> bool {
+        matches!(self.kind, HostKind::Ssh { plain: true, .. } | HostKind::Custom { plain: true, .. })
+    }
+
+    /// Mark it so: `plain`, its terminals plain, no agent.
+    pub fn set_not_posix(&mut self) {
+        if let HostKind::Ssh { plain, .. } | HostKind::Custom { plain, .. } = &mut self.kind {
+            *plain = true;
+        }
     }
 
     pub fn is_local(&self) -> bool {
@@ -247,7 +274,7 @@ impl Profile {
     pub fn pty_argv(&self, cwd: Option<&str>, password: bool) -> Vec<String> {
         match &self.kind {
             HostKind::Local => local_shell(LocalShell::Auto).0,
-            HostKind::Ssh { target, args, x11 } => {
+            HostKind::Ssh { target, args, x11, plain } => {
                 let mut v = vec!["ssh".to_string(), "-tt".to_string()];
                 if password {
                     v.extend(["-o".to_string(), "NumberOfPasswordPrompts=1".to_string()]);
@@ -258,12 +285,16 @@ impl Profile {
                 }
                 v.extend(args.iter().cloned());
                 v.push(target.clone());
-                v.push(remote_shell_command(cwd));
+                if !plain {
+                    v.push(remote_shell_command(cwd));
+                }
                 v
             }
-            HostKind::Custom { pty, .. } => {
+            HostKind::Custom { pty, plain, .. } => {
                 let mut v = pty.clone();
-                v.push(remote_shell_command(cwd));
+                if !plain {
+                    v.push(remote_shell_command(cwd));
+                }
                 v
             }
             // Built from the host it is reached through (App::start_pty).
@@ -636,6 +667,13 @@ impl Conn {
     /// it; `None`: keys / ssh-agent only, never prompt.
     pub fn connect(&mut self, wake: impl Fn() + Send + Clone + 'static, password: Option<String>) {
         self.stderr_tail.clear();
+        // Its shell is not POSIX (Windows): the agent cannot run there.
+        if self.profile.not_posix() {
+            self.write_log(&format!("no agent: {NOT_POSIX}"));
+            self.status = ConnStatus::Failed(NOT_POSIX.into());
+            self.backend = Backend::Dead;
+            return;
+        }
         let env = password.as_deref().map(askpass_env).unwrap_or_default();
         match self.profile.agent_argv(password.is_some()) {
             None => {
@@ -1443,7 +1481,7 @@ mod tests {
         assert_eq!(profiles.len(), 3);
         // A profile made before, named by the host alone, is found by its
         // host and options, under that name.
-        let mut old = vec![Profile { name: "u@h".into(), kind: HostKind::Ssh { target: "u@h".into(), args: args(&["-p", "22008"]), x11: false } }];
+        let mut old = vec![Profile { name: "u@h".into(), kind: HostKind::Ssh { target: "u@h".into(), args: args(&["-p", "22008"]), x11: false, plain: false } }];
         assert_eq!(connect_profile(&mut old, "u@h -p 22008"), "u@h");
         assert_eq!(connect_profile(&mut old, "u@h -p 22024"), "u@h:22024");
         assert_eq!(old.len(), 2);
@@ -1817,7 +1855,7 @@ mod loopback {
 
     fn profile() -> Option<Profile> {
         let b = bash()?;
-        Some(Profile { name: "loop".into(), kind: HostKind::Custom { pty: vec![b.clone(), "-c".into()], agent: vec![b, "-c".into()] } })
+        Some(Profile { name: "loop".into(), kind: HostKind::Custom { pty: vec![b.clone(), "-c".into()], agent: vec![b, "-c".into()], plain: false } })
     }
 
     fn pump(pty: &mut Pty, t: &mut Term, p: &mut vte::Parser, until: impl Fn(&Term) -> bool, secs: u64) -> bool {
@@ -2152,7 +2190,7 @@ mod loopback {
     fn an_agent_refused_before_it_is_sent_says_why() {
         let Some(b) = bash() else { return };
         let script = "exec 0<&-; echo 'user@host: Permission denied (publickey,password).' >&2; sleep 1".to_string();
-        let prof = Profile { name: "refused".into(), kind: HostKind::Custom { pty: vec![b.clone(), "-c".into()], agent: vec![b, "-c".into(), script] } };
+        let prof = Profile { name: "refused".into(), kind: HostKind::Custom { pty: vec![b.clone(), "-c".into()], agent: vec![b, "-c".into(), script], plain: false } };
         let data = DataDir { root: std::env::temp_dir().join(format!("weft-test-refused-{}", std::process::id())) };
         let _ = std::fs::create_dir_all(data.root.join("logs"));
         let mut c = Conn::open(prof, &data, || {}, None);
