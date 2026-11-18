@@ -1024,7 +1024,26 @@ impl App {
         // the notice (the notice covered it). Only as far as the text
         // reaches down there.
         let banner = Rect::from_min_size(pos2(inner.left(), inner.bottom() - ch - 10.0), vec2(inner.width(), ch + 8.0));
-        let lift = if self.panes[&id].exited { (inner.top() + window.len() as f32 * ch - (banner.top() - 2.0)).max(0.0) } else { 0.0 };
+        // As far as the text reaches: its last line that is not blank, or
+        // the cursor's (it counted the blank rows below, so three lines at
+        // the top were raised too); and by whole rows (the top one was left
+        // cut in two, under the tab bar).
+        let lift = if self.panes[&id].exited {
+            let t = &self.panes[&id].term;
+            let cursor = t.cursor_abs();
+            let reach = window.iter().rposition(|v| match v {
+                VRow::Fold(..) => true,
+                _ => v.abs(t).is_some_and(|a| a == cursor || t.line(a).is_some_and(|r| !r.is_blank())),
+            });
+            let over = reach.map(|i| inner.top() + (i + 1) as f32 * ch - (banner.top() - 2.0)).unwrap_or(0.0);
+            if over > 0.0 {
+                (over / ch).ceil() * ch
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        };
         let row_y = |i: usize| inner.top() - lift + i as f32 * ch;
 
         // 3. interaction
@@ -1726,6 +1745,7 @@ impl App {
         {
             let pm = self.panes.get_mut(&id).unwrap();
             pm.cursor_drawn = drawn;
+            pm.text_top = inner.top();
             if let Some(tr) = pm.trace.as_mut() {
                 let cell = drawn.map(|r| (((r.top() - inner.top()) / ch).round().max(0.0) as usize, ((r.left() - inner.left()) / cw).round().max(0.0) as usize));
                 tr.cursor(cell, was_held);

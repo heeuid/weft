@@ -2922,16 +2922,31 @@ def after(line):
         h.click(egui::pos2(400.0, 300.0));
         h.type_text("go");
         h.key(Key::Enter, Modifiers::NONE);
+        // Where the first of them is while the program still runs.
+        let first_line = "line-000".to_string();
+        let running_at = if lines < 10 {
+            assert!(h.wait_for(30.0, |h| h.shows("LAST-LINE")), "printed");
+            h.texts.iter().find(|(t, _)| t.starts_with(first_line.as_str())).map(|(_, r)| r.top())
+        } else {
+            None
+        };
         assert!(h.wait_for(30.0, |h| h.app.panes[&pane].exited && h.shows("process exited")), "the program ended ({lines} lines)");
         h.frames(3);
         let notice = h.find("process exited").unwrap();
         let last = h.find("LAST-LINE").unwrap_or_else(|| panic!("the last line is drawn ({lines} lines)"));
         assert!(last.bottom() <= notice.top(), "{lines} lines: the last line {last:?} is above the notice {notice:?}");
-        // Raised only when the text reaches down to the notice.
-        let first = h.texts.iter().filter(|(t, r)| t.starts_with("line-") && r.top() > 30.0).map(|(_, r)| r.top()).fold(f32::MAX, f32::min);
-        let top_of_text = h.app.pane_rects.iter().find(|(id, _)| *id == pane).map(|(_, r)| r.top()).unwrap();
+        // Raised only when the text reaches down to the notice, and by
+        // whole rows: no line cut in two at the top (one was, under the tab
+        // bar, with three lines raised for the blank rows below them).
+        // (Lines above the text area are drawn too, clipped out of sight.)
+        let area = h.app.pane_rects.iter().find(|(id, _)| *id == pane).map(|(_, r)| *r).unwrap();
+        let row_top = h.app.panes[&pane].text_top;
+        let shown: Vec<egui::Rect> = h.texts.iter().filter(|(t, r)| t.starts_with("line-") && r.bottom() > row_top + 0.5 && r.top() < area.bottom()).map(|(_, r)| *r).collect();
+        let first = shown.iter().map(|r| r.top()).fold(f32::MAX, f32::min);
+        assert!(shown.iter().all(|r| r.top() >= row_top - 0.5), "{lines} lines: no line cut at the top: first at {first}, text from {row_top}");
         if !raised {
-            assert!(first - top_of_text < 30.0, "{lines} lines: not raised, the first line at the top ({first} vs {top_of_text})");
+            let now = h.texts.iter().find(|(t, _)| t.starts_with(first_line.as_str())).map(|(_, r)| r.top());
+            assert!(running_at.is_some() && now == running_at, "{lines} lines: not raised: {now:?}, while it ran {running_at:?} (first shown at {first})");
         }
     }
 }

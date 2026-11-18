@@ -5,6 +5,17 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.10.4
+
+Fixed
+- **A terminal whose program ended hid its first line** under the tab bar,
+  cut in two (issue #4). Its text is raised above the "process exited"
+  notice so the notice covers none of it; it was raised as if the text
+  reached the bottom, counting the blank rows below it, so three lines at
+  the top were raised too, and by part of a row. Now only as far as the
+  text reaches (its last line that is not blank, or the cursor's), and by
+  whole rows: no line is left cut at the top.
+
 ## 0.10.3
 
 Fixed

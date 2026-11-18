@@ -1036,6 +1036,8 @@ pub struct Pane {
     pub injected: bool,
     /// Startup timing logged: first output, first prompt.
     pub seen: (bool, bool),
+    /// Where its text area's top is on screen, as last drawn.
+    pub text_top: f32,
     pub id: usize,
     pub host: String,
     pub term: Term,
@@ -1104,6 +1106,7 @@ impl Pane {
             rec_seen: 0,
             rec_cwd: None,
             seen: (false, false),
+            text_top: 0.0,
             flash_block: None,
         }
     }
