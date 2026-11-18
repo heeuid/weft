@@ -38,6 +38,7 @@ impl App {
         self.ui_theme_menu(ctx);
         self.ui_font_menu(ctx);
         self.ui_records_window(ctx);
+        self.ui_graphics_window(ctx);
         self.ui_python_window(ctx);
         self.ui_help(ctx);
         self.ui_memo_picker(ctx);

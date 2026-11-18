@@ -552,6 +552,10 @@ pub struct Settings {
     /// weft starts.
     #[serde(default)]
     pub console_host: String,
+    /// The graphics backend, read as weft starts (main::renderer_choice):
+    /// "auto" (or none: the steadiest for the system), "wgpu" or "opengl".
+    #[serde(default)]
+    pub renderer: String,
     /// How each search was last set, so it is set so when it opens again
     /// (and after a restart): the Search panel, the editor's find bar,
     /// find in a terminal's scrollback.
@@ -635,7 +639,7 @@ impl Default for Settings {
                 },
             });
         }
-        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, layout: Layout::default(), show_hidden: false, show_ignored: true, find_mode: Default::default(), palette_mode: d_palette_mode(), cursor_style: Default::default(), local_shell: Default::default(), mermaid: Default::default(), follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, term_font: d_font_file(), icon_font: d_icon_font(), records: Default::default(), passwords: Default::default(), keys: Default::default(), session: Vec::new(), side_tabs: Default::default(), open: Default::default(), confirm_unsaved: true, confirm_running: true, console_host: String::new(), search: Default::default(), remote_python: d_pythons() }
+        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, layout: Layout::default(), show_hidden: false, show_ignored: true, find_mode: Default::default(), palette_mode: d_palette_mode(), cursor_style: Default::default(), local_shell: Default::default(), mermaid: Default::default(), follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, term_font: d_font_file(), icon_font: d_icon_font(), records: Default::default(), passwords: Default::default(), keys: Default::default(), session: Vec::new(), side_tabs: Default::default(), open: Default::default(), confirm_unsaved: true, confirm_running: true, console_host: String::new(), renderer: String::new(), search: Default::default(), remote_python: d_pythons() }
     }
 }
 
@@ -1643,6 +1647,10 @@ pub struct App {
     pub records_host: Option<String>,
     /// The records settings window is open (with sizes measured on opening).
     pub records_window: Option<Vec<(crate::records::Item, u64)>>,
+    /// "Graphics backend…": the choice being made ("auto", "wgpu", "opengl").
+    pub graphics_window: Option<String>,
+    /// What draws, as weft started: the backend, GPU and driver.
+    pub graphics: String,
     /// "Python on remote hosts…": the list being edited, a line each.
     pub python_window: Option<String>,
     last_prune: Option<Instant>,
@@ -1783,6 +1791,8 @@ impl App {
             records_in_output: false,
             records_host: None,
             records_window: None,
+            graphics_window: None,
+            graphics: String::new(),
             python_window: None,
             last_prune: None,
             memo_edited: None,

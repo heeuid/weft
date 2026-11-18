@@ -10,13 +10,16 @@ members = ["crates/weft-core", "crates/weft-draw"]
 
 # One version for weft and its crates: raised here, with CHANGELOG.md.
 [workspace.package]
-version = "0.10.2"
+version = "0.10.3"
 license = "MIT"
 
 [dependencies]
 weft-core = { path = "crates/weft-core" }
 weft-draw = { path = "crates/weft-draw" }
-eframe = "0.31"
+eframe = { version = "0.31", features = ["wgpu"] }
+# eframe's wgpu comes with no backend of its own: DirectX 12 (Windows) and
+# Metal (macOS) here; Vulkan (Linux) wgpu has by itself.
+wgpu = { version = "24", default-features = false, features = ["wgsl", "dx12", "metal"] }
 egui = "0.31"
 vte = "0.15"
 serde = { version = "1.0", features = ["derive"] }

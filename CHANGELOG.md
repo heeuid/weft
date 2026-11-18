@@ -5,6 +5,28 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.10.3
+
+Fixed
+- **Black frames on Windows after the PC slept or locked.** weft drew
+  with OpenGL, and after the PC had slept or locked a few times its
+  window showed black frames whenever it redrew (a key, the mouse), until
+  weft was started again; minimizing it did not always help. What weft
+  drew was the same frame after frame: it was OpenGL's way to the screen.
+  weft now draws with the steadiest graphics backend for the system:
+  wgpu on DirectX 12 on Windows, wgpu on Metal on macOS (OpenGL there is
+  deprecated), OpenGL on Linux (it runs where Vulkan has no driver).
+
+Added
+- **Graphics backend…** (palette): auto (the system's steadiest), wgpu
+  (DirectX 12 / Metal / Vulkan) or OpenGL, kept in settings ("renderer")
+  and used from the next start; "Save and restart" starts again at once.
+  It shows what draws now. WEFT_RENDERER sets it for one start. If wgpu
+  cannot start (no driver for it), weft starts again on OpenGL and says
+  so in its log.
+- The log says what draws (`graphics: wgpu Dx12: <GPU> ...`) and each
+  change of the window's scale or monitor (`display: ...`).
+
 ## 0.10.2
 
 Fixed

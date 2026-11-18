@@ -3369,3 +3369,36 @@ fn hidden_tabs_are_counted_each_side() {
         assert!(h.wait_for(5.0, |h| counts(h) == (before.0 + 1, before.1 - 1) && whole(h)), "a notch {dy} below the titles: one tab: {:?} (was {before:?})", counts(&h));
     }
 }
+
+/// "Graphics backend…": auto (the system's steadiest), wgpu or OpenGL,
+/// saved in settings.json ("renderer") and so used at every start; auto
+/// is no value at all.
+#[test]
+fn the_graphics_backend_is_chosen_and_kept() {
+    let mut h = Harness::new(json!({}));
+    h.app.graphics = "wgpu Dx12: Some GPU".into();
+    h.command("graphics_backend");
+    h.frames(2);
+    assert!(h.shows("Graphics backend") && h.shows("Now: wgpu Dx12: Some GPU"), "the window, and what draws now");
+    assert!(h.shows("auto: the steadiest here"));
+    h.click(h.at("OpenGL"));
+    h.frames(1);
+    h.click(h.at("Save"));
+    h.frames(2);
+    assert!(h.app.graphics_window.is_none(), "closed");
+    assert_eq!(h.app.settings.renderer, "opengl");
+    let saved = std::fs::read_to_string(h.app.data.path("settings.json")).unwrap();
+    assert_eq!(crate::renderer_setting(&saved).as_deref(), Some("opengl"), "in settings.json, read so as the next start begins");
+    h.restart();
+    assert_eq!(h.app.settings.renderer, "opengl", "kept after a restart");
+    // Back to auto: no value.
+    h.command("graphics_backend");
+    h.frames(2);
+    h.click(h.at("auto: the steadiest here"));
+    h.frames(1);
+    h.click(h.at("Save"));
+    h.frames(2);
+    assert_eq!(h.app.settings.renderer, "");
+    let saved = std::fs::read_to_string(h.app.data.path("settings.json")).unwrap();
+    assert_eq!(crate::renderer_setting(&saved).as_deref(), Some(""));
+}

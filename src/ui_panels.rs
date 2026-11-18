@@ -85,6 +85,8 @@ pub(crate) enum Cmd {
     PanelSplit(Region, bool),
     /// Start the newest weft (a new build or install) with the same tabs and settings.
     Restart,
+    /// "Graphics backend…": how weft draws, from the next start.
+    Graphics,
     /// Open a serial port (UART) of this PC or a remote host in a tab.
     Serial,
     /// X11 forwarding on/off for the active tab's ssh host (new tabs).
@@ -164,6 +166,7 @@ const COMMANDS: &[(Cmd, &str, &str, &[&str])] = &[
     (Cmd::Palette, "palette", "Command palette", &["Ctrl+Shift+P"]),
     (Cmd::Keys, "keys", "Keyboard shortcuts… (bind keys to commands)", &[]),
     (Cmd::Restart, "restart", "Restart weft: the newest build or install, same tabs, folders and settings", &[]),
+    (Cmd::Graphics, "graphics_backend", "Graphics backend… (how weft draws: the system's steadiest, wgpu or OpenGL; from the next start)", &[]),
     (Cmd::ThemeSystem, "theme_system", "Theme: follow system (dark/light)", &[]),
     (Cmd::CursorStyle, "cursor_style", "Terminal cursor: block / bar / underline", &[]),
     (Cmd::LocalShell(crate::host::LocalShell::Auto), "shell_auto", "Local shell: auto (pwsh, else Windows PowerShell)", &[]),
@@ -355,6 +358,7 @@ impl App {
             Cmd::Zoom => self.toggle_zoom(),
             Cmd::Sidebar => self.settings.sidebar = !self.settings.sidebar,
             Cmd::Restart => self.restart(),
+            Cmd::Graphics => self.graphics_window = Some(if self.settings.renderer.is_empty() { "auto".into() } else { self.settings.renderer.clone() }),
             Cmd::Serial => self.open_serial_dialog(),
             Cmd::X11 => {
                 let host = self.active_host();
@@ -548,7 +552,7 @@ impl App {
     /// shell gets no Esc for it. (A key being bound has taken its Esc by
     /// now: that cancels the binding, not the window.)
     pub fn escape_closes_windows(&mut self, ctx: &egui::Context) {
-        let windows = [self.display_test.is_some(), self.serial_dialog.is_some(), self.font_menu.is_some(), self.memo_picker, self.keys_window.is_some(), self.records_window.is_some(), self.help.is_some(), self.python_window.is_some()];
+        let windows = [self.display_test.is_some(), self.serial_dialog.is_some(), self.font_menu.is_some(), self.memo_picker, self.keys_window.is_some(), self.records_window.is_some(), self.help.is_some(), self.python_window.is_some(), self.graphics_window.is_some()];
         let now = windows.iter().enumerate().fold(0u32, |m, (i, open)| m | ((*open as u32) << i));
         // One that has just opened takes the keyboard from the terminal;
         // a click in a terminal gives it back, and Esc is then the shell's
@@ -589,7 +593,7 @@ impl App {
             return;
         }
         // One at a time, the smaller ones (opened from the others) first.
-        if self.display_test.take().is_some() || self.serial_dialog.take().is_some() || self.font_menu.take().is_some() || std::mem::take(&mut self.memo_picker) || self.keys_window.take().is_some() || self.records_window.take().is_some() || self.python_window.take().is_some() {
+        if self.display_test.take().is_some() || self.serial_dialog.take().is_some() || self.font_menu.take().is_some() || std::mem::take(&mut self.memo_picker) || self.keys_window.take().is_some() || self.records_window.take().is_some() || self.python_window.take().is_some() || self.graphics_window.take().is_some() {
         } else {
             self.help = None;
         }
@@ -2166,6 +2170,66 @@ impl App {
             self.toast(if failed.is_empty() { "saved: used from the next connection".to_string() } else { format!("saved; connecting again: {}", failed.join(", ")) }, crate::app::ToastKind::Info);
         } else if open {
             self.python_window = Some(text);
+        }
+    }
+
+    /// "Graphics backend…": how weft draws. "auto" is the steadiest for the
+    /// system (wgpu on DirectX 12 on Windows, on Metal on macOS; OpenGL on
+    /// Linux); wgpu and OpenGL can be chosen. Kept in settings ("renderer")
+    /// and used from the next start (the window is made with it); "Save and
+    /// restart" starts again at once, with the same tabs.
+    pub fn ui_graphics_window(&mut self, ctx: &egui::Context) {
+        let Some(mut choice) = self.graphics_window.take() else { return };
+        let mut open = true;
+        let mut save = false;
+        let mut restart = false;
+        let auto_is = if cfg!(windows) {
+            "wgpu on DirectX 12"
+        } else if cfg!(target_os = "macos") {
+            "wgpu on Metal"
+        } else {
+            "OpenGL"
+        };
+        let wgpu_is = if cfg!(windows) {
+            "DirectX 12"
+        } else if cfg!(target_os = "macos") {
+            "Metal"
+        } else {
+            "Vulkan"
+        };
+        crate::widgets::dialog(ctx, "Graphics backend", vec2(460.0, 300.0)).open(&mut open).resizable(false).show(ctx, |ui| {
+            ui.label(RichText::new(format!("Now: {}", if self.graphics.is_empty() { "not known" } else { self.graphics.as_str() })).size(11.5).color(theme::text_dim()));
+            ui.add_space(6.0);
+            ui.radio_value(&mut choice, "auto".to_string(), format!("auto: the steadiest here ({auto_is})"));
+            ui.radio_value(&mut choice, "wgpu".to_string(), format!("wgpu ({wgpu_is})"));
+            ui.radio_value(&mut choice, "opengl".to_string(), "OpenGL");
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new("Used from the next start. If wgpu cannot start here, weft starts on OpenGL and says so in its log.")
+                    .size(11.0)
+                    .color(theme::text_faint()),
+            );
+            ui.horizontal(|ui| {
+                if ui.button("Save").clicked() {
+                    save = true;
+                }
+                if ui.button("Save and restart").clicked() {
+                    save = true;
+                    restart = true;
+                }
+            });
+        });
+        if save {
+            self.settings.renderer = if choice == "auto" { String::new() } else { choice.clone() };
+            self.save_settings();
+            self.data.log(&format!("graphics backend set to {choice}, from the next start"));
+            if restart {
+                self.restart();
+            } else {
+                self.toast(format!("graphics backend: {choice}, from the next start"), crate::app::ToastKind::Info);
+            }
+        } else if open {
+            self.graphics_window = Some(choice);
         }
     }
 
@@ -4359,7 +4423,7 @@ fn group(c: Cmd) -> &'static str {
         | Cmd::Theme(_)
         | Cmd::Fonts
         | Cmd::MarkdownBreaks => GROUPS[3],
-        Cmd::Records | Cmd::Settings | Cmd::RemotePython | Cmd::AgentLog | Cmd::Keys | Cmd::Restart | Cmd::ConfirmUnsaved | Cmd::ConfirmRunning => GROUPS[4],
+        Cmd::Records | Cmd::Settings | Cmd::RemotePython | Cmd::Graphics | Cmd::AgentLog | Cmd::Keys | Cmd::Restart | Cmd::ConfirmUnsaved | Cmd::ConfirmRunning => GROUPS[4],
         Cmd::Help | Cmd::Features | Cmd::Palette | Cmd::About | Cmd::DisplayTest | Cmd::Trace => GROUPS[5],
     }
 }

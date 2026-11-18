@@ -48,8 +48,69 @@ pub fn since_start() -> String {
     format!("{} ms", STARTED.get().map(|t| t.elapsed().as_millis()).unwrap_or(0))
 }
 
+/// The graphics backend: WEFT_RENDERER, else settings "renderer", else
+/// "auto": the steadiest for the system. Windows: wgpu on DirectX 12 (an
+/// OpenGL window, after the PC slept or locked a few times, showed black
+/// frames each time it redrew until it was minimized or started again;
+/// wgpu makes its surface again when the system says it is lost or out of
+/// date). macOS: wgpu on Metal (OpenGL there is deprecated). Linux and the
+/// rest: OpenGL, which runs where Vulkan has no driver (virtual machines,
+/// older GPUs). Read before the window is made, so from settings.json
+/// directly.
+fn renderer_choice() -> eframe::Renderer {
+    let from_settings = || renderer_setting(&std::fs::read_to_string(host::DataDir::locate().path("settings.json")).ok()?);
+    let want = std::env::var("WEFT_RENDERER").ok().or_else(from_settings).unwrap_or_default().to_lowercase();
+    renderer_for(&want, cfg!(windows) || cfg!(target_os = "macos"))
+}
+
+/// settings.json's "renderer", as Graphics backend… saved it.
+fn renderer_setting(settings_json: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(settings_json).ok()?.get("renderer")?.as_str().map(String::from)
+}
+
+/// "wgpu" (or directx, dx12, vulkan, metal), "opengl" (or gl, glow), else
+/// the system's own: wgpu where `wgpu_first`.
+fn renderer_for(want: &str, wgpu_first: bool) -> eframe::Renderer {
+    match want.trim() {
+        "wgpu" | "directx" | "dx12" | "vulkan" | "metal" => eframe::Renderer::Wgpu,
+        "opengl" | "gl" | "glow" => eframe::Renderer::Glow,
+        _ if wgpu_first => eframe::Renderer::Wgpu,
+        _ => eframe::Renderer::Glow,
+    }
+}
+
+/// wgpu's backend: DirectX 12 on Windows (it could take Vulkan there),
+/// unless WGPU_BACKEND says another; the system's own elsewhere.
+fn wgpu_options() -> eframe::egui_wgpu::WgpuConfiguration {
+    let mut o = eframe::egui_wgpu::WgpuConfiguration::default();
+    if cfg!(windows) && std::env::var_os("WGPU_BACKEND").is_none() {
+        if let eframe::egui_wgpu::WgpuSetup::CreateNew(c) = &mut o.wgpu_setup {
+            c.instance_descriptor.backends = eframe::wgpu::Backends::DX12;
+        }
+    }
+    o
+}
+
+/// What draws: the backend and the GPU and driver it got, for the log.
+fn graphics_info(cc: &eframe::CreationContext) -> String {
+    if let Some(gl) = cc.gl.as_ref() {
+        use eframe::glow::HasContext;
+        // SAFETY: plain string queries on the context eframe made current.
+        let (renderer, vendor, version) = unsafe { (gl.get_parameter_string(eframe::glow::RENDERER), gl.get_parameter_string(eframe::glow::VENDOR), gl.get_parameter_string(eframe::glow::VERSION)) };
+        return format!("OpenGL: {renderer} ({vendor}), {version}");
+    }
+    if let Some(rs) = cc.wgpu_render_state.as_ref() {
+        let i = rs.adapter.get_info();
+        return format!("wgpu {:?}: {} ({:?}), driver {} {}", i.backend, i.name, i.device_type, i.driver, i.driver_info);
+    }
+    "unknown".into()
+}
+
 struct WeftApp {
     app: App,
+    /// The window's scale and monitor size last seen: a change is logged
+    /// (moved to another monitor, a monitor plugged or woken).
+    display: Option<(f32, Option<egui::Vec2>)>,
     first_frame: bool,
     /// WEFT_DEBUG_REPAINT=1: frames per 5 s and what asked for them, to the log.
     repaint_debug: Option<(Instant, u32, std::collections::BTreeMap<String, u32>)>,
@@ -129,6 +190,16 @@ impl eframe::App for WeftApp {
                 ));
                 *since = Instant::now();
                 *frames = 0;
+            }
+        }
+        // The display: logged when it changes, to tell what went before a
+        // window misbehaving (moved, a monitor woken or plugged).
+        {
+            let now = ctx.input(|i| (i.viewport().native_pixels_per_point.unwrap_or(1.0), i.viewport().monitor_size));
+            if self.display != Some(now) {
+                let was = self.display.map(|(s, m)| format!("{:.2}x on {}", s, m.map(|m| format!("{:.0}x{:.0}", m.x, m.y)).unwrap_or("?".into()))).unwrap_or("start".into());
+                self.app.data.log(&format!("display: {was} -> {:.2}x on {}", now.0, now.1.map(|m| format!("{:.0}x{:.0}", m.x, m.y)).unwrap_or("?".into())));
+                self.display = Some(now);
             }
         }
         let app = &mut self.app;
@@ -238,7 +309,10 @@ fn main() -> eframe::Result<()> {
     secret::harden_process();
     #[cfg(all(windows, not(debug_assertions)))]
     release_console();
+    let renderer = renderer_choice();
     let options = eframe::NativeOptions {
+        renderer,
+        wgpu_options: wgpu_options(),
         viewport: egui::ViewportBuilder::default()
             .with_title("weft")
             .with_inner_size([1400.0, 860.0])
@@ -246,7 +320,7 @@ fn main() -> eframe::Result<()> {
             .with_icon(app_icon()),
         ..Default::default()
     };
-    eframe::run_native(
+    let ran = eframe::run_native(
         "weft",
         options,
         Box::new(|cc| {
@@ -260,8 +334,50 @@ fn main() -> eframe::Result<()> {
             app.apply_fonts();
             let fonts = format!("{} (from {before_fonts})", since_start());
             app.data.log(&format!("startup: window+GL {window}, fonts read {fonts}, app+panes {}", since_start()));
+            app.graphics = graphics_info(cc);
+            app.data.log(&format!("graphics: {}", app.graphics));
             let repaint_debug = std::env::var_os("WEFT_DEBUG_REPAINT").map(|_| (Instant::now(), 0, Default::default()));
-            Ok(Box::new(WeftApp { app, first_frame: true, repaint_debug, title: String::new(), health: (Instant::now(), 0, 0.0), atlas_flip: false }))
+            Ok(Box::new(WeftApp { app, display: None, first_frame: true, repaint_debug, title: String::new(), health: (Instant::now(), 0, 0.0), atlas_flip: false }))
         }),
-    )
+    );
+    // wgpu could not make the window (no DirectX 12 / Vulkan / Metal device,
+    // a driver too old): weft starts again on OpenGL, once, and says so.
+    if let Err(e) = &ran {
+        if renderer == eframe::Renderer::Wgpu && std::env::var_os("WEFT_RENDERER_FELL_BACK").is_none() {
+            host::DataDir::locate().log(&format!("graphics: wgpu failed ({e}); starting again on OpenGL"));
+            let again = std::env::current_exe().and_then(|me| std::process::Command::new(me).args(std::env::args_os().skip(1)).env("WEFT_RENDERER", "opengl").env("WEFT_RENDERER_FELL_BACK", "1").spawn());
+            if again.is_ok() {
+                return Ok(());
+            }
+        }
+    }
+    ran
+}
+
+#[cfg(test)]
+mod renderer_tests {
+    use super::renderer_for;
+    use eframe::Renderer::{Glow, Wgpu};
+
+    /// The graphics backend: what is asked for, else the system's steadiest
+    /// (wgpu on Windows and macOS, OpenGL elsewhere); wgpu on DirectX 12 on
+    /// Windows.
+    #[test]
+    fn the_graphics_backend_by_system_and_setting() {
+        assert_eq!(renderer_for("", true), Wgpu, "Windows, macOS");
+        assert_eq!(renderer_for("auto", false), Glow, "Linux");
+        assert_eq!(renderer_for("opengl", true), Glow);
+        assert_eq!(renderer_for("glow", true), Glow);
+        assert_eq!(renderer_for("wgpu", false), Wgpu);
+        assert_eq!(renderer_for("dx12", false), Wgpu);
+        assert_eq!(renderer_for(" metal ", false), Wgpu);
+        assert_eq!(renderer_for("nonsense", true), Wgpu, "not known: the system's own");
+        assert_eq!(renderer_for("nonsense", false), Glow);
+        let o = super::wgpu_options();
+        if let eframe::egui_wgpu::WgpuSetup::CreateNew(c) = &o.wgpu_setup {
+            if cfg!(windows) && std::env::var_os("WGPU_BACKEND").is_none() {
+                assert_eq!(c.instance_descriptor.backends, eframe::wgpu::Backends::DX12, "DirectX 12 on Windows");
+            }
+        }
+    }
 }

@@ -230,6 +230,18 @@ Windows에서 터미널은 콘솔 호스트 위에서 돕니다. weft는 **Windo
   rc는 gzip+base64로 보내 ConPTY의 약 8KB 명령줄 제한 안에 들어갑니다.
 - `posix-loopback` 프로필: Git Bash를 원격처럼 사용(ssh와 완전히 같은 경로)해서 서버 없이 시험해 볼 수 있습니다.
 - 로컬 패널은 PowerShell(+ PSReadLine 통합)이며 파일 작업은 에이전트 없이 Rust `std::fs`로 처리합니다.
+
+### 그래픽 백엔드
+
+팔레트 `Graphics backend…`: `auto`(기본: 그 OS에서 가장 안정적인 것) / `wgpu` / `OpenGL`. `settings.json`의 `"renderer"`에 저장되어 다음 시작부터 쓰입니다(`Save and restart`는 바로 다시 시작). 창에 지금 쓰는 백엔드와 GPU가 나오고, 로그에도 `graphics: …`로 남습니다.
+
+| OS | auto | 고를 수 있는 것 |
+|---|---|---|
+| Windows | wgpu (DirectX 12) | OpenGL |
+| macOS | wgpu (Metal) | OpenGL |
+| Linux | OpenGL | wgpu (Vulkan) |
+
+Windows에서 OpenGL로 그리면 절전·잠금을 몇 번 거친 뒤 다시 그릴 때마다 까만 프레임이 섞이는 경우가 있어 DirectX 12가 기본입니다. wgpu를 쓸 수 없는 PC(드라이버 없음)에서는 자동으로 OpenGL로 다시 시작하고 로그에 남깁니다. 한 번만 바꿔 보려면 환경 변수 `WEFT_RENDERER=opengl` / `wgpu`.
 - **원격의 Python**: 에이전트와 시리얼 중계는 원격의 Python 3.6 이상으로 돕니다. 배포판마다 이름·위치가 달라서, 팔레트 `Python on remote hosts…`의 목록(한 줄에 하나: PATH의 이름이나 경로, `*` 가능)을 위에서부터 실행해 보고 3.6 이상인 첫 것을 씁니다. 기본: `python3`, `python`, `/usr/libexec/platform-python`(RHEL/Rocky 8 최소 설치), `/usr/local/bin/python3`, `/opt/homebrew/bin/python3`. 하나도 없으면 상태바에 시도한 목록과 할 일(원격에서 `command -v python3`로 확인, 또는 목록에 이름·경로 추가)이 나오고 `python…` 버튼으로 목록을 엽니다.
 
 ## 단축키
