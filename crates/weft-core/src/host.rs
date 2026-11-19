@@ -1676,6 +1676,54 @@ mod tests {
         }
     }
 
+    /// weft's bash reads a login shell's startup files as bash does: the
+    /// system's (/etc/profile) first, then the first of ~/.bash_profile,
+    /// ~/.bash_login and ~/.profile; ~/.bash_logout as it ends (issue #5:
+    /// a server whose /etc/profile.d loads ~/.bashrc got none of it).
+    #[test]
+    fn bash_reads_a_login_shells_files() {
+        use std::io::Write;
+        let bash = if cfg!(windows) { PathBuf::from("C:/Program Files/Git/bin/bash.exe") } else { which("bash").unwrap_or_default() };
+        if !bash.is_file() {
+            return;
+        }
+        let slash = |p: &std::path::Path| p.display().to_string().replace('\\', "/");
+        let dir = std::env::temp_dir().join(format!("weft-login-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let home = dir.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        // In place of /etc/profile: a system's that loads ~/.bashrc.
+        let etc = dir.join("profile");
+        std::fs::write(&etc, "SYS=1\n[ -r ~/.bashrc ] && . ~/.bashrc\n").unwrap();
+        std::fs::write(home.join(".bashrc"), "RC=1\n").unwrap();
+        std::fs::write(home.join(".bash_logout"), "echo bye > \"$HOME/logged-out\"\n").unwrap();
+        let rc = dir.join("rc");
+        std::fs::write(&rc, BASH_SH.replace("/etc/profile", &slash(&etc))).unwrap();
+        let got = || {
+            let mut child = std::process::Command::new(&bash)
+                .args(["--rcfile", &slash(&rc), "-i"])
+                .env("HOME", slash(&home))
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap();
+            child.stdin.take().unwrap().write_all(b"echo \"got SYS=$SYS RC=$RC P=$P L=$L Q=$Q\"; exit\n").unwrap();
+            let out = String::from_utf8_lossy(&child.wait_with_output().unwrap().stdout).to_string();
+            out.lines().find(|l| l.starts_with("got ")).unwrap_or_default().to_string()
+        };
+        // No startup file of the user's: the system's, and the ~/.bashrc it loads.
+        assert_eq!(got(), "got SYS=1 RC=1 P= L= Q=");
+        assert!(home.join("logged-out").is_file(), "~/.bash_logout as it ended");
+        // The user's: the first that is there, only.
+        std::fs::write(home.join(".bash_login"), "L=1\n").unwrap();
+        std::fs::write(home.join(".profile"), "Q=1\n").unwrap();
+        assert_eq!(got(), "got SYS=1 RC=1 P= L=1 Q=");
+        std::fs::write(home.join(".bash_profile"), "P=1\n").unwrap();
+        assert_eq!(got(), "got SYS=1 RC=1 P=1 L= Q=");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The agent's parts for a Windows host, run here on Windows' Python:
     /// search with no grep, processes, memory and disk.
     #[test]

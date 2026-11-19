@@ -5,6 +5,19 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.10.7
+
+Fixed
+- **bash on a remote host reads the startup files a plain ssh login
+  does** (issue #5): the system's (`/etc/profile`, and the
+  `/etc/profile.d` scripts it runs) first, then the first of
+  `~/.bash_profile`, `~/.bash_login` and `~/.profile`, and
+  `~/.bash_logout` as it ends. weft starts bash with its integration as
+  the rc file, which takes the place of bash's own startup files, and read
+  only the user's: where `~/.bashrc` is loaded from `/etc/profile.d` (no
+  `~/.bash_profile` of the user's), it was not, and the prompt was bash's
+  bare `bash-4.4$`.
+
 ## 0.10.6
 
 Fixed

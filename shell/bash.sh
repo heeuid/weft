@@ -9,10 +9,19 @@ __weft_dec=$D
 __weft_cwd=$WEFT_CWD
 unset W D R WEFT_CWD
 
-# --rcfile replaces the normal startup files: emulate a login shell.
-if [ -f ~/.bash_profile ]; then . ~/.bash_profile
-elif [ -f ~/.bash_login ]; then . ~/.bash_login
-elif [ -f ~/.profile ]; then . ~/.profile
+# --rcfile replaces the normal startup files: read a login shell's, as bash
+# does (INVOCATION in its manual), so it is as a plain ssh login: the
+# system's first (servers where /etc/profile.d loads ~/.bashrc had none of
+# it), then the first of the user's that is there.
+if [ -r /etc/profile ]; then . /etc/profile; fi
+if [ -r ~/.bash_profile ]; then . ~/.bash_profile
+elif [ -r ~/.bash_login ]; then . ~/.bash_login
+elif [ -r ~/.profile ]; then . ~/.profile
+fi
+# And a login shell's end: ~/.bash_logout, unless the user's files set
+# their own EXIT trap.
+if [ -z "$(trap -p EXIT)" ]; then
+    trap '[ -r ~/.bash_logout ] && . ~/.bash_logout' EXIT
 fi
 
 if [ -n "$__weft_cwd" ]; then
