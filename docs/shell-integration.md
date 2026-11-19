@@ -17,15 +17,16 @@ weft가 셸에서 "프롬프트가 어디고, 명령이 언제 시작해서 끝�
 
 | 셸 | 로컬 | 원격 | 통합 방법 | 종료 코드 | cwd | 실제 셸로 테스트 |
 |---|---|---|---|---|---|---|
-| bash | (posix-loopback 프로필) | ✓ | `--rcfile <(…)` (`shell/bash.sh`) | ✓ | OSC 7 | ✓ |
-| zsh | – | ✓ | `precmd`/`preexec` 훅 (`shell/zsh.zsh`), 아래 "zsh" 참고 | ✓ | OSC 7 | ✗ (설치돼 있지 않음, 스크립트만 단위 테스트) |
-| fish | – | ✓ | `fish_prompt` 감싸기 + `fish_preexec` (`shell/fish.fish`), `fish -C` | ✓ | OSC 7 | ✗ (상동) |
+| bash | ✓ (macOS·Linux) | ✓ | `--rcfile <(…)` (`shell/bash.sh`) | ✓ | OSC 7 | ✓ |
+| zsh | ✓ (macOS·Linux) | ✓ | `precmd`/`preexec` 훅 (`shell/zsh.zsh`), 아래 "zsh" 참고 | ✓ | OSC 7 | ✗ (설치돼 있지 않음, 스크립트만 단위 테스트) |
+| fish | ✓ (macOS·Linux) | ✓ | `fish_prompt` 감싸기 + `fish_preexec` (`shell/fish.fish`), `fish -C` | ✓ | OSC 7 | ✗ (상동) |
 | PowerShell 7 / 5.1 | ✓ | ✓ | `prompt` 함수 + PSReadLine Enter (`shell/pwsh.ps1`) | ✓ | OSC 7 | ✓ (로컬·원격 방식 모두) |
 | nushell | ✓ | ✓ | nu 내장 통합(`shell_integration.osc133/osc7`)을 `-e`로 켬 | ✓ | OSC 7 (첫 명령부터) | ✓ |
 | cmd | ✓ | – | `PROMPT` 변수에 표시를 넣음 | ✗ (cmd가 알려 주지 않음) | OSC 9;9 | ✓ |
 | 그 외 (dash, ksh, tcsh, xonsh …) | – | ✓ | 없음: 추정 | ✗ | 프로세스 관찰 (python 에이전트 필요) | ✓ (dash) |
 
-- 로컬 셸은 `settings.json`의 `"local_shell"`(`auto`/`pwsh`/`powershell`/`cmd`/`nu`) 또는 팔레트 `Local shell: …`로 고릅니다.
+- 로컬 셸은 Windows에서 `settings.json`의 `"local_shell"`(`auto`/`pwsh`/`powershell`/`cmd`/`nu`) 또는 팔레트 `Local shell: …`로 고릅니다.
+- macOS·Linux의 로컬 터미널은 사용자 셸(`$SHELL`)을 원격과 같은 시작 명령으로(ssh 없이 `/bin/sh -c '…'`) 띄워, 원격과 같은 통합이 붙습니다.
 - 원격은 **로그인 셸(`$SHELL`)**을 그대로 띄웁니다. 시험이나 강제를 위해 `WEFT_SHELL` 환경 변수로 바꿀 수 있습니다.
 - bash는 `--rcfile`이 bash 자신의 시작 파일을 대신하므로, weft의 rc가 로그인 셸이 읽는 파일을 bash와 같은 순서로 읽습니다: `/etc/profile`(과 그것이 부르는 `/etc/profile.d/*.sh`), 이어서 `~/.bash_profile`·`~/.bash_login`·`~/.profile` 중 처음 있는 것 하나, 끝날 때 `~/.bash_logout`. 그냥 ssh로 로그인한 것과 같은 환경이 됩니다.
 

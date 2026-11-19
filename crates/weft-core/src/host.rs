@@ -602,7 +602,7 @@ fn cmd_prompt() -> String {
 /// argv and extra environment for a local pane's shell.
 pub fn local_shell(choice: LocalShell) -> (Vec<String>, Vec<(String, String)>) {
     if !cfg!(windows) {
-        return (vec![std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into()), "-i".into()], Vec::new());
+        return (posix_local_argv("/bin/sh"), Vec::new());
     }
     match choice {
         LocalShell::Cmd => (vec!["cmd.exe".into(), "/k".into(), "chcp 65001 >nul".into()], vec![("PROMPT".into(), cmd_prompt())]),
@@ -613,6 +613,14 @@ pub fn local_shell(choice: LocalShell) -> (Vec<String>, Vec<(String, String)>) {
         LocalShell::Powershell => (powershell_argv("powershell.exe"), Vec::new()),
         _ => (local_shell_argv(), Vec::new()),
     }
+}
+
+/// A local terminal on macOS and Linux: the user's shell ($SHELL) with
+/// weft's integration, started as on a remote host, by the same command
+/// without ssh (it was the bare shell: no prompt marks, exit codes,
+/// folder or w* commands).
+pub fn posix_local_argv(sh: &str) -> Vec<String> {
+    vec![sh.into(), "-c".into(), remote_shell_command(None)]
 }
 
 fn powershell_argv(exe: &str) -> Vec<String> {
@@ -2374,11 +2382,15 @@ mod loopback {
     #[cfg(windows)]
     fn local_shell_check(choice: LocalShell, cmd: &str, exit: Option<i32>) {
         let (argv, env) = local_shell(choice);
+        argv_check(&format!("{choice:?}"), &argv, &env, cmd, exit);
+    }
+
+    fn argv_check(choice: &str, argv: &[String], env: &[(String, String)], cmd: &str, exit: Option<i32>) {
         if which(&argv[0]).is_none() && !Path::new(&argv[0]).is_file() {
             println!("skip: {} not installed", argv[0]);
             return;
         }
-        let mut pty = Pty::spawn(&argv, Some(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")), &env, 100, 30, || {}).unwrap();
+        let mut pty = Pty::spawn(argv, Some(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")), env, 100, 30, || {}).unwrap();
         let mut t = Term::new(100, 30);
         let mut p = vte::Parser::new();
         // nushell reports the directory only from its first command on.
@@ -2395,6 +2407,20 @@ mod loopback {
         assert_eq!(b.exit, exit, "{choice:?}");
         assert_eq!(t.block_output(b).trim(), "weft-ok", "{choice:?}");
         assert!(t.cwd.as_deref().map(|c| c.ends_with("weft-initial")).unwrap_or(false), "{choice:?}: cwd {:?}", t.cwd);
+    }
+
+    /// A local terminal on macOS and Linux has weft's integration (the
+    /// remote bootstrap run by the local sh): tried here with Git's sh, its
+    /// bash.
+    #[test]
+    fn a_posix_local_terminal_is_integrated() {
+        let sh = if cfg!(windows) { "C:/Program Files/Git/bin/sh.exe" } else { "/bin/sh" };
+        if !Path::new(sh).is_file() {
+            return;
+        }
+        #[cfg(not(windows))]
+        assert_eq!(local_shell(LocalShell::Auto).0, posix_local_argv("/bin/sh"), "macOS and Linux start it so");
+        argv_check("posix local", &posix_local_argv(sh), &[], "echo weft-ok", Some(0));
     }
 
     #[test]

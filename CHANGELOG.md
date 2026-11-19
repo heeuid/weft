@@ -5,6 +5,16 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.10.8
+
+Fixed
+- **A local terminal on macOS and Linux has weft's shell integration**
+  (prompt marks, exit codes, the folder followed, `wopen` and the other
+  w* commands), as a remote one has: the user's shell (`$SHELL`) is
+  started by the same command as on a remote host, without ssh, with
+  `shell/bash.sh`, `zsh.zsh` or `fish.fish`. It was the bare shell
+  (`$SHELL -i`), only guessed at.
+
 ## 0.10.7
 
 Fixed
