@@ -13,17 +13,30 @@ weft가 셸에서 "프롬프트가 어디고, 명령이 언제 시작해서 끝�
 
 셸이 OSC 133을 한 번이라도 보내면 추정은 멈추고 통합을 따릅니다.
 
+추정한 블록은 틀릴 수 있어 기본으로는 보여 주지 않고 기록도 하지 않습니다(`"guess_blocks": false`). 추정 자체는 보이지 않게 계속 돌아, 프롬프트가 나왔는지와 명령이 끝났을 법한 때(그때 에이전트로 cwd를 읽음)만 알려 줍니다.
+
+### 부분 통합 (ksh, mksh, dash, ash, sh)
+
+이 셸들은 명령 실행 직전에 부를 훅이 없고, 프롬프트 직전에 `PS1`을 펼칠 뿐입니다. 그래서 `PS1` 안의 명령 치환이 터미널에 직접 `133;D;<종료 코드>`, `133;A`, OSC 7을 씁니다(프롬프트 글자에는 아무것도 넣지 않아 줄 편집기의 폭 계산이 맞습니다). 프롬프트 시작·종료 코드·폴더는 정확하고, 프롬프트 끝(133;B)과 명령 글자는 알 수 없어 명령 기록을 남기지 않습니다. 시작 파일은 `ENV`가 대신하므로 `sh.sh`가 `/etc/profile`, `~/.profile`, 이어서 그것들이 정한 `$ENV`(없으면 ksh의 `~/.kshrc`, mksh의 `~/.mkshrc`)를 읽습니다. `/dev/fd`가 없는 시스템에서는 통합 없이 그 셸을 띄웁니다.
+
+### 셸 고르기와 알림
+
+- **Shells…**(명령 팔레트): 셸별 지원 표와 선택. 원격은 호스트별(`"remote_shells"`), macOS·Linux 로컬은 `"unix_shell"`.
+- 고른 셸은 시작 명령에 실려 가고(`WS64`), 부트스트랩이 `command -v`로 확인합니다. 없으면 `shell-missing` 이벤트를 보내고 로그인 셸로 띄웁니다. 있는데 프롬프트 전에 오류로 끝나면 그 실행 동안은 로그인 셸을 씁니다. 둘 다 알림으로 알려 줍니다.
+- 통합이 전체가 아닌 셸(부분·없음)은 호스트와 셸마다 실행당 한 번, 빠지는 항목을 알림과 로그로 알려 줍니다.
+
 ## 2. 셸별 지원
 
 | 셸 | 로컬 | 원격 | 통합 방법 | 종료 코드 | cwd | 실제 셸로 테스트 |
 |---|---|---|---|---|---|---|
-| bash | ✓ (macOS·Linux) | ✓ | `--rcfile <(…)` (`shell/bash.sh`) | ✓ | OSC 7 | ✓ |
-| zsh | ✓ (macOS·Linux) | ✓ | `precmd`/`preexec` 훅 (`shell/zsh.zsh`), 아래 "zsh" 참고 | ✓ | OSC 7 | ✗ (설치돼 있지 않음, 스크립트만 단위 테스트) |
-| fish | ✓ (macOS·Linux) | ✓ | `fish_prompt` 감싸기 + `fish_preexec` (`shell/fish.fish`), `fish -C` | ✓ | OSC 7 | ✗ (상동) |
+| bash | ✓ (macOS·Linux) | ✓ | `--rcfile <(…)` (`shell/bash.sh`) | ✓ | OSC 7 | ✓ (Linux: ssh로도) |
+| zsh | ✓ (macOS·Linux) | ✓ | `precmd`/`preexec` 훅 (`shell/zsh.zsh`), 아래 "zsh" 참고 | ✓ | OSC 7 | ✓ (Windows의 MSYS 5.9.2; Linux: ssh로도) |
+| fish | ✓ (macOS·Linux) | ✓ | `fish_prompt` 감싸기 + `fish_preexec` (`shell/fish.fish`), `fish -C` | ✓ | OSC 7 | ✓ (MSYS 4.9.3; Linux: ssh로도) |
 | PowerShell 7 / 5.1 | ✓ | ✓ | `prompt` 함수 + PSReadLine Enter (`shell/pwsh.ps1`) | ✓ | OSC 7 | ✓ (로컬·원격 방식 모두) |
 | nushell | ✓ | ✓ | nu 내장 통합(`shell_integration.osc133/osc7`)을 `-e`로 켬 | ✓ | OSC 7 (첫 명령부터) | ✓ |
 | cmd | ✓ | – | `PROMPT` 변수에 표시를 넣음 | ✗ (cmd가 알려 주지 않음) | OSC 9;9 | ✓ |
-| 그 외 (dash, ksh, tcsh, xonsh …) | – | ✓ | 없음: 추정 | ✗ | 프로세스 관찰 (python 에이전트 필요) | ✓ (dash) |
+| ksh, mksh, dash, ash, sh | ✓ (macOS·Linux) | ✓ | **일부**: `ENV`를 fd 3으로 넘김 (`shell/sh.sh`), PS1이 펼쳐질 때 133 D·A와 OSC 7 | ✓ | OSC 7 | ✓ (Linux: 넷 모두, ssh로도) |
+| 그 외 (tcsh, csh, xonsh, elvish …) | – | ✓ | 없음 (알림; 추정 블록은 숨김) | ✗ | 프로세스 관찰 (python 에이전트 필요) | ✓ (tcsh, Linux: 그대로 뜸) |
 
 - 로컬 셸은 Windows에서 `settings.json`의 `"local_shell"`(`auto`/`pwsh`/`powershell`/`cmd`/`nu`) 또는 팔레트 `Local shell: …`로 고릅니다.
 - 원격에 통합을 풀 도구(`base64`나 `openssl`, `gzip`, `awk`, 또는 `python3`)가 하나도 없으면 터미널에 그 이유를 한 줄 적고 사용자 셸을 통합 없이 그대로 띄웁니다. 에이전트는 이유를 알리고 끝납니다.
@@ -127,4 +140,16 @@ weft로 연 bash에서만 쓸 수 있고, 다른 셸이나 스크립트 안에�
 | `powershell_block_time_is_the_command_only`, `powershell_cursor_follows_typing` | 로컬 pwsh (starship 프로필) |
 | `unknown_shell_blocks_are_guessed` | dash 직접 실행 |
 
-zsh·fish는 이 PC에 없어 통합 스크립트의 구성만 단위 테스트합니다. 에이전트의 `cwd`(`/proc`, `lsof`)는 Linux·macOS에서만 동작해 이 PC에서는 테스트하지 못했습니다.
+### Linux에서 (WSL)
+
+`wsl --import`로 따로 만든 Ubuntu 24.04에 bash, zsh, fish, ksh, mksh, dash, busybox ash, tcsh와 sshd를 두고 `WEFT_TEST_SSH=localhost cargo test -p weft-core`를 돌립니다. root의 로그인 셸을 `usermod -s`로 하나씩 바꿔 실제 ssh(`over_ssh_where_one_is_given`)도 확인했습니다. 일부 연동 셸은 명령 글자가 없어 그 테스트의 기준(명령 글자)에는 못 미치지만, 종료 코드와 출력, 다음 프롬프트는 ssh로도 맞습니다. mksh로 로그인하면 Ubuntu의 `/etc/profile.d/Z99-*.sh`가 mksh에 없는 `local`을 써서 오류 문구가 나오는데, weft 없이 로그인해도 같습니다.
+
+WSL에서 붙인 세션의 바깥 셸은 테스트 도중 종료 신호를 받는 일이 있어(테스트는 끝까지 통과), 바깥 셸에서 `trap '' TERM HUP INT`를 두고 테스트를 `setsid`로 띄웁니다.
+
+### 따로 받은 셸로 테스트 (`WEFT_TEST_SH`)
+
+zsh·fish는 Windows에 기본으로 없습니다. Git의 `usr/bin`과 `etc`를 다른 폴더에 복사하고(그 폴더가 독립된 MSYS 루트가 됨) MSYS2의 zsh·fish 패키지(fish는 `libpcre2_32`도)를 그 안에 풀면, Git 설치를 건드리지 않고 실제 셸로 돌릴 수 있습니다. 그 루트의 `usr\bin`을 PATH 앞에 두고 `WEFT_TEST_SH=<루트>/usr/bin/sh.exe`로 `host::loopback::each_shell_here_gets_what_weft_has_for_it`를 실행합니다. 각 셸을 고른 셸로도, 로그인 셸(`SHELL`)로도 열어 통합·종료 코드·폴더를 확인하고, 요청한 셸이 아닌 다른 셸이 뜨면 실패합니다. (Windows의 터미널은 PATH를 레지스트리에서 읽으므로 테스트가 PATH를 직접 넘깁니다.)
+
+fish 4는 OSC 133을 스스로도 보냅니다. weft의 스크립트와 겹쳐 표시가 두 번씩 오므로, 같은 자리에서 다시 온 133;C는 같은 명령으로 봅니다(`term::guess_tests::marks_told_twice_are_one_block`).
+
+에이전트의 `cwd`(`/proc`, `lsof`)는 Linux·macOS에서만 동작해 이 PC에서는 테스트하지 못했습니다.

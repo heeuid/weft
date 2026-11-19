@@ -564,6 +564,18 @@ pub struct Settings {
     /// Pythons tried on remote hosts, in order (host::DEFAULT_PYTHONS).
     #[serde(default = "d_pythons")]
     pub remote_python: Vec<String>,
+    /// The shell to start on a remote host instead of its user's login
+    /// shell: host name -> a name on its PATH, or a path ("Shells…").
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub remote_shells: std::collections::BTreeMap<String, String>,
+    /// The local shell on macOS and Linux instead of the login shell: a
+    /// name or path (empty: the login shell). Windows: "local_shell".
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub unix_shell: String,
+    /// Show command blocks guessed from the output where a shell has no
+    /// integration. Off: a guess can be wrong, so none is shown or kept.
+    #[serde(default)]
+    pub guess_blocks: bool,
 }
 
 fn d_pythons() -> Vec<String> {
@@ -641,7 +653,7 @@ impl Default for Settings {
                 },
             });
         }
-        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, layout: Layout::default(), show_hidden: false, show_ignored: true, find_mode: Default::default(), palette_mode: d_palette_mode(), cursor_style: Default::default(), local_shell: Default::default(), mermaid: Default::default(), follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, term_font: d_font_file(), icon_font: d_icon_font(), records: Default::default(), passwords: Default::default(), keys: Default::default(), session: Vec::new(), side_tabs: Default::default(), open: Default::default(), confirm_unsaved: true, confirm_running: true, console_host: String::new(), renderer: String::new(), search: Default::default(), remote_python: d_pythons() }
+        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, layout: Layout::default(), show_hidden: false, show_ignored: true, find_mode: Default::default(), palette_mode: d_palette_mode(), cursor_style: Default::default(), local_shell: Default::default(), mermaid: Default::default(), follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, term_font: d_font_file(), icon_font: d_icon_font(), records: Default::default(), passwords: Default::default(), keys: Default::default(), session: Vec::new(), side_tabs: Default::default(), open: Default::default(), confirm_unsaved: true, confirm_running: true, console_host: String::new(), renderer: String::new(), search: Default::default(), remote_python: d_pythons(), remote_shells: Default::default(), unix_shell: String::new(), guess_blocks: false }
     }
 }
 
@@ -650,6 +662,31 @@ impl Default for Settings {
 pub fn waits_for_password(t: &Term) -> bool {
     let line = t.line(t.cursor_abs()).map(|r| r.text()).unwrap_or_default().to_lowercase();
     line.trim_end().ends_with("password:")
+}
+
+/// "Shells…": the choices being edited.
+#[derive(Clone, Default)]
+pub struct ShellsWindow {
+    /// The remote host whose shell is chosen (the terminal's that had the
+    /// keyboard; none: a local one).
+    pub host: Option<String>,
+    pub remote: String,
+    pub unix: String,
+    pub local: host::LocalShell,
+}
+
+/// What to say of a shell weft has less than everything in (none: all of
+/// it is there).
+pub fn shell_notice_text(name: &str) -> Option<String> {
+    const SEE: &str = "Shells… (command palette) lists what weft has in each shell, and lets you choose another";
+    match host::shell_info(name) {
+        Some(i) if i.support == host::ShellSupport::Full => None,
+        Some(i) => Some(format!("{} has part of weft's shell integration. Not there: {}. {SEE}", i.title, i.missing.join("; "))),
+        None => {
+            let name = if name.is_empty() { "this shell" } else { name };
+            Some(format!("{name} has no shell integration in weft: a terminal as any other. Not there: {}. {SEE}", host::NOT_INTEGRATED.join("; ")))
+        }
+    }
 }
 
 /// What ssh itself says when it could not connect or log in (OpenSSH's
@@ -1060,6 +1097,9 @@ pub struct Pane {
     /// The remote shell its terminal was started for (what its profile
     /// said then).
     pub started_as: RemoteShell,
+    /// The shell chosen for its host that it was started with (none: the
+    /// login shell).
+    pub started_shell: Option<String>,
     /// The zsh integration was typed in for this shell start.
     pub injected: bool,
     /// Startup timing logged: first output, first prompt.
@@ -1111,6 +1151,7 @@ impl Pane {
             sync: Default::default(),
             shell_pid: None,
             started_as: RemoteShell::Posix,
+            started_shell: None,
             injected: false,
             id,
             host: host.to_string(),
@@ -1692,6 +1733,13 @@ pub struct App {
     pub graphics: String,
     /// "Python on remote hosts…": the list being edited, a line each.
     pub python_window: Option<String>,
+    /// "Shells…": what weft has in each shell, and the ones to use.
+    pub shells_window: Option<ShellsWindow>,
+    /// What was said about a host's shell in this run ("host\nshell"): once.
+    pub shell_notes: HashSet<String>,
+    /// Hosts whose chosen shell did not start in this run: their login
+    /// shell is used until another is chosen.
+    pub shell_choice_off: HashSet<String>,
     last_prune: Option<Instant>,
 }
 
@@ -1834,6 +1882,9 @@ impl App {
             graphics_window: None,
             graphics: String::new(),
             python_window: None,
+            shells_window: None,
+            shell_notes: HashSet::new(),
+            shell_choice_off: HashSet::new(),
             last_prune: None,
             memo_edited: None,
             font_menu: None,
@@ -1939,6 +1990,17 @@ impl App {
         if ssh_failed(said) {
             return;
         }
+        // Started with the shell chosen for the host, which did not start:
+        // its login shell instead, said (once: other terminals of the host
+        // may have failed with it too).
+        if let Some(choice) = self.panes.get(&id).and_then(|p| p.started_shell.clone()) {
+            if self.shell_choice_off.insert(host.to_string()) {
+                self.data.log(&format!("pane {id} [{host}]: the chosen shell {choice} ended with {code} before its prompt; its login shell instead"));
+                self.toast(format!("{host}: the shell chosen for it, {choice}, did not start (it ended with code {code}): its login shell is used instead. Shells… (command palette) to choose another"), ToastKind::Info);
+            }
+            self.actions.push(Action::Restart(id));
+            return;
+        }
         let profile = self.profile(host);
         if !matches!(profile.kind, HostKind::Ssh { .. } | HostKind::Custom { .. }) {
             return;
@@ -1976,6 +2038,35 @@ impl App {
             self.toast(format!("{host}: {}", crate::host::UNSUPPORTED_SHELL), ToastKind::Info);
         }
         self.actions.push(Action::Restart(id));
+    }
+
+    /// The shell chosen to run on this host instead of its login shell
+    /// ("Shells…"): a remote host's, or on macOS and Linux this computer's.
+    /// None where it did not start in this run.
+    pub fn shell_choice(&self, host: &str) -> Option<String> {
+        if self.shell_choice_off.contains(host) {
+            return None;
+        }
+        let chosen = if self.profile(host).is_local() {
+            if cfg!(windows) {
+                return None;
+            }
+            self.settings.unix_shell.trim()
+        } else {
+            self.settings.remote_shells.get(host).map(|s| s.trim()).unwrap_or("")
+        };
+        (!chosen.is_empty()).then(|| chosen.to_string())
+    }
+
+    /// A host's shell is this one: where weft has less than everything in
+    /// it, what is not there is said, once a run for a host and shell.
+    pub fn shell_notice(&mut self, host: &str, name: &str) {
+        let Some(text) = shell_notice_text(name) else { return };
+        if !self.shell_notes.insert(format!("{host}\n{name}")) {
+            return;
+        }
+        self.data.log(&format!("[{host}] {text}"));
+        self.toast(format!("{host}: {text}"), ToastKind::Info);
     }
 
     /// A host kept as one whose shell weft does not support is tried again
@@ -2210,12 +2301,18 @@ impl App {
         }
         let secret = if prof.is_local() { None } else { self.secrets.get(&pane.host) };
         pane.started_as = prof.remote_shell();
-        let mut argv = prof.pty_argv(pane.initial_cwd.as_deref(), secret.is_some());
+        let choice = self.shell_choice(&pane.host);
+        pane.started_shell = choice.clone();
+        let mut argv = prof.pty_argv_with(pane.initial_cwd.as_deref(), secret.is_some(), choice.as_deref());
         let mut env = secret.as_deref().map(|s| host::askpass_env(s)).unwrap_or_default();
         if prof.is_local() {
-            let (a, e) = host::local_shell(self.settings.local_shell);
+            let (a, e) = host::local_shell_with(self.settings.local_shell, choice.as_deref().unwrap_or(""));
             argv = a;
             env.extend(e);
+            // Windows' shells say nothing of themselves as they start.
+            if cfg!(windows) && self.settings.local_shell == host::LocalShell::Cmd {
+                self.shell_notice("local", "cmd");
+            }
         }
         // X11 forwarding: ssh sends the GUI to the X server here (started if
         // installed and not running); DISPLAY last, so it wins over askpass's.
@@ -2234,6 +2331,7 @@ impl App {
             argv.iter().map(|a| if a.len() > 120 { format!("{}…({} bytes)", &a[..60], a.len()) } else { a.clone() }).collect();
         self.data.log(&format!("pane {} [{}] spawn {:?}", pane.id, pane.host, shown));
         pane.term = Term::new(pane.term.cols, pane.term.rows);
+        pane.term.show_guesses = self.settings.guess_blocks;
         pane.injected = false;
         pane.shell_pid = None;
         pane.parser = vte::Parser::new();
@@ -2258,6 +2356,7 @@ impl App {
     /// through that host's ssh with the bridge (remote/serial.py).
     fn start_serial(&mut self, pane: &mut Pane, via: &str, port: &str, baud: u32) {
         pane.term = Term::new(pane.term.cols, pane.term.rows);
+        pane.term.show_guesses = self.settings.guess_blocks;
         pane.injected = true; // no shell integration to inject
         pane.shell_pid = None;
         pane.parser = vte::Parser::new();
@@ -2936,21 +3035,23 @@ impl App {
                         pane.seen.0 = true;
                         timings.push(format!("startup: pane {id} [{}] first output at {}", pane.host, crate::since_start()));
                     }
-                    if !pane.seen.1 && !pane.term.blocks.is_empty() {
-                        pane.seen.1 = true;
-                        timings.push(format!("startup: pane {id} [{}] first prompt at {}", pane.host, crate::since_start()));
-                    }
                     let replies = std::mem::take(&mut pane.term.replies);
                     pty.write(&replies);
                     if pane.scroll > 0 {
                         pane.scroll += (pane.term.end_line() - before) as usize;
                     }
                 }
+                // (Looked at without new output too: a guessed prompt is
+                // found a moment after its text came.)
+                if !pane.seen.1 && pane.term.prompted() {
+                    pane.seen.1 = true;
+                    timings.push(format!("startup: pane {id} [{}] first prompt at {}", pane.host, crate::since_start()));
+                }
                 if !pane.exited && ended {
                     pane.exited = true;
                     // Ended before weft's shell said it had started, or a
                     // prompt showed: what ran it there? (see shell_failed)
-                    if pane.shell_pid.is_none() && !pane.seen.1 {
+                    if (pane.shell_pid.is_none() || pane.started_shell.is_some()) && !pane.seen.1 {
                         pane.judge_at = Some(now + Self::JUDGE_AFTER);
                         self.ctx.request_repaint_after(Self::JUDGE_AFTER);
                     }
@@ -3044,7 +3145,7 @@ impl App {
             // after that pane shows its first prompt.
             let failed = matches!(self.conns.get(&h).map(|c| &c.status), Some(ConnStatus::Failed(_)));
             if failed && !self.agent_retried.contains(&h) {
-                let prompted = self.panes.values().any(|p| p.host == h && !p.term.blocks.is_empty());
+                let prompted = self.panes.values().any(|p| p.host == h && p.term.prompted());
                 if prompted {
                     self.agent_retried.insert(h.clone());
                     self.reconnect(&h);
@@ -3150,6 +3251,16 @@ impl App {
                     p.shell_pid = v.get("pid").and_then(|x| x.as_u64());
                 }
                 self.data.log(&format!("pane {pane_id} [{host}] shell {} pid {}", s("name"), v["pid"]));
+                self.shell_notice(host, &s("name"));
+            }
+            // The shell chosen for the host is not there (the bootstrap
+            // looked): its login shell runs instead. Said.
+            "shell-missing" => {
+                let (wanted, using) = (s("wanted"), s("using"));
+                self.data.log(&format!("pane {pane_id} [{host}]: the chosen shell {wanted} is not there; its login shell ({using}) instead"));
+                if self.shell_notes.insert(format!("{host}\nmissing {wanted}")) {
+                    self.toast(format!("{host}: the shell chosen for it, {wanted}, is not there: its login shell ({using}) is used instead. Shells… (command palette) to choose another"), ToastKind::Info);
+                }
             }
             // A remote zsh takes its integration only by typing it (see
             // shell/zsh.zsh): once per shell start, before it has integrated.

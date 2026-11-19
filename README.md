@@ -232,6 +232,9 @@ Windows에서 터미널은 콘솔 호스트 위에서 돕니다. weft는 **Windo
 - 로컬 패널은 PowerShell(+ PSReadLine 통합)이며 파일 작업은 에이전트 없이 Rust `std::fs`로 처리합니다.
 - **원격의 셸**: weft는 원격 셸에 맞는 명령으로 터미널 연동과 에이전트를 시작합니다. 어떤 셸인지는 차례로 시도해서 알아내고 프로필에 기억합니다(`"shell"`, settings.json에서 직접 바꿀 수도 있음).
   - **POSIX sh 계열**(bash, zsh, fish, sh…): 지금까지와 같음.
+  - **셸마다 되는 범위**: bash·zsh·fish·PowerShell·nushell은 통합 전체, ksh·mksh·dash·ash·sh는 일부(프롬프트 위치·종료 코드·폴더는 정확, 명령 글자는 알 수 없어 기록하지 않음), 그 밖의 셸(tcsh, xonsh, elvish…)은 통합 없이 일반 터미널로 동작합니다. 전체가 아닌 셸을 만나면 빠지는 항목을 한 번 알려 줍니다. 목록은 명령 팔레트 **Shells…** 에 있습니다.
+  - **셸 고르기**(Shells…): 원격 호스트마다 로그인 셸 대신 쓸 셸(이름이나 경로)을, macOS·Linux에서는 이 컴퓨터의 셸도 고를 수 있습니다(Windows는 기존 Local shell). 고른 셸이 없거나 시작되지 않으면 로그인 셸로 열고 그 사실을 알립니다.
+  - **추정 블록**: 통합이 없는 셸에서 출력 모양으로 추정한 명령 블록은 틀릴 수 있어 더는 보여 주지 않습니다(settings.json `"guess_blocks": true`로 다시 켤 수 있음).
   - **Windows**(cmd/PowerShell, Windows OpenSSH): POSIX 명령이 안 되면 PowerShell을 띄워 weft 연동(프롬프트 표시, 폴더 따라가기)을 붙입니다. Files·에디터·검색도 같은 Python 목록으로 Python을 찾아 동작하고, 없으면 다른 호스트와 같은 안내(`where python`으로 확인하거나 목록에 추가)가 나옵니다.
   - **그 외의 셸**: 평범한 `ssh -tt`로 열고 "지원하지 않는 셸"이라고 알립니다(Files·에디터·검색은 쓸 수 없음).
   - 기억한 셸로 안 되면(호스트에 다른 OS를 다시 설치한 경우 등) 그 실행에서 아직 시도하지 않은 셸을 다시 차례로 시도합니다. "지원하지 않는 셸"로 기억한 호스트도 weft를 실행할 때마다 첫 터미널을 열 때 한 번 다시 확인합니다.
@@ -324,7 +327,7 @@ weft는 MIT 라이선스입니다([LICENSE](LICENSE)).
 셸 통합·OSC·원격 도구: [docs/shell-integration.md](docs/shell-integration.md)
 
 ```
-shell/            셸 통합 (bash·zsh·fish·pwsh, OSC 133/7) — 압축 묶음으로 메모리로만 전달
+shell/            셸 통합 (bash·zsh·fish·pwsh·sh, OSC 133/7) — 압축 묶음으로 메모리로만 전달
 remote/agent.py   python 표준 라이브러리 에이전트 (JSON lines) — stdin으로 전달
 crates/weft-core/ 화면 없이 도는 부분 (GUI 의존성 없음)
   term.rs         VT/xterm 그리드, 절대 줄 번호 스크롤백, 블록, OSC 이벤트

@@ -454,12 +454,12 @@ fn mac_locale() -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    /// The tests here that open terminals take turns: they count this
-    /// process's console hosts.
-    static TURN: Mutex<()> = Mutex::new(());
+    /// The tests that open terminals take turns (those of other modules
+    /// too): some here count this process's console hosts.
+    pub(crate) static TURN: Mutex<()> = Mutex::new(());
 
     /// The console hosts (Windows: one per pseudo console) that are this
     /// process's children.

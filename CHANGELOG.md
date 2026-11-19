@@ -5,6 +5,49 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.11.0
+
+Added
+- **"Shells…"** (command palette): what weft has in each shell (all of
+  its integration, part of it and what is not there, none), where each can
+  be used (local on Windows, local on macOS and Linux, remote), and the
+  shell to use:
+  - **on a remote host**, instead of its user's login shell (a name on its
+    PATH, or a path; kept per host, settings `"remote_shells"`): zsh or
+    fish where the login shell cannot be changed, say.
+  - **on this computer**: Windows' choices as before; on macOS and Linux a
+    name or path (settings `"unix_shell"`; empty: the login shell).
+  A chosen shell that is not there, or does not start: the login shell is
+  used instead, and weft says which was chosen and why not.
+- **ksh, mksh, dash, busybox ash and a plain sh have part of weft's
+  integration** (`shell/sh.sh`): each prompt, the exit code of what ran
+  before it and the folder, all exact. These shells run nothing before a
+  command, so the command's own text is not known: it is not made up,
+  and no history is kept of it.
+- **What a shell does not have is said**, once a run for a host and
+  shell, with where to look ("Shells…"): the parts not there in a shell
+  with a partial integration; all that a shell weft has nothing for goes
+  without (tcsh, xonsh, elvish and the like: a terminal as any other).
+  Where none of the shells weft supports starts on a host, that is said.
+
+Changed
+- **Command blocks guessed from the output are no longer shown** where a
+  shell has no integration (unknown shells, a plain ssh, serial consoles):
+  a guess can be wrong, and a wrong block or history line is worse than
+  none. The folder is still followed through the agent. Settings
+  `"guess_blocks": true` shows them as before.
+
+Fixed
+- **fish 4: a command was cut into two blocks and lost its exit code.**
+  fish 4 sends the prompt and command marks (OSC 133) itself, and weft's
+  script sends them too, so each came twice; the second "command started"
+  began another block. A mark told twice at the same place is now one
+  (so is one from a prompt tool beside a shell's own integration).
+
+Tested with a real zsh (5.9.2) and fish (4.9.3) for the first time, as the
+chosen shell and as the login shell: MSYS2's packages in a folder of their
+own beside a copy of Git's shell (`WEFT_TEST_SH`, docs/shell-integration.md).
+
 ## 0.10.9
 
 Fixed

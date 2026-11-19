@@ -229,8 +229,18 @@ pub struct Term {
     pub generation: u64,
     /// The shell marks its prompts (OSC 133); until then blocks are guessed.
     pub integrated: bool,
+    /// Guessed blocks are shown (in `blocks`). Off: a guess can be wrong,
+    /// so none is shown, kept or recorded; the guessing goes on out of
+    /// sight (`unseen`) only to tell that a prompt came (`prompted`) and
+    /// when a command probably ended (`TermEvent::GuessedDone`).
+    pub show_guesses: bool,
+    unseen: Vec<Block>,
     /// The shell also marks command starts (133;C); without them Enter does.
     saw_start: bool,
+    /// Where the cursor was at the last 133;C: a second C at the same place
+    /// is the same command told twice (fish 4 sends its own marks, and so
+    /// does weft's script; a prompt tool beside a shell's own integration).
+    start_at: Option<(u64, usize)>,
     last_output: Option<Instant>,
     /// Guessing: the last character of the prompt ('$', '>', '#', '%', '❯' ...).
     prompt_end: Option<char>,
@@ -282,7 +292,10 @@ impl Term {
             next_block: 1,
             generation: 0,
             integrated: false,
+            show_guesses: true,
+            unseen: Vec::new(),
             saw_start: false,
+            start_at: None,
             last_output: None,
             prompt_end: None,
             pending_start: None,
@@ -872,10 +885,14 @@ impl Term {
         if self.alt_active {
             return;
         }
+        let here = (self.cursor_abs(), self.cx);
+        if self.start_at == Some(here) && self.blocks.last().is_some_and(|b| b.state() == BlockState::Running) {
+            return;
+        }
+        self.start_at = Some(here);
         if self.blocks.last().map(|b| b.state() != BlockState::Prompt).unwrap_or(true) {
             self.mark_prompt();
         }
-        let here = (self.cursor_abs(), self.cx);
         let cmd = match self.blocks.last().and_then(|b| b.input) {
             Some(inp) => self.text_between(inp, here),
             None => String::new(),
@@ -911,8 +928,35 @@ impl Term {
     // the same character as the prompt did. "Password: " or a REPL's ">>> "
     // end differently, so they don't end the command. No exit code.
 
+    /// Guessing with the guessed blocks out of sight, where they are not
+    /// shown.
+    fn guessing<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        let hide = !self.integrated && !self.show_guesses;
+        if hide {
+            std::mem::swap(&mut self.blocks, &mut self.unseen);
+        }
+        let r = f(self);
+        if hide {
+            std::mem::swap(&mut self.blocks, &mut self.unseen);
+            let n = self.unseen.len();
+            if n > 4 {
+                self.unseen.drain(..n - 4);
+            }
+        }
+        r
+    }
+
+    /// A prompt has come: marked by the shell, or guessed (shown or not).
+    pub fn prompted(&self) -> bool {
+        !self.blocks.is_empty() || !self.unseen.is_empty()
+    }
+
     /// The user sent Enter to the shell (call before writing it).
     pub fn user_enter(&mut self) {
+        self.guessing(|t| t.user_enter_now())
+    }
+
+    fn user_enter_now(&mut self) {
         if self.alt_active || self.saw_start {
             return;
         }
@@ -949,6 +993,10 @@ impl Term {
     }
 
     fn tick_at(&mut self, now: Instant) -> bool {
+        self.guessing(|t| t.tick_now(now))
+    }
+
+    fn tick_now(&mut self, now: Instant) -> bool {
         if self.integrated || self.alt_active {
             return false;
         }
@@ -1608,6 +1656,7 @@ impl Perform for Term {
                 if !self.integrated {
                     // Guessed blocks so far give way to the shell's own marks.
                     self.blocks.retain(|b| !(b.guessed && b.state() != BlockState::Done));
+                    self.unseen.clear();
                     self.integrated = true;
                 }
                 match arg(1).as_str() {
@@ -1819,6 +1868,36 @@ mod guess_tests {
         t.last_output.unwrap() + Duration::from_millis(ms)
     }
 
+    /// Guesses not shown: no block at all, yet the prompt and the probable
+    /// end of a command are still told; the shell's own marks show as ever.
+    #[test]
+    fn guesses_can_be_kept_out_of_sight() {
+        let mut t = Term::new(80, 24);
+        t.show_guesses = false;
+        feed(&mut t, "welcome\r\n$ ");
+        assert!(!t.prompted());
+        t.tick_at(later(&t, 300));
+        assert!(t.blocks.is_empty() && t.prompted(), "a prompt, and no block");
+        feed(&mut t, "ls");
+        t.user_enter();
+        feed(&mut t, "\r\na.txt  b.txt\r\n$ ");
+        t.events.clear();
+        t.tick_at(later(&t, 500));
+        assert!(t.blocks.is_empty(), "nothing guessed is shown");
+        assert!(t.events.iter().any(|e| matches!(e, TermEvent::GuessedDone)), "the command probably ended: told");
+        // Many commands: what is kept out of sight stays small.
+        for _ in 0..20 {
+            feed(&mut t, "ls");
+            t.user_enter();
+            feed(&mut t, "\r\nx\r\n$ ");
+            t.tick_at(later(&t, 500));
+        }
+        assert!(t.unseen.len() <= 4 && t.blocks.is_empty());
+        // The shell marks its prompts after all: shown.
+        feed(&mut t, "\x1b]133;A\x07$ \x1b]133;B\x07");
+        assert!(t.integrated && t.blocks.len() == 1 && t.unseen.is_empty());
+    }
+
     #[test]
     fn blocks_are_guessed_without_osc_133() {
         let mut t = Term::new(80, 24);
@@ -1853,6 +1932,25 @@ mod guess_tests {
         feed(&mut t, "\r\n[sudo] password: ");
         t.tick_at(later(&t, 1000));
         assert_eq!(t.blocks[0].state(), BlockState::Running, "':' is not the prompt's '$'");
+    }
+
+    /// fish 4 sends OSC 133 itself, and weft's script sends it too: each
+    /// mark comes twice. One command is still one block, with its exit code.
+    #[test]
+    fn marks_told_twice_are_one_block() {
+        let mut t = Term::new(80, 24);
+        let prompt = "\x1b]133;A;click_events=1\x1b\\\x1b]133;D;0\x07\x1b]133;A\x07> \x1b]133;B\x07\x1b]133;B\x1b\\";
+        feed(&mut t, prompt);
+        feed(&mut t, "echo hi\r\n\x1b]133;C;cmdline_url=echo%20hi\x1b\\\x1b]133;C\x07hi\r\n\x1b]133;D;0\x1b\\");
+        feed(&mut t, prompt);
+        let got: Vec<_> = t.blocks.iter().map(|b| (b.command.as_str(), b.exit, b.state())).collect();
+        assert_eq!(got, [("echo hi", Some(0), BlockState::Done), ("", None, BlockState::Prompt)]);
+        assert_eq!(t.block_output(&t.blocks[0]).trim(), "hi");
+        // A failing one that prints nothing.
+        feed(&mut t, "false\r\n\x1b]133;C;cmdline_url=false\x1b\\\x1b]133;C\x07\x1b]133;D;1\x1b\\");
+        feed(&mut t, &prompt.replace("D;0", "D;1"));
+        let got: Vec<_> = t.blocks.iter().map(|b| (b.command.as_str(), b.exit, b.state())).collect();
+        assert_eq!(got[1..], [("false", Some(1), BlockState::Done), ("", None, BlockState::Prompt)]);
     }
 
     #[test]

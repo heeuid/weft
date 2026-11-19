@@ -26,13 +26,14 @@ pub const BASH_SH: &str = include_str!("../../../shell/bash.sh");
 pub const ZSH_ZSH: &str = include_str!("../../../shell/zsh.zsh");
 pub const FISH_FISH: &str = include_str!("../../../shell/fish.fish");
 pub const PWSH_PS1: &str = include_str!("../../../shell/pwsh.ps1");
+pub const SH_SH: &str = include_str!("../../../shell/sh.sh");
 
 /// All integrations in one text: sections start with `#@<name>` lines; the
 /// bootstrap cuts out the one it needs with awk. Comment and blank lines are
 /// left out (the command line that carries it is limited to about 8 KB).
 pub fn integration_bundle() -> String {
     let mut out = String::new();
-    for (name, src) in [("boot", SHELL_BOOT), ("bash", BASH_SH), ("zsh", ZSH_ZSH), ("fish", FISH_FISH), ("pwsh", PWSH_PS1)] {
+    for (name, src) in [("boot", SHELL_BOOT), ("bash", BASH_SH), ("zsh", ZSH_ZSH), ("fish", FISH_FISH), ("pwsh", PWSH_PS1), ("sh", SH_SH)] {
         out.push_str(&format!("#@{name}\n{}", strip_comments(src)));
     }
     out
@@ -52,19 +53,26 @@ fn strip_comments(src: &str) -> String {
 }
 pub const AGENT_PY: &str = include_str!("../../../remote/agent.py");
 
-/// Pane bootstrap (one logical line, run via `eval` by sh): pick a base64
-/// decoder from POSIX tools (or python), then start the user's login shell
-/// ($SHELL, or WEFT_SHELL) with its integration from the bundle in $W:
+/// Pane bootstrap (run via `eval` by sh): start the shell with its
+/// integration from the bundle in $W. Which shell: the one chosen for the
+/// host (its name or path in $WS64, base64; WEFT_SHELL in tests), else the
+/// user's login shell ($SHELL). A chosen one that is not there: said
+/// (OSC 7777 "shell-missing"), and the login shell.
 /// bash `--rcfile <(...)`, fish `-C`, pwsh `-Command`, nushell's own OSC 133
-/// switched on, zsh through WEFT_ZSH typed in by weft (see shell/zsh.zsh).
-/// Any other shell starts as is; weft guesses its command blocks.
-const SHELL_BOOT: &str = r##"WP=${WEFT_SHELL:-$SHELL}; WS=${WP##*/}; WS=${WS%.exe}; export WEFT=1; case "$WS" in bash|'') if command -v bash >/dev/null 2>&1; then R=$(sect bash); export R D WEFT_CWD; exec bash -c 'exec bash --rcfile <(printf %s "$R") -i'; fi ;; esac; if [ -n "$WEFT_CWD" ]; then C=$(printf %s "$WEFT_CWD" | $D 2>/dev/null) && [ -d "$C" ] && cd "$C"; fi; unset WEFT_CWD; printf '\033]7777;{"t":"shell","name":"%s","pid":%s}\007' "$WS" "$$"; case "$WS" in zsh) WEFT_ZSH=$(sect zsh); export WEFT_ZSH; printf ']7777;{"t":"inject","shell":"zsh"}'; exec "$WP" -l -i ;; fish) WEFT_FISH=$(sect fish); export WEFT_FISH; exec "$WP" -l -C 'eval $WEFT_FISH' ;; nu) exec "$WP" -l -e 'try { $env.config.shell_integration.osc133 = true; $env.config.shell_integration.osc7 = true } catch { $env.config.shell_integration = true }' ;; pwsh|powershell) WEFT_PS=$(sect pwsh); export WEFT_PS; exec "$WP" -NoLogo -NoExit -Command '. ([ScriptBlock]::Create($env:WEFT_PS))' ;; esac; if [ -n "$WP" ]; then exec "$WP" -i; fi; exec sh -i"##;
+/// switched on, zsh through WEFT_ZSH typed in by weft (see shell/zsh.zsh),
+/// the POSIX shells with no hooks (ksh, mksh, dash, ash, sh) through ENV on
+/// a descriptor (shell/sh.sh; the two lines after its `exec` are the here
+/// document). Any other shell starts as is, with no integration.
+const SHELL_BOOT: &str = r##"WW=; if [ -n "$WS64" ]; then WW=$(printf %s "$WS64" | $D 2>/dev/null); fi; if [ -n "$WEFT_SHELL" ]; then WW=$WEFT_SHELL; fi; WP=${WW:-$SHELL}; if [ -n "$WW" ] && ! command -v "$WW" >/dev/null 2>&1; then WP=$SHELL; WU=${WP##*/}; WU=${WU%.exe}; printf '\033]7777;{"t":"shell-missing","wanted":"%s","using":"%s"}\007' "$WW" "${WU:-sh}"; fi; unset WS64 WEFT_SHELL; WS=${WP##*/}; WS=${WS%.exe}; export WEFT=1; case "$WS" in bash|'') if command -v bash >/dev/null 2>&1; then R=$(sect bash); export R D WEFT_CWD; exec bash -c 'exec bash --rcfile <(printf %s "$R") -i'; fi ;; esac; WEFT_AT=; if [ -n "$WEFT_CWD" ]; then C=$(printf %s "$WEFT_CWD" | $D 2>/dev/null) && [ -d "$C" ] && cd "$C" && WEFT_AT=$C; fi; unset WEFT_CWD; printf '\033]7777;{"t":"shell","name":"%s","pid":%s}\007' "$WS" "$$"; case "$WS" in zsh) WEFT_ZSH=$(sect zsh); export WEFT_ZSH; printf '\033]7777;{"t":"inject","shell":"zsh"}\007'; exec "$WP" -l -i ;; fish) WEFT_FISH=$(sect fish); export WEFT_FISH; exec "$WP" -l -C 'eval $WEFT_FISH' ;; nu) exec "$WP" -l -e 'try { $env.config.shell_integration.osc133 = true; $env.config.shell_integration.osc7 = true } catch { $env.config.shell_integration = true }' ;; pwsh|powershell) WEFT_PS=$(sect pwsh); export WEFT_PS; exec "$WP" -NoLogo -NoExit -Command '. ([ScriptBlock]::Create($env:WEFT_PS))' ;; ksh|ksh93|mksh|dash|ash|sh) if [ -e /dev/fd/2 ]; then R=$(sect sh); WEFT_SH=$WS; ENV=/dev/fd/3; export WEFT_SH WEFT_AT ENV; exec "$WP" -i 3<<WEFT_EOF
+$R
+WEFT_EOF
+fi ;; esac; if [ -n "$WP" ]; then exec "$WP" -i; fi; exec sh -i"##;
 
 /// On the command line: find a base64 decoder and gunzip among POSIX tools (or
 /// python), unpack the bundle in $W and run its `boot` section. Nothing
 /// unpacked (none of the tools there): said, and the user's shell as it is
 /// (it ended at once with code 0, and the terminal closed without a word).
-const SHELL_UNPACK: &str = r##"D="base64 -d"; printf QQ== | $D >/dev/null 2>&1 || D="base64 -D"; printf QQ== | $D >/dev/null 2>&1 || D="openssl base64 -d -A"; printf QQ== | $D >/dev/null 2>&1 || D="python3 -m base64 -d"; z() { if command -v gzip >/dev/null 2>&1; then gzip -dc; else python3 -c "import sys,gzip;sys.stdout.buffer.write(gzip.decompress(sys.stdin.buffer.read()))"; fi; }; WB=$(printf %s "$W" | $D 2>/dev/null | z 2>/dev/null); sect() { printf %s "$WB" | awk -v s="#@$1" '$0==s{f=1;next} /^#@/{f=0} f'; }; BT=$(sect boot 2>/dev/null); if [ -z "$BT" ]; then echo "weft: could not unpack its shell integration on this host (it needs base64 or openssl, gzip and awk, or python3): a plain shell, without it"; exec "${SHELL:-sh}" -i; fi; eval "$BT""##;
+const SHELL_UNPACK: &str = r##"t() { printf QQ== | $D >/dev/null 2>&1; }; D="base64 -d"; t || D="base64 -D"; t || D="openssl base64 -d -A"; t || D="python3 -m base64 -d"; z() { if command -v gzip >/dev/null 2>&1; then gzip -dc; else python3 -c "import sys,gzip;sys.stdout.buffer.write(gzip.decompress(sys.stdin.buffer.read()))"; fi; }; WB=$(printf %s "$W" | $D 2>/dev/null | z 2>/dev/null); sect() { printf %s "$WB" | awk -v s="#@$1" '$0==s{f=1;next} /^#@/{f=0} f'; }; BT=$(sect boot 2>/dev/null); if [ -z "$BT" ]; then echo "weft: cannot unpack its shell integration here: a plain shell, without it"; exec "${SHELL:-sh}" -i; fi; eval "$BT""##;
 
 /// Windows ConPTY truncates command lines around 8 KB, so the rc travels gzipped.
 fn gz_b64(s: &str) -> String {
@@ -100,7 +108,7 @@ pub fn pythons_b64_of(list: &[String]) -> String {
 }
 
 /// What the panels say for a host whose shell is none weft knows.
-pub const UNSUPPORTED_SHELL: &str = "this host's shell is not one weft supports (a POSIX sh, or Windows' cmd or PowerShell): the Files panel, editor and search do not run there; the terminal is a plain ssh, without weft's shell integration";
+pub const UNSUPPORTED_SHELL: &str = "none of the shells weft supports started on this host (a POSIX sh; Windows' cmd or PowerShell): the terminal is a plain ssh, without weft's shell integration, and the Files panel, editor and search do not run there. Shells... (command palette) lists what weft supports";
 
 /// The shell a remote host runs commands with (ssh's command, or what a
 /// custom transport is given). weft's terminal integration and agent
@@ -214,9 +222,9 @@ pub fn b64(s: &str) -> String {
 /// What a terminal does where weft's command cannot even be decoded: says
 /// so and is the user's shell as it is. (No quote or backslash in it: see
 /// posix_wrap.)
-const PLAIN_SHELL: &str = "echo weft: no base64, openssl or python3 on this host to unpack its shell integration: a plain shell, without it; IFS=; exec ${SHELL:-sh} -i";
+const PLAIN_SHELL: &str = "echo weft: no base64, openssl or python3 here: a plain shell, without its integration; IFS=; exec ${SHELL:-sh} -i";
 /// And the agent, or the serial bridge: says so and ends.
-const NO_DECODER: &str = "echo weft: no base64, openssl or python3 on this host: the Files panel, editor and search do not run there >&2; exit 127";
+const NO_DECODER: &str = "echo weft: no base64, openssl or python3 here: the Files panel, editor and search do not run >&2; exit 127";
 
 fn posix_wrap(vars: &[(&str, String)], script: &str, fail: &str) -> String {
     let mut s = String::from("exec sh -c '");
@@ -225,13 +233,78 @@ fn posix_wrap(vars: &[(&str, String)], script: &str, fail: &str) -> String {
     }
     let b = b64(script);
     s.push_str(&format!(
-        "B={b}; set -f; S=$(printf %s $B | base64 -d 2>/dev/null) || S=$(printf %s $B | base64 -D 2>/dev/null) || S=$(printf %s $B | openssl base64 -d -A 2>/dev/null) || S=$(printf %s $B | python3 -m base64 -d 2>/dev/null) || {{ {fail}; }}; eval $S'"
+        "B={b}; set -f; d() {{ printf %s $B | $* 2>/dev/null; }}; S=$(d base64 -d) || S=$(d base64 -D) || S=$(d openssl base64 -d -A) || S=$(d python3 -m base64 -d) || {{ {fail}; }}; eval $S'"
     ));
     s
 }
 
 pub fn remote_shell_command(cwd: Option<&str>) -> String {
-    posix_wrap(&[("W", gz_b64(&integration_bundle())), ("WEFT_CWD", cwd.map(b64).unwrap_or_default())], SHELL_UNPACK, PLAIN_SHELL)
+    remote_shell_command_with(cwd, None)
+}
+
+/// `remote_shell_command`, starting this shell (a name on the host's PATH,
+/// or a path) instead of the user's login shell.
+pub fn remote_shell_command_with(cwd: Option<&str>, shell: Option<&str>) -> String {
+    let shell = shell.map(str::trim).filter(|s| !s.is_empty());
+    posix_wrap(
+        &[("W", gz_b64(&integration_bundle())), ("WEFT_CWD", cwd.map(b64).unwrap_or_default()), ("WS64", shell.map(b64).unwrap_or_default())],
+        SHELL_UNPACK,
+        PLAIN_SHELL,
+    )
+}
+
+/// How far weft's integration goes in a shell.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ShellSupport {
+    /// Prompts, commands, their output and exit codes, the folder: exact.
+    Full,
+    /// Some of it; `ShellInfo::missing` says what is not there.
+    Partial,
+    /// None: a terminal as any other.
+    None,
+}
+
+/// A shell weft knows, and what it has there.
+pub struct ShellInfo {
+    /// The names it goes by (the file name of the shell's program).
+    pub names: &'static [&'static str],
+    pub title: &'static str,
+    pub support: ShellSupport,
+    /// What is not there (empty with full support).
+    pub missing: &'static [&'static str],
+    /// It can be the local shell on Windows / on macOS and Linux.
+    pub local_windows: bool,
+    pub local_unix: bool,
+    /// It can be a remote host's shell.
+    pub remote: bool,
+}
+
+const NO_CODES: &str = "exit codes (the shell does not tell them)";
+const NO_TEXT: &str = "the command's own text (no command history kept, no rerun)";
+const NO_HELPERS: &str = "the w* helper commands (wopen, wls, ...; bash only)";
+/// What no integration at all leaves out.
+pub const NOT_INTEGRATED: &[&str] = &["command blocks (where a command and its output start and end)", "exit codes", "command history", "the folder, unless the host has Python for weft's agent", NO_HELPERS];
+
+/// The shells weft has an integration for. Any other: `ShellSupport::None`.
+pub const SHELLS: &[ShellInfo] = &[
+    ShellInfo { names: &["bash"], title: "bash", support: ShellSupport::Full, missing: &[], local_windows: false, local_unix: true, remote: true },
+    ShellInfo { names: &["zsh"], title: "zsh", support: ShellSupport::Full, missing: &[NO_HELPERS], local_windows: false, local_unix: true, remote: true },
+    ShellInfo { names: &["fish"], title: "fish", support: ShellSupport::Full, missing: &[NO_HELPERS], local_windows: false, local_unix: true, remote: true },
+    ShellInfo { names: &["pwsh", "powershell"], title: "PowerShell (pwsh 7, Windows PowerShell 5.1)", support: ShellSupport::Full, missing: &[NO_HELPERS], local_windows: true, local_unix: true, remote: true },
+    ShellInfo { names: &["nu"], title: "nushell", support: ShellSupport::Full, missing: &[NO_HELPERS], local_windows: true, local_unix: true, remote: true },
+    ShellInfo { names: &["cmd"], title: "cmd", support: ShellSupport::Partial, missing: &[NO_CODES, NO_HELPERS], local_windows: true, local_unix: false, remote: false },
+    ShellInfo { names: &["ksh", "ksh93"], title: "ksh", support: ShellSupport::Partial, missing: &[NO_TEXT, NO_HELPERS], local_windows: false, local_unix: true, remote: true },
+    ShellInfo { names: &["mksh"], title: "mksh", support: ShellSupport::Partial, missing: &[NO_TEXT, NO_HELPERS], local_windows: false, local_unix: true, remote: true },
+    ShellInfo { names: &["dash"], title: "dash", support: ShellSupport::Partial, missing: &[NO_TEXT, NO_HELPERS], local_windows: false, local_unix: true, remote: true },
+    ShellInfo { names: &["ash", "sh"], title: "ash, sh (busybox, a plain POSIX sh)", support: ShellSupport::Partial, missing: &[NO_TEXT, NO_HELPERS], local_windows: false, local_unix: true, remote: true },
+];
+
+/// What weft has in the shell of this name (its program's file name, or a
+/// path to it); none it knows: no support.
+pub fn shell_info(name: &str) -> Option<&'static ShellInfo> {
+    let name = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    let name = name.strip_suffix(".exe").unwrap_or(name).to_ascii_lowercase();
+    SHELLS.iter().find(|s| s.names.contains(&name.as_str()))
 }
 
 pub fn agent_command() -> String {
@@ -397,6 +470,12 @@ impl Profile {
     /// argv for an interactive pane.  With `password` the ssh password comes
     /// from weft's askpass (see `askpass_env`) instead of the terminal.
     pub fn pty_argv(&self, cwd: Option<&str>, password: bool) -> Vec<String> {
+        self.pty_argv_with(cwd, password, None)
+    }
+
+    /// `pty_argv`, starting this shell there (a name on the host's PATH or a
+    /// path; POSIX hosts) instead of the user's login shell.
+    pub fn pty_argv_with(&self, cwd: Option<&str>, password: bool, shell: Option<&str>) -> Vec<String> {
         match &self.kind {
             HostKind::Local => local_shell(LocalShell::Auto).0,
             HostKind::Ssh { target, args, x11, .. } => {
@@ -410,12 +489,12 @@ impl Profile {
                 }
                 v.extend(args.iter().cloned());
                 v.push(target.clone());
-                v.extend(self.shell_command(cwd));
+                v.extend(self.shell_command(cwd, shell));
                 v
             }
             HostKind::Custom { pty, .. } => {
                 let mut v = pty.clone();
-                v.extend(self.shell_command(cwd));
+                v.extend(self.shell_command(cwd, shell));
                 v
             }
             // Built from the host it is reached through (App::start_pty).
@@ -425,9 +504,9 @@ impl Profile {
 
     /// The command a terminal of it starts with, in its shell's language
     /// (none: a plain ssh, its own shell as it is).
-    fn shell_command(&self, cwd: Option<&str>) -> Option<String> {
+    fn shell_command(&self, cwd: Option<&str>, shell: Option<&str>) -> Option<String> {
         match self.remote_shell() {
-            RemoteShell::Posix => Some(remote_shell_command(cwd)),
+            RemoteShell::Posix => Some(remote_shell_command_with(cwd, shell)),
             RemoteShell::Windows => Some(windows_shell_command(cwd)),
             RemoteShell::Other => None,
         }
@@ -631,7 +710,22 @@ pub fn local_shell(choice: LocalShell) -> (Vec<String>, Vec<(String, String)>) {
 /// without ssh (it was the bare shell: no prompt marks, exit codes,
 /// folder or w* commands).
 pub fn posix_local_argv(sh: &str) -> Vec<String> {
-    vec![sh.into(), "-c".into(), remote_shell_command(None)]
+    posix_local_argv_with(sh, None)
+}
+
+/// `posix_local_argv`, with this shell (settings "unix_shell") instead of
+/// the user's login shell.
+pub fn posix_local_argv_with(sh: &str, shell: Option<&str>) -> Vec<String> {
+    vec![sh.into(), "-c".into(), remote_shell_command_with(None, shell)]
+}
+
+/// The local shell: Windows' by `choice`; on macOS and Linux `unix_shell`
+/// (a name or path; empty: the login shell).
+pub fn local_shell_with(choice: LocalShell, unix_shell: &str) -> (Vec<String>, Vec<(String, String)>) {
+    if !cfg!(windows) {
+        return (posix_local_argv_with("/bin/sh", Some(unix_shell)), Vec::new());
+    }
+    local_shell(choice)
 }
 
 fn powershell_argv(exe: &str) -> Vec<String> {
@@ -1599,6 +1693,9 @@ mod tests {
         let n = remote_shell_command(Some("/home/someone/projects/a long directory name")).len();
         println!("remote shell command: {n} bytes");
         assert!(n < 7000, "{n} bytes");
+        // With a shell chosen by its path too.
+        let n = remote_shell_command_with(Some("/home/someone/projects/a long directory name"), Some("/opt/homebrew/Cellar/fish/3.7.1/bin/fish")).len();
+        assert!(n < 7000, "with a chosen shell: {n} bytes");
     }
 
     /// Each shell's integration is cut out of the bundle intact.
@@ -1623,7 +1720,7 @@ mod tests {
             }
             out
         };
-        for (name, src) in [("boot", SHELL_BOOT), ("bash", BASH_SH), ("zsh", ZSH_ZSH), ("fish", FISH_FISH), ("pwsh", PWSH_PS1)] {
+        for (name, src) in [("boot", SHELL_BOOT), ("bash", BASH_SH), ("zsh", ZSH_ZSH), ("fish", FISH_FISH), ("pwsh", PWSH_PS1), ("sh", SH_SH)] {
             assert_eq!(sect(name), strip_comments(src), "{name}");
             assert!(!src.lines().any(|l| l.starts_with("#@")), "{name} must not contain section markers");
         }
@@ -2405,6 +2502,7 @@ mod loopback {
             return;
         }
         let root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")).canonicalize().unwrap();
+        let _turn = crate::pty::tests::TURN.lock().unwrap_or_else(|e| e.into_inner());
         let mut pty = Pty::spawn(argv, here.then_some(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")), env, 100, 30, || {}).unwrap();
         let mut t = Term::new(100, 30);
         let mut p = vte::Parser::new();
@@ -2417,6 +2515,8 @@ mod loopback {
         // nushell reports the directory only from its first command on.
         assert!(pump(&mut pty, &mut t, &mut p, |t| t.integrated && !t.blocks.is_empty(), 60), "{choice:?}: prompt: {:?}", screen(&t));
         assert!(t.integrated, "{choice:?}");
+        let missing = t.events.iter().any(|e| matches!(e, TermEvent::Weft { value, .. } if value["t"] == "shell-missing"));
+        assert!(!missing, "{choice:?}: the shell asked for is the one running");
         pump(&mut pty, &mut t, &mut p, |_| false, 1);
         pty.write(cmd.as_bytes());
         pump(&mut pty, &mut t, &mut p, |t| t.screen[t.cy].text().contains(cmd), 5);
@@ -2425,12 +2525,114 @@ mod loopback {
         let done = pump(&mut pty, &mut t, &mut p, |t| t.blocks.iter().any(|b| b.command.contains(cmd) && b.state() == BlockState::Done), 15);
         assert!(done, "{choice:?}: {:?} {:?}", t.blocks.iter().map(|b| (&b.command, b.exit)).collect::<Vec<_>>(), screen(&t));
         let b = t.blocks.iter().find(|b| b.command.contains(cmd)).unwrap();
-        assert_eq!(b.exit, exit, "{choice:?}");
+        assert_eq!(b.exit, exit, "{choice:?}: {:?} {:?}", t.blocks.iter().map(|b| (&b.command, b.exit, b.state())).collect::<Vec<_>>(), screen(&t));
         assert_eq!(t.block_output(b).trim(), "weft-ok", "{choice:?}");
         if here {
             let name = root.file_name().unwrap().to_string_lossy().to_string();
             assert!(t.cwd.as_deref().map(|c| c.trim_end_matches('/').ends_with(&name)).unwrap_or(false), "{choice:?}: cwd {:?}", t.cwd);
         }
+    }
+
+    /// Every shell weft has an integration for, of those installed here
+    /// (Git's bash and dash on Windows; CI's Linuxes have the others),
+    /// started by weft's command as the chosen shell: the full ones through
+    /// `argv_check`; the partial ones (POSIX shells with no hooks) tell each
+    /// prompt, the exit code and the folder, not the command's text; one
+    /// weft has nothing for (tcsh) starts as it is and says its name.
+    #[test]
+    fn each_shell_here_gets_what_weft_has_for_it() {
+        let sh = std::env::var("WEFT_TEST_SH").unwrap_or_else(|_| if cfg!(windows) { "C:/Program Files/Git/bin/sh.exe" } else { "/bin/sh" }.to_string());
+        let sh = sh.as_str();
+        if !Path::new(sh).is_file() {
+            return;
+        }
+        let there = |name: &str| Command::new(sh).args(["-c", &format!("command -v {name}")]).output().map(|o| o.status.success()).unwrap_or(false);
+        let argv = |name: &str| vec![sh.to_string(), "-c".to_string(), remote_shell_command_with(None, Some(name))];
+        // With another sh given, its PATH too: a terminal on Windows takes
+        // PATH from the registry, not from this process.
+        let mut env: Vec<(String, String)> = Vec::new();
+        if std::env::var("WEFT_TEST_SH").is_ok() {
+            env.push(("PATH".to_string(), std::env::var("PATH").unwrap_or_default()));
+        }
+        let with = |more: &[(&str, &str)]| env.iter().cloned().chain(more.iter().map(|(k, v)| (k.to_string(), v.to_string()))).collect::<Vec<_>>();
+        let mut tried = Vec::new();
+        for name in ["bash", "zsh", "fish", "ksh", "mksh", "dash", "ash", "tcsh"] {
+            if !there(name) {
+                continue;
+            }
+            tried.push(name);
+            let info = shell_info(name);
+            match info.map(|i| i.support) {
+                Some(ShellSupport::Full) => {
+                    argv_check(name, &argv(name), &env, "echo weft-ok", Some(0), true);
+                    // And as the login shell, nothing chosen: what a host
+                    // whose user has this shell gets.
+                    let path = Command::new(sh).args(["-c", &format!("command -v {name}")]).output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+                    let login = vec![sh.to_string(), "-c".to_string(), remote_shell_command(None)];
+                    argv_check(&format!("login {name}"), &login, &with(&[("SHELL", &path)]), "echo weft-ok", Some(0), true);
+                }
+                Some(ShellSupport::Partial) => {
+                    let _turn = crate::pty::tests::TURN.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut pty = Pty::spawn(&argv(name), Some(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")), &env, 100, 30, || {}).unwrap();
+                    let mut t = Term::new(100, 30);
+                    let mut p = vte::Parser::new();
+                    assert!(pump(&mut pty, &mut t, &mut p, |t| t.integrated && t.blocks.last().is_some_and(|b| b.state() == BlockState::Prompt), 40), "{name}: prompt: {:?}", screen(&t));
+                    let named = t.events.iter().any(|e| matches!(e, TermEvent::Weft { value, .. } if value["t"] == "shell" && value["name"] == name));
+                    assert!(named, "{name}: it says which shell it is");
+                    let run = |t: &mut Term, pty: &mut Pty, p: &mut vte::Parser, cmd: &str| -> crate::term::Block {
+                        let before = t.blocks.iter().filter(|b| b.state() == BlockState::Done).count();
+                        pty.write(cmd.as_bytes());
+                        pump(pty, t, p, |t| t.screen[t.cy].text().contains(cmd), 5);
+                        t.user_enter();
+                        pty.write(b"\r");
+                        let done = pump(pty, t, p, |t| t.blocks.iter().filter(|b| b.state() == BlockState::Done).count() > before && t.blocks.last().is_some_and(|b| b.state() == BlockState::Prompt), 15);
+                        assert!(done, "{name}: {cmd}: {:?}", screen(t));
+                        t.blocks.iter().rfind(|b| b.state() == BlockState::Done).unwrap().clone()
+                    };
+                    let b = run(&mut t, &mut pty, &mut p, "echo weft-ok");
+                    assert_eq!((b.exit, t.block_output(&b).trim()), (Some(0), "weft-ok"), "{name}: exit code and output");
+                    assert!(b.command.is_empty() && !b.guessed, "{name}: no text of the command, and nothing guessed");
+                    let b = run(&mut t, &mut pty, &mut p, "(exit 3)");
+                    assert_eq!(b.exit, Some(3), "{name}: a failing command's code");
+                    let root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")).canonicalize().unwrap();
+                    let dir = root.file_name().unwrap().to_string_lossy().to_string();
+                    assert!(t.cwd.as_deref().is_some_and(|c| c.trim_end_matches('/').ends_with(&dir)), "{name}: cwd {:?}", t.cwd);
+                }
+                _ => {
+                    let _turn = crate::pty::tests::TURN.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut pty = Pty::spawn(&argv(name), None, &env, 100, 30, || {}).unwrap();
+                    let mut t = Term::new(100, 30);
+                    let mut p = vte::Parser::new();
+                    let named = |t: &Term| t.events.iter().any(|e| matches!(e, TermEvent::Weft { value, .. } if value["t"] == "shell" && value["name"] == name));
+                    assert!(pump(&mut pty, &mut t, &mut p, named, 30), "{name}: it says which shell it is: {:?}", screen(&t));
+                    pump(&mut pty, &mut t, &mut p, |_| false, 2);
+                    // Backquotes and expr: what tcsh reads as sh does (its $(( )) is an error that drops the line).
+                    pty.write(b"echo weft-`expr 40 + 2`\r");
+                    assert!(pump(&mut pty, &mut t, &mut p, |t| screen(t).iter().any(|l| l.contains("weft-42")), 15), "{name}: it runs: {:?}", screen(&t));
+                    assert!(!t.integrated, "{name}: no integration");
+                }
+            }
+        }
+        println!("shells tried: {tried:?}");
+        assert!(tried.contains(&"bash") || !cfg!(windows), "Git's bash at least");
+        // A chosen shell that is not there: said, and the login shell.
+        let _turn = crate::pty::tests::TURN.lock().unwrap_or_else(|e| e.into_inner());
+        let mut pty = Pty::spawn(&argv("no-such-shell"), None, &with(&[("SHELL", "/bin/sh")]), 100, 30, || {}).unwrap();
+        let mut t = Term::new(100, 30);
+        let mut p = vte::Parser::new();
+        let missing = |t: &Term| t.events.iter().any(|e| matches!(e, TermEvent::Weft { value, .. } if value["t"] == "shell-missing" && value["wanted"] == "no-such-shell" && value["using"] == "sh"));
+        assert!(pump(&mut pty, &mut t, &mut p, missing, 30), "the missing one is said: {:?} {:?}", screen(&t), t.events.iter().filter_map(|e| if let TermEvent::Weft { value, .. } = e { Some(value.to_string()) } else { None }).collect::<Vec<_>>());
+        // That login shell is a sh (bash as sh, here and on many systems):
+        // it has the sh family's part, and its prompt comes without an error.
+        assert!(pump(&mut pty, &mut t, &mut p, |t| t.integrated && t.blocks.last().is_some_and(|b| b.state() == BlockState::Prompt), 20), "the login sh's prompt: {:?}", screen(&t));
+        pump(&mut pty, &mut t, &mut p, |_| false, 1);
+        assert!(!screen(&t).iter().any(|l| l.contains("syntax error")), "its prompt has no error: {:?}", screen(&t));
+        pty.write(b"echo weft-$((40 + 2))\r");
+        assert!(pump(&mut pty, &mut t, &mut p, |t| screen(t).iter().any(|l| l.contains("weft-42")), 15), "and the login shell runs: {:?}", screen(&t));
+        // The table: names, paths, what is not known.
+        assert_eq!(shell_info("/usr/bin/zsh").map(|i| i.support), Some(ShellSupport::Full));
+        assert_eq!(shell_info("C:\\Windows\\System32\\cmd.exe").map(|i| i.support), Some(ShellSupport::Partial));
+        assert!(shell_info("dash").is_some_and(|i| !i.missing.is_empty()) && shell_info("tcsh").is_none());
     }
 
     /// Over a real ssh, where one is given (CI: WEFT_TEST_SSH=localhost, each
@@ -2628,6 +2830,17 @@ mod loopback {
     /// first that is 3.6 or newer, and says what to do when none is. Here
     /// through Git Bash with a PATH of its own: a Python under an odd name
     /// from the list, a Python 2 before it (passed over), none at all.
+    /// A stand-in program: a script, runnable where that takes the mode
+    /// (MSYS goes by its #! line).
+    fn script(path: &Path, text: &str) {
+        std::fs::write(path, text).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
     #[test]
     fn the_agent_finds_python_by_the_list() {
         assert!(!agent_command().contains('"') && !agent_command().contains('\\'), "still nothing a shell or argv parser re-quotes");
@@ -2640,8 +2853,8 @@ mod loopback {
         let unix = |p: &std::path::Path| p.display().to_string().replace('\\', "/");
         // A Python 2 (any python that is not 3.6+ fails the check) and the
         // real one under a name no default has.
-        std::fs::write(dir.join("bin/python3"), "#!/bin/sh\nexit 1\n").unwrap();
-        std::fs::write(dir.join("opt/py-3.x/bin/py3odd"), format!("#!/bin/sh\nexec '{}' \"$@\"\n", unix(&py))).unwrap();
+        script(&dir.join("bin/python3"), "#!/bin/sh\nexit 1\n");
+        script(&dir.join("opt/py-3.x/bin/py3odd"), &format!("#!/bin/sh\nexec '{}' \"$@\"\n", unix(&py)));
         let run = |list: &[&str]| -> String {
             let list: Vec<String> = list.iter().map(|s| s.replace("$D", &unix(&dir))).collect();
             let cmd = posix_wrap(&[("PY64", b64(&list.join("\n")))], &format!("{FIND_PY}; echo found=$P"), NO_DECODER);
@@ -2651,7 +2864,8 @@ mod loopback {
                 .unwrap();
             format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))
         };
-        let got = run(&["python3", "python", "$D/opt/*/bin/py3odd"]);
+        // ("nothere": a name no system has; a Linux has a real "python".)
+        let got = run(&["python3", "nothere", "$D/opt/*/bin/py3odd"]);
         assert!(got.contains(&format!("found={}/opt/py-3.x/bin/py3odd", unix(&dir))), "the odd one, by a pattern; python3 (2.x here) passed over: {got}");
         let got = run(&["python3", "nothere"]);
         let said: Vec<&str> = got.lines().filter(|l| l.starts_with("weft: ")).collect();
@@ -2679,9 +2893,9 @@ mod loopback {
             }
         };
         let stub = format!("{}/bin/python3", unix(&dir));
-        std::fs::write(dir.join("bin/uname"), "#!/bin/sh\necho Darwin\n").unwrap();
-        std::fs::write(dir.join("bin/python3"), format!("#!/bin/sh\necho ran > '{}/ran'\nexec '{}' \"$@\"\n", unix(&dir), py.display().to_string().replace('\\', "/"))).unwrap();
-        let tools = |there: bool| std::fs::write(dir.join("bin/xcode-select"), format!("#!/bin/sh\nexit {}\n", if there { 0 } else { 2 })).unwrap();
+        script(&dir.join("bin/uname"), "#!/bin/sh\necho Darwin\n");
+        script(&dir.join("bin/python3"), &format!("#!/bin/sh\necho ran > '{}/ran'\nexec '{}' \"$@\"\n", unix(&dir), py.display().to_string().replace('\\', "/")));
+        let tools = |there: bool| script(&dir.join("bin/xcode-select"), &format!("#!/bin/sh\nexit {}\n", if there { 0 } else { 2 }));
         let run = || -> String {
             let find = FIND_PY.replace("/usr/bin/python3", &stub);
             let cmd = posix_wrap(&[("PY64", b64("python3\nnothere"))], &format!("{find}; echo found=$P"), NO_DECODER);
@@ -2722,14 +2936,14 @@ mod loopback {
         // No decoder at all (nothing on the PATH): said, and a shell.
         let nothing = "PATH=/weft-nothing-here; ";
         let (got, _) = run(&format!("{nothing}{}", inner(&remote_shell_command(None))));
-        assert!(got.contains("weft: no base64, openssl or python3 on this host") && got.contains("plain-42"), "{got}");
+        assert!(got.contains("weft: no base64, openssl or python3 here") && got.contains("plain-42"), "{got}");
         // The agent: said, and ended as failed.
         let (got, code) = run(&format!("{nothing}{}", inner(&agent_command())));
-        assert!(got.contains("weft: no base64, openssl or python3 on this host") && code == Some(127), "{code:?} {got}");
+        assert!(got.contains("weft: no base64, openssl or python3 here") && code == Some(127), "{code:?} {got}");
         // Decoded, but the bundle does not unpack (no gzip or awk there: here
         // a bundle that is none): said, and a shell.
         let (got, _) = run(&format!("W=AAAA; {SHELL_UNPACK}"));
-        assert!(got.contains("weft: could not unpack its shell integration") && got.contains("plain-42"), "{got}");
+        assert!(got.contains("weft: cannot unpack its shell integration") && got.contains("plain-42"), "{got}");
         // And as ever where they are there.
         assert!(!PLAIN_SHELL.contains(['"', '\\', '\'']) && !NO_DECODER.contains(['"', '\\', '\'']), "nothing a shell or argv parser re-quotes");
     }

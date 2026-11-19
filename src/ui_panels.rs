@@ -66,6 +66,8 @@ pub(crate) enum Cmd {
     Settings,
     /// "Python on remote hosts…": the Pythons tried there.
     RemotePython,
+    /// "Shells…": what weft has in each shell, and the ones to use.
+    Shells,
     AgentLog,
     NewMemo,
     Memos,
@@ -182,6 +184,7 @@ const COMMANDS: &[(Cmd, &str, &str, &[&str])] = &[
     (Cmd::ConfirmRunning, "confirm_running", "Ask before ending running commands: on / off", &[]),
     (Cmd::Settings, "settings_file", "Open settings.json", &[]),
     (Cmd::RemotePython, "remote_python", "Python on remote hosts… (the names and paths tried for the Files agent and serial consoles)", &[]),
+    (Cmd::Shells, "shells", "Shells… (what weft supports in each shell; the shell to use here and on this host)", &[]),
     (Cmd::AgentLog, "agent_log", "Open agent log for this host", &[]),
 ];
 
@@ -465,6 +468,7 @@ impl App {
                 self.dir_cache.clear();
             }
             Cmd::RemotePython => self.python_window = Some(self.settings.remote_python.join("\n")),
+            Cmd::Shells => self.open_shells_window(),
             Cmd::Settings => {
                 self.save_settings();
                 let p = self.data.path("settings.json").display().to_string().replace('\\', "/");
@@ -552,7 +556,7 @@ impl App {
     /// shell gets no Esc for it. (A key being bound has taken its Esc by
     /// now: that cancels the binding, not the window.)
     pub fn escape_closes_windows(&mut self, ctx: &egui::Context) {
-        let windows = [self.display_test.is_some(), self.serial_dialog.is_some(), self.font_menu.is_some(), self.memo_picker, self.keys_window.is_some(), self.records_window.is_some(), self.help.is_some(), self.python_window.is_some(), self.graphics_window.is_some()];
+        let windows = [self.display_test.is_some(), self.serial_dialog.is_some(), self.font_menu.is_some(), self.memo_picker, self.keys_window.is_some(), self.records_window.is_some(), self.help.is_some(), self.python_window.is_some(), self.graphics_window.is_some(), self.shells_window.is_some()];
         let now = windows.iter().enumerate().fold(0u32, |m, (i, open)| m | ((*open as u32) << i));
         // One that has just opened takes the keyboard from the terminal;
         // a click in a terminal gives it back, and Esc is then the shell's
@@ -593,7 +597,7 @@ impl App {
             return;
         }
         // One at a time, the smaller ones (opened from the others) first.
-        if self.display_test.take().is_some() || self.serial_dialog.take().is_some() || self.font_menu.take().is_some() || std::mem::take(&mut self.memo_picker) || self.keys_window.take().is_some() || self.records_window.take().is_some() || self.python_window.take().is_some() || self.graphics_window.take().is_some() {
+        if self.display_test.take().is_some() || self.serial_dialog.take().is_some() || self.font_menu.take().is_some() || std::mem::take(&mut self.memo_picker) || self.keys_window.take().is_some() || self.records_window.take().is_some() || self.python_window.take().is_some() || self.graphics_window.take().is_some() || self.shells_window.take().is_some() {
         } else {
             self.help = None;
         }
@@ -2125,6 +2129,134 @@ impl App {
         }
         if let Some(p) = pick {
             self.apply_memo_pick(p);
+        }
+    }
+
+    /// "Shells…" opens for the host of the terminal that has the keyboard.
+    pub fn open_shells_window(&mut self) {
+        let host = self.active_pane_id().and_then(|id| self.panes.get(&id)).map(|p| p.host.clone()).filter(|h| matches!(self.profile(h).kind, HostKind::Ssh { .. } | HostKind::Custom { .. }));
+        let remote = host.as_ref().and_then(|h| self.settings.remote_shells.get(h)).cloned().unwrap_or_default();
+        self.shells_window = Some(ShellsWindow { host, remote, unix: self.settings.unix_shell.clone(), local: self.settings.local_shell });
+    }
+
+    /// The choices of "Shells…" are kept: used from the next terminal.
+    pub fn save_shells(&mut self, w: &ShellsWindow) {
+        self.settings.local_shell = w.local;
+        self.settings.unix_shell = w.unix.trim().to_string();
+        self.shell_choice_off.remove("local");
+        if let Some(h) = &w.host {
+            let chosen = w.remote.trim();
+            if chosen.is_empty() {
+                self.settings.remote_shells.remove(h);
+            } else {
+                self.settings.remote_shells.insert(h.clone(), chosen.to_string());
+            }
+            // A new choice is tried again, and what is said of it said again.
+            self.shell_choice_off.remove(h);
+            self.shell_notes.retain(|n| !n.starts_with(&format!("{h}\n")));
+        }
+        self.save_settings();
+        self.toast("saved: used from the next terminal opened (Restart terminal: this one)", crate::app::ToastKind::Info);
+    }
+
+    /// "Shells…": what weft has in each shell (all of its integration, part
+    /// of it, none), where each can be used, and the shell to use on this
+    /// computer and on the host of the terminal it was opened from.
+    pub fn ui_shells_window(&mut self, ctx: &egui::Context) {
+        use crate::host::{LocalShell, ShellSupport, NOT_INTEGRATED, SHELLS};
+        let Some(mut w) = self.shells_window.take() else { return };
+        let mut open = true;
+        let mut save = false;
+        let dim = |t: &str| RichText::new(t).size(11.5).color(theme::text_dim());
+        // The shells offered at a click: those weft has something for.
+        const QUICK: &[&str] = &["bash", "zsh", "fish", "nu", "pwsh", "ksh", "mksh", "dash"];
+        let pick = |ui: &mut Ui, id: &str, value: &mut String| {
+            ui.horizontal_wrapped(|ui| {
+                ui.add(TextEdit::singleline(value).id_salt(id).desired_width(220.0).hint_text("the login shell"));
+                if ui.small_button("login shell").clicked() {
+                    value.clear();
+                }
+                for q in QUICK {
+                    if ui.small_button(*q).clicked() {
+                        *value = q.to_string();
+                    }
+                }
+            });
+        };
+        crate::widgets::dialog(ctx, "Shells", vec2(680.0, 520.0)).open(&mut open).resizable(true).show(ctx, |ui| {
+            ScrollArea::vertical().show(ui, |ui| {
+                ui.label(RichText::new("This computer").strong());
+                if cfg!(windows) {
+                    ui.horizontal_wrapped(|ui| {
+                        for sh in [LocalShell::Auto, LocalShell::Pwsh, LocalShell::Powershell, LocalShell::Cmd, LocalShell::Nu] {
+                            ui.radio_value(&mut w.local, sh, sh.label());
+                        }
+                    });
+                } else {
+                    pick(ui, "shells_unix", &mut w.unix);
+                }
+                ui.add_space(4.0);
+                match &w.host {
+                    Some(h) => {
+                        ui.label(RichText::new(format!("On {h}")).strong());
+                        pick(ui, "shells_remote", &mut w.remote);
+                        ui.label(dim("A name on the host's PATH, or a path. A Windows host runs Windows PowerShell, whatever is chosen."));
+                    }
+                    None => {
+                        ui.label(dim("A remote host's shell is chosen from one of its terminals: open Shells… there."));
+                    }
+                }
+                ui.add_space(4.0);
+                ui.label(dim(
+                    "A chosen shell that is not there, or does not start: the login shell is used instead, and weft says so.                      Used from the next terminal opened.",
+                ));
+                if ui.button("Save").clicked() {
+                    save = true;
+                }
+                ui.separator();
+                ui.label(dim(
+                    "weft's shell integration tells it where each prompt and command starts and ends, a command's exit code and the folder.                      It is whole in some shells, partial in others, and there is none for the rest: there a terminal works as any other, without what is listed.",
+                ));
+                ui.add_space(4.0);
+                egui::Grid::new("shells_table").num_columns(4).striped(true).spacing(vec2(12.0, 4.0)).show(ui, |ui| {
+                    for h in ["Shell", "Integration", "Not there", "Where"] {
+                        ui.label(RichText::new(h).strong().size(12.0));
+                    }
+                    ui.end_row();
+                    for i in SHELLS {
+                        ui.label(RichText::new(i.title).size(12.0));
+                        ui.label(RichText::new(if i.support == ShellSupport::Full { "full" } else { "partial" }).size(12.0));
+                        ui.add(egui::Label::new(dim(&if i.missing.is_empty() { "nothing".to_string() } else { i.missing.join("; ") })).wrap());
+                        let mut place = Vec::new();
+                        if i.local_windows {
+                            place.push("local (Windows)");
+                        }
+                        if i.local_unix {
+                            place.push("local (macOS, Linux)");
+                        }
+                        if i.remote {
+                            place.push("remote");
+                        }
+                        ui.label(dim(&place.join(", ")));
+                        ui.end_row();
+                    }
+                    ui.label(RichText::new("any other (tcsh, csh, xonsh, elvish, ...)").size(12.0));
+                    ui.label(RichText::new("none").size(12.0));
+                    ui.add(egui::Label::new(dim(&NOT_INTEGRATED.join("; "))).wrap());
+                    ui.label(dim("works as a plain terminal"));
+                    ui.end_row();
+                });
+                ui.add_space(4.0);
+                ui.label(dim(
+                    "A remote host whose shell is neither a POSIX sh nor Windows' cmd or PowerShell opens as a plain ssh.                      The Files panel, editor and search need Python 3.6+ on a remote host, whatever its shell (Python on remote hosts…).",
+                ));
+            });
+        });
+        if save {
+            self.save_shells(&w);
+        }
+        if open {
+            self.shells_window = Some(w);
         }
     }
 
@@ -4422,7 +4554,7 @@ fn group(c: Cmd) -> &'static str {
         | Cmd::Theme(_)
         | Cmd::Fonts
         | Cmd::MarkdownBreaks => GROUPS[3],
-        Cmd::Records | Cmd::Settings | Cmd::RemotePython | Cmd::Graphics | Cmd::AgentLog | Cmd::Keys | Cmd::Restart | Cmd::ConfirmUnsaved | Cmd::ConfirmRunning => GROUPS[4],
+        Cmd::Records | Cmd::Settings | Cmd::RemotePython | Cmd::Shells | Cmd::Graphics | Cmd::AgentLog | Cmd::Keys | Cmd::Restart | Cmd::ConfirmUnsaved | Cmd::ConfirmRunning => GROUPS[4],
         Cmd::Help | Cmd::Features | Cmd::Palette | Cmd::About | Cmd::DisplayTest | Cmd::Trace => GROUPS[5],
     }
 }

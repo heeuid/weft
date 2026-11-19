@@ -3517,3 +3517,97 @@ fn a_windows_host_gets_powershell_and_the_agent() {
     let log = std::fs::read_dir(h.app.data.path("logs")).unwrap().filter_map(|e| std::fs::read_to_string(e.ok()?.path()).ok()).collect::<String>();
     assert!(log.contains("[odd]: kept as a shell weft does not support; trying a POSIX sh and Windows' PowerShell again"), "said in the log");
 }
+
+/// What weft has in a host's shell is said where it is not everything, and
+/// the shell can be chosen ("Shells…"). Here Git's shells stand for a
+/// remote host: dash (partial: prompts, exit codes and the folder, not
+/// the command's text, which is not kept as history); a chosen shell that
+/// is not there, and one that does not start (said, the login shell
+/// instead); a shell weft has nothing for (said; nothing guessed is shown).
+#[test]
+fn shells_say_what_weft_has_for_them_and_can_be_chosen() {
+    let bash = "C:/Program Files/Git/bin/bash.exe";
+    if !std::path::Path::new(bash).is_file() {
+        return;
+    }
+    let lo = json!({"name": "lo", "kind": "custom", "pty": [bash, "-c"], "agent": ["python", "-c", "0"]});
+    let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}, lo], "remote_shells": {"lo": "dash"}}));
+    let log = |h: &Harness| std::fs::read_dir(h.app.data.path("logs")).unwrap().filter_map(|e| std::fs::read_to_string(e.ok()?.path()).ok()).collect::<String>();
+    let shows = |h: &Harness, id: usize, what: &str| h.app.panes.get(&id).is_some_and(|p| {
+        let t = &p.term;
+        t.lines_text(t.first_line(), t.end_line() + 1).contains(what)
+    });
+    assert!(!h.app.settings.guess_blocks, "guessed blocks are not shown unless asked for");
+    // dash, chosen for the host: part of the integration, said once.
+    h.app.new_tab("lo", None);
+    let pane = h.app.active_pane_id().unwrap();
+    // (Shown as it is said: a toast goes after a while.)
+    assert!(h.wait_for(90.0, |h| h.shows("dash has part of weft's shell integration")), "said, and shown");
+    assert!(h.wait_for(90.0, |h| h.app.panes[&pane].term.integrated && h.app.panes[&pane].seen.1), "dash, its prompts marked");
+    assert_eq!(h.app.panes[&pane].started_shell.as_deref(), Some("dash"));
+    assert!(log(&h).contains("[lo] dash has part of weft's shell integration. Not there: the command's own text"), "said: {}", log(&h));
+    let at_prompt = |h: &Harness, id: usize| h.app.panes[&id].term.blocks.last().is_some_and(|b| b.state() == crate::term::BlockState::Prompt);
+    assert!(h.wait_for(30.0, |h| at_prompt(h, pane)));
+    h.app.panes.get_mut(&pane).unwrap().send(b"echo hi-$((40 + 2))\r");
+    assert!(h.wait_for(60.0, |h| h.app.panes[&pane].term.blocks.iter().any(|b| b.state() == crate::term::BlockState::Done && b.exit == Some(0)) && at_prompt(h, pane)), "a command, its exit code");
+    h.app.panes.get_mut(&pane).unwrap().send(b"(exit 3)\r");
+    assert!(h.wait_for(60.0, |h| h.app.panes[&pane].term.blocks.iter().any(|b| b.exit == Some(3))), "a failing one's");
+    let t = &h.app.panes[&pane].term;
+    assert!(t.blocks.iter().all(|b| b.command.is_empty() && !b.guessed), "no text of a command is made up");
+    assert!(h.app.history.get("lo").is_none_or(|v| v.is_empty()), "and none kept as history: {:?}", h.app.history.get("lo"));
+    assert!(t.cwd.is_some(), "the folder");
+    // A second terminal: not said again.
+    let said = log(&h).matches("dash has part of").count();
+    h.app.new_tab("lo", None);
+    let second = h.app.active_pane_id().unwrap();
+    assert!(h.wait_for(90.0, |h| h.app.panes[&second].term.integrated), "the second");
+    assert_eq!(log(&h).matches("dash has part of").count(), said, "once a run");
+    // "Shells…": the table, and this host's choice.
+    h.command("shells");
+    h.frames(2);
+    assert!(h.shows("Shells") && h.shows("On lo") && h.shows("This computer") && h.shows("Integration") && h.shows("full"), "the window: the choices, and the table");
+    assert_eq!(h.app.shells_window.as_ref().unwrap().remote, "dash", "what is chosen now");
+    h.app.shells_window.as_mut().unwrap().remote = " no-such-shell ".into();
+    h.frames(1);
+    h.click(h.at("Save"));
+    h.frames(2);
+    assert_eq!(h.app.settings.remote_shells.get("lo").map(String::as_str), Some("no-such-shell"), "kept, trimmed");
+    assert!(std::fs::read_to_string(h.app.data.path("settings.json")).unwrap().contains("no-such-shell"));
+    h.app.shells_window = None;
+    // Chosen, and not there: said, and the login shell (bash here).
+    h.app.new_tab("lo", None);
+    let third = h.app.active_pane_id().unwrap();
+    assert!(h.wait_for(90.0, |h| h.shows("no-such-shell, is not there")), "said, and shown");
+    assert!(h.wait_for(90.0, |h| h.app.panes[&third].term.integrated && h.app.panes[&third].seen.1), "the login shell instead");
+    assert!(log(&h).contains("the chosen shell no-such-shell is not there"), "said: {}", log(&h));
+    // Chosen, there, and it does not start: said, and the login shell.
+    let unix = |p: &std::path::Path| p.display().to_string().replace('\\', "/");
+    let bad = h.dir.join("badsh");
+    std::fs::write(&bad, "#!/bin/sh\nexit 3\n").unwrap();
+    h.app.save_shells(&crate::app::ShellsWindow { host: Some("lo".into()), remote: unix(&bad), ..Default::default() });
+    h.app.new_tab("lo", None);
+    assert!(h.wait_for(90.0, |h| h.app.shell_choice_off.contains("lo")), "it did not start: {}", log(&h));
+    assert!(log(&h).contains("badsh ended with 3 before its prompt; its login shell instead"), "said: {}", log(&h));
+    let fourth = h.app.active_pane_id().unwrap();
+    assert!(h.wait_for(90.0, |h| h.app.panes.get(&fourth).is_some_and(|p| p.term.integrated && p.started_shell.is_none() && !p.exited)), "the login shell instead");
+    // A shell weft has nothing for: said; a terminal as any other, and no
+    // block guessed from its output is shown.
+    let odd = h.dir.join("oddsh");
+    std::fs::write(&odd, "#!/bin/sh\nPS1='odd> ' exec /bin/sh \"$@\"\n").unwrap();
+    h.app.save_shells(&crate::app::ShellsWindow { host: Some("lo".into()), remote: unix(&odd), ..Default::default() });
+    assert!(h.app.shell_choice("lo").is_some(), "a new choice is tried again");
+    h.app.new_tab("lo", None);
+    let fifth = h.app.active_pane_id().unwrap();
+    assert!(h.wait_for(90.0, |h| h.app.panes[&fifth].seen.1), "its prompt was told");
+    assert!(log(&h).contains("oddsh has no shell integration in weft: a terminal as any other. Not there: command blocks"), "said: {}", log(&h));
+    h.app.panes.get_mut(&fifth).unwrap().send(b"echo odd-$((40 + 2))\r");
+    assert!(h.wait_for(30.0, |h| shows(h, fifth, "odd-42")), "it runs");
+    h.frames(40);
+    let p = &h.app.panes[&fifth];
+    assert!(!p.term.integrated && p.term.blocks.is_empty(), "nothing guessed is shown: {:?}", p.term.blocks.len());
+    assert!(h.app.history.get("lo").is_none_or(|v| v.is_empty()), "nor kept");
+    // What is said of each kind.
+    assert!(crate::app::shell_notice_text("bash").is_none() && crate::app::shell_notice_text("/usr/bin/zsh").is_none());
+    assert!(crate::app::shell_notice_text("cmd").is_some_and(|t| t.contains("exit codes")));
+    assert!(crate::app::shell_notice_text("tcsh").is_some_and(|t| t.contains("no shell integration") && t.contains("Shells…")));
+}
