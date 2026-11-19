@@ -2393,19 +2393,29 @@ mod loopback {
     #[cfg(windows)]
     fn local_shell_check(choice: LocalShell, cmd: &str, exit: Option<i32>) {
         let (argv, env) = local_shell(choice);
-        argv_check(&format!("{choice:?}"), &argv, &env, cmd, exit);
+        argv_check(&format!("{choice:?}"), &argv, &env, cmd, exit, true);
     }
 
-    fn argv_check(choice: &str, argv: &[String], env: &[(String, String)], cmd: &str, exit: Option<i32>) {
+    /// A terminal started so has weft's integration: a prompt, a command
+    /// with its exit code and output; `here`: started in the repository's
+    /// folder, which it reports.
+    fn argv_check(choice: &str, argv: &[String], env: &[(String, String)], cmd: &str, exit: Option<i32>, here: bool) {
         if which(&argv[0]).is_none() && !Path::new(&argv[0]).is_file() {
             println!("skip: {} not installed", argv[0]);
             return;
         }
-        let mut pty = Pty::spawn(argv, Some(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")), env, 100, 30, || {}).unwrap();
+        let root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")).canonicalize().unwrap();
+        let mut pty = Pty::spawn(argv, here.then_some(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")), env, 100, 30, || {}).unwrap();
         let mut t = Term::new(100, 30);
         let mut p = vte::Parser::new();
+        // zsh takes its integration typed in (as the app does on this event).
+        let asked = |t: &Term| t.events.iter().any(|e| matches!(e, TermEvent::Weft { value, .. } if value["t"] == "inject"));
+        pump(&mut pty, &mut t, &mut p, |t| t.integrated || asked(t), 30);
+        if asked(&t) && !t.integrated {
+            pty.write(b" eval \"$WEFT_ZSH\"\r");
+        }
         // nushell reports the directory only from its first command on.
-        assert!(pump(&mut pty, &mut t, &mut p, |t| !t.blocks.is_empty(), 30), "{choice:?}: prompt: {:?}", screen(&t));
+        assert!(pump(&mut pty, &mut t, &mut p, |t| t.integrated && !t.blocks.is_empty(), 60), "{choice:?}: prompt: {:?}", screen(&t));
         assert!(t.integrated, "{choice:?}");
         pump(&mut pty, &mut t, &mut p, |_| false, 1);
         pty.write(cmd.as_bytes());
@@ -2417,7 +2427,36 @@ mod loopback {
         let b = t.blocks.iter().find(|b| b.command.contains(cmd)).unwrap();
         assert_eq!(b.exit, exit, "{choice:?}");
         assert_eq!(t.block_output(b).trim(), "weft-ok", "{choice:?}");
-        assert!(t.cwd.as_deref().map(|c| c.ends_with("weft-initial")).unwrap_or(false), "{choice:?}: cwd {:?}", t.cwd);
+        if here {
+            let name = root.file_name().unwrap().to_string_lossy().to_string();
+            assert!(t.cwd.as_deref().map(|c| c.trim_end_matches('/').ends_with(&name)).unwrap_or(false), "{choice:?}: cwd {:?}", t.cwd);
+        }
+    }
+
+    /// Over a real ssh, where one is given (CI: WEFT_TEST_SSH=localhost, each
+    /// system to itself): the terminal has weft's integration, a command
+    /// runs with its exit code, and the agent's command starts the agent.
+    #[test]
+    fn over_ssh_where_one_is_given() {
+        let Ok(target) = std::env::var("WEFT_TEST_SSH") else { return };
+        let mut prof = Profile::ssh(&target);
+        if std::env::var("WEFT_TEST_SSH_SHELL").as_deref() == Ok("windows") {
+            prof.set_remote_shell(RemoteShell::Windows);
+        }
+        argv_check(&format!("ssh {target}"), &prof.pty_argv(None, false), &[], "echo weft-ok", Some(0), false);
+        // The agent: its hello over the same ssh.
+        let argv = prof.agent_argv(false).unwrap();
+        let mut child = Command::new(&argv[0]).args(&argv[1..]).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        ship_agent(&mut stdin).unwrap();
+        use std::io::BufRead;
+        let mut out = std::io::BufReader::new(child.stdout.take().unwrap());
+        let mut first = String::new();
+        let _ = out.read_line(&mut first);
+        drop(stdin);
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(first.contains("\"ready\""), "the agent said it is ready over ssh: {first:?}");
     }
 
     /// A local terminal on macOS and Linux has weft's integration (the
@@ -2431,7 +2470,7 @@ mod loopback {
         }
         #[cfg(not(windows))]
         assert_eq!(local_shell(LocalShell::Auto).0, posix_local_argv("/bin/sh"), "macOS and Linux start it so");
-        argv_check("posix local", &posix_local_argv(sh), &[], "echo weft-ok", Some(0));
+        argv_check("posix local", &posix_local_argv(sh), &[], "echo weft-ok", Some(0), true);
     }
 
     #[test]

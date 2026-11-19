@@ -316,6 +316,7 @@ What no test here can see. The first is the one worth doing after changing how a
 8. **How it feels**: typing latency, flicker, a resize. Frame times are measured without a GPU (`frame_times`); what a screen does with them is not.
 9. **A conpty.dll of your own** (the `console_host` setting, or one beside weft.exe): the tests run on Windows' own; that a given one is loaded and used is checked by hand (About says which, and Task Manager shows OpenConsole.exe instead of conhost.exe).
 10. **Linux and macOS**: everything compiles for them (see the commands at the top), and nothing has been run there. `cargo test --workspace` on such a machine tests their code; several tests start `python`, which there may be `python3`.
+    `.github/workflows/ci.yml` is to run it there on each push to main: the whole suite on Windows, macOS and Ubuntu; each of the three to itself over a real ssh (`host::loopback::over_ssh_where_one_is_given`, which runs only with `WEFT_TEST_SSH` set); and weft-core (the remote side: bootstrap, shells, agent) in Rocky Linux 8, Debian 12 and Alpine containers. Until it has run once, what it finds is not known.
 
 ## Tools
 
