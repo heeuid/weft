@@ -26,6 +26,8 @@ weft가 셸에서 "프롬프트가 어디고, 명령이 언제 시작해서 끝�
 | 그 외 (dash, ksh, tcsh, xonsh …) | – | ✓ | 없음: 추정 | ✗ | 프로세스 관찰 (python 에이전트 필요) | ✓ (dash) |
 
 - 로컬 셸은 Windows에서 `settings.json`의 `"local_shell"`(`auto`/`pwsh`/`powershell`/`cmd`/`nu`) 또는 팔레트 `Local shell: …`로 고릅니다.
+- 원격에 통합을 풀 도구(`base64`나 `openssl`, `gzip`, `awk`, 또는 `python3`)가 하나도 없으면 터미널에 그 이유를 한 줄 적고 사용자 셸을 통합 없이 그대로 띄웁니다. 에이전트는 이유를 알리고 끝납니다.
+- macOS의 `/usr/bin/python3`는 Command Line Tools가 없으면 Python이 아니라 설치 창을 띄우는 대행 프로그램이라 실행하지 않습니다(`xcode-select -p`로 확인). "Python 없음" 안내에 `xcode-select --install`이 함께 나옵니다.
 - macOS·Linux의 로컬 터미널은 사용자 셸(`$SHELL`)을 원격과 같은 시작 명령으로(ssh 없이 `/bin/sh -c '…'`) 띄워, 원격과 같은 통합이 붙습니다.
 - 원격은 **로그인 셸(`$SHELL`)**을 그대로 띄웁니다. 시험이나 강제를 위해 `WEFT_SHELL` 환경 변수로 바꿀 수 있습니다.
 - bash는 `--rcfile`이 bash 자신의 시작 파일을 대신하므로, weft의 rc가 로그인 셸이 읽는 파일을 bash와 같은 순서로 읽습니다: `/etc/profile`(과 그것이 부르는 `/etc/profile.d/*.sh`), 이어서 `~/.bash_profile`·`~/.bash_login`·`~/.profile` 중 처음 있는 것 하나, 끝날 때 `~/.bash_logout`. 그냥 ssh로 로그인한 것과 같은 환경이 됩니다.

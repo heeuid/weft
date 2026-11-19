@@ -5,6 +5,21 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.10.9
+
+Fixed
+- **A host with none of the tools weft's command unpacks itself with**
+  (base64 or openssl, gzip and awk; or python3: bare containers, some
+  BSDs) gets the user's shell as it is, and the terminal says why. The
+  command ended at once without an error there, so the terminal closed
+  without a word and nothing was tried next. The agent says so and ends
+  as failed. `openssl base64` is one more decoder tried.
+- **macOS' `/usr/bin/python3` is not run where the Command Line Tools are
+  not installed**: there it is no Python, it only asks to install them, in
+  a window on that Mac, each time weft looked for Python (the agent, and
+  bash's w* commands). "No Python found" says what to do there
+  (`xcode-select --install`, or a Python from python.org or Homebrew).
+
 ## 0.10.8
 
 Fixed

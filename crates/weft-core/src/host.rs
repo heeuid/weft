@@ -61,8 +61,10 @@ pub const AGENT_PY: &str = include_str!("../../../remote/agent.py");
 const SHELL_BOOT: &str = r##"WP=${WEFT_SHELL:-$SHELL}; WS=${WP##*/}; WS=${WS%.exe}; export WEFT=1; case "$WS" in bash|'') if command -v bash >/dev/null 2>&1; then R=$(sect bash); export R D WEFT_CWD; exec bash -c 'exec bash --rcfile <(printf %s "$R") -i'; fi ;; esac; if [ -n "$WEFT_CWD" ]; then C=$(printf %s "$WEFT_CWD" | $D 2>/dev/null) && [ -d "$C" ] && cd "$C"; fi; unset WEFT_CWD; printf '\033]7777;{"t":"shell","name":"%s","pid":%s}\007' "$WS" "$$"; case "$WS" in zsh) WEFT_ZSH=$(sect zsh); export WEFT_ZSH; printf ']7777;{"t":"inject","shell":"zsh"}'; exec "$WP" -l -i ;; fish) WEFT_FISH=$(sect fish); export WEFT_FISH; exec "$WP" -l -C 'eval $WEFT_FISH' ;; nu) exec "$WP" -l -e 'try { $env.config.shell_integration.osc133 = true; $env.config.shell_integration.osc7 = true } catch { $env.config.shell_integration = true }' ;; pwsh|powershell) WEFT_PS=$(sect pwsh); export WEFT_PS; exec "$WP" -NoLogo -NoExit -Command '. ([ScriptBlock]::Create($env:WEFT_PS))' ;; esac; if [ -n "$WP" ]; then exec "$WP" -i; fi; exec sh -i"##;
 
 /// On the command line: find a base64 decoder and gunzip among POSIX tools (or
-/// python), unpack the bundle in $W and run its `boot` section.
-const SHELL_UNPACK: &str = r##"D="base64 -d"; printf QQ== | $D >/dev/null 2>&1 || D="base64 -D"; printf QQ== | $D >/dev/null 2>&1 || D="python3 -m base64 -d"; z() { if command -v gzip >/dev/null 2>&1; then gzip -dc; else python3 -c "import sys,gzip;sys.stdout.buffer.write(gzip.decompress(sys.stdin.buffer.read()))"; fi; }; WB=$(printf %s "$W" | $D | z); sect() { printf %s "$WB" | awk -v s="#@$1" '$0==s{f=1;next} /^#@/{f=0} f'; }; eval "$(sect boot)""##;
+/// python), unpack the bundle in $W and run its `boot` section. Nothing
+/// unpacked (none of the tools there): said, and the user's shell as it is
+/// (it ended at once with code 0, and the terminal closed without a word).
+const SHELL_UNPACK: &str = r##"D="base64 -d"; printf QQ== | $D >/dev/null 2>&1 || D="base64 -D"; printf QQ== | $D >/dev/null 2>&1 || D="openssl base64 -d -A"; printf QQ== | $D >/dev/null 2>&1 || D="python3 -m base64 -d"; z() { if command -v gzip >/dev/null 2>&1; then gzip -dc; else python3 -c "import sys,gzip;sys.stdout.buffer.write(gzip.decompress(sys.stdin.buffer.read()))"; fi; }; WB=$(printf %s "$W" | $D 2>/dev/null | z 2>/dev/null); sect() { printf %s "$WB" | awk -v s="#@$1" '$0==s{f=1;next} /^#@/{f=0} f'; }; BT=$(sect boot 2>/dev/null); if [ -z "$BT" ]; then echo "weft: could not unpack its shell integration on this host (it needs base64 or openssl, gzip and awk, or python3): a plain shell, without it"; exec "${SHELL:-sh}" -i; fi; eval "$BT""##;
 
 /// Windows ConPTY truncates command lines around 8 KB, so the rc travels gzipped.
 fn gz_b64(s: &str) -> String {
@@ -193,8 +195,10 @@ pub const NO_PYTHON: &str = "weft: no Python 3.6 or newer found on this host";
 
 /// sh: $P becomes the first of the list in $PY64 (base64, a line each; a
 /// `*` matches) that runs as Python 3.6+; none: it says what was tried and
-/// what to do, and ends.
-const FIND_PY: &str = r#"PL=$(printf %s "$PY64" | base64 -d 2>/dev/null || printf %s "$PY64" | base64 -D 2>/dev/null); P=$(printf '%s\n' "$PL" | while IFS= read -r e; do IFS='|'; set +f; for c in $e; do if "$c" -c 'import sys; sys.exit(sys.version_info < (3, 6))' >/dev/null 2>&1; then printf %s "$c"; exit 0; fi; done; done); set -f; if [ -z "$P" ]; then T=; for e in $PL; do T="$T $e"; done; echo "weft: no Python 3.6 or newer found on this host: the Files panel, editor and search need one. Check python3 is installed there (command -v python3), or add its name or path in Python on remote hosts (command palette). Tried:$T" >&2; exit 127; fi"#;
+/// what to do, and ends. macOS' /usr/bin/python3 is not run where the
+/// Command Line Tools are not installed (wpy): it is no Python there, only
+/// asks to install them, in a window on that Mac.
+const FIND_PY: &str = r#"PL=$(printf %s "$PY64" | base64 -d 2>/dev/null || printf %s "$PY64" | base64 -D 2>/dev/null || printf %s "$PY64" | openssl base64 -d -A 2>/dev/null); wpy() { [ "$(command -v "$1" 2>/dev/null)" != /usr/bin/python3 ] || [ "$(uname 2>/dev/null)" != Darwin ] || xcode-select -p >/dev/null 2>&1; }; P=$(printf '%s\n' "$PL" | while IFS= read -r e; do IFS='|'; set +f; for c in $e; do if wpy "$c" && "$c" -c 'import sys; sys.exit(sys.version_info < (3, 6))' >/dev/null 2>&1; then printf %s "$c"; exit 0; fi; done; done); set -f; if [ -z "$P" ]; then T=; for e in $PL; do T="$T $e"; done; M=; wpy python3 || M=" On macOS python3 comes with the Command Line Tools (xcode-select --install there), or install Python (python.org, Homebrew)."; echo "weft: no Python 3.6 or newer found on this host: the Files panel, editor and search need one. Check python3 is installed there (command -v python3), or add its name or path in Python on remote hosts (command palette).$M Tried:$T" >&2; exit 127; fi"#;
 
 /// Agent bootstrap: find Python (FIND_PY), read `<len>\n<source>` from stdin
 /// and exec it in memory.
@@ -207,29 +211,36 @@ pub fn b64(s: &str) -> String {
 /// Wrap a POSIX script so the command string contains no `"` or `\`: it
 /// survives any login shell (sh/bash/zsh/fish) and any Windows argv parser
 /// (MSVCRT ssh.exe, msys/cygwin ssh and bash), which re-quote differently.
-fn posix_wrap(vars: &[(&str, String)], script: &str) -> String {
+/// What a terminal does where weft's command cannot even be decoded: says
+/// so and is the user's shell as it is. (No quote or backslash in it: see
+/// posix_wrap.)
+const PLAIN_SHELL: &str = "echo weft: no base64, openssl or python3 on this host to unpack its shell integration: a plain shell, without it; IFS=; exec ${SHELL:-sh} -i";
+/// And the agent, or the serial bridge: says so and ends.
+const NO_DECODER: &str = "echo weft: no base64, openssl or python3 on this host: the Files panel, editor and search do not run there >&2; exit 127";
+
+fn posix_wrap(vars: &[(&str, String)], script: &str, fail: &str) -> String {
     let mut s = String::from("exec sh -c '");
     for (k, v) in vars {
         s.push_str(&format!("{k}={v}; "));
     }
     let b = b64(script);
     s.push_str(&format!(
-        "B={b}; set -f; S=$(printf %s $B | base64 -d 2>/dev/null) || S=$(printf %s $B | base64 -D 2>/dev/null) || S=$(printf %s $B | python3 -m base64 -d); eval $S'"
+        "B={b}; set -f; S=$(printf %s $B | base64 -d 2>/dev/null) || S=$(printf %s $B | base64 -D 2>/dev/null) || S=$(printf %s $B | openssl base64 -d -A 2>/dev/null) || S=$(printf %s $B | python3 -m base64 -d 2>/dev/null) || {{ {fail}; }}; eval $S'"
     ));
     s
 }
 
 pub fn remote_shell_command(cwd: Option<&str>) -> String {
-    posix_wrap(&[("W", gz_b64(&integration_bundle())), ("WEFT_CWD", cwd.map(b64).unwrap_or_default())], SHELL_UNPACK)
+    posix_wrap(&[("W", gz_b64(&integration_bundle())), ("WEFT_CWD", cwd.map(b64).unwrap_or_default())], SHELL_UNPACK, PLAIN_SHELL)
 }
 
 pub fn agent_command() -> String {
-    posix_wrap(&[("PY64", pythons_b64())], &format!("{FIND_PY}; {AGENT_BOOT}"))
+    posix_wrap(&[("PY64", pythons_b64())], &format!("{FIND_PY}; {AGENT_BOOT}"), NO_DECODER)
 }
 
 /// `agent_command` with these Pythons.
 pub fn agent_command_of(list: &[String]) -> String {
-    posix_wrap(&[("PY64", pythons_b64_of(list))], &format!("{FIND_PY}; {AGENT_BOOT}"))
+    posix_wrap(&[("PY64", pythons_b64_of(list))], &format!("{FIND_PY}; {AGENT_BOOT}"), NO_DECODER)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -2594,7 +2605,7 @@ mod loopback {
         std::fs::write(dir.join("opt/py-3.x/bin/py3odd"), format!("#!/bin/sh\nexec '{}' \"$@\"\n", unix(&py))).unwrap();
         let run = |list: &[&str]| -> String {
             let list: Vec<String> = list.iter().map(|s| s.replace("$D", &unix(&dir))).collect();
-            let cmd = posix_wrap(&[("PY64", b64(&list.join("\n")))], &format!("{FIND_PY}; echo found=$P"));
+            let cmd = posix_wrap(&[("PY64", b64(&list.join("\n")))], &format!("{FIND_PY}; echo found=$P"), NO_DECODER);
             let out = Command::new(&b)
                 .args(["-c", &format!("export PATH='{}/bin:/usr/bin:/bin'; eval \"$1\"", unix(&dir)), "x", &cmd])
                 .output()
@@ -2609,6 +2620,79 @@ mod loopback {
         assert!(said[0].starts_with(NO_PYTHON) && said[0].ends_with("Tried: python3 nothere") && said[0].contains("command -v python3") && said[0].contains("Python on remote hosts") && !got.contains("found="), "{got}");
         assert!(!FIND_PY.contains('\n'), "no newline in the script: eval of it unquoted makes it a space");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// macOS' /usr/bin/python3 where the Command Line Tools are not
+    /// installed only asks to install them (a window on that Mac): it is
+    /// not run, and what to do is said. With the tools it is Python.
+    #[test]
+    fn a_macs_python_that_only_asks_to_install_is_not_run() {
+        let (Some(b), Some(py)) = (bash(), which("python")) else { return };
+        let dir = std::env::temp_dir().join(format!("weft-mac-py-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        // As the shell there names it (Git Bash: /c/Users/…).
+        let unix = |p: &std::path::Path| {
+            let s = p.display().to_string().replace('\\', "/");
+            match s.as_bytes() {
+                [d, b':', ..] if cfg!(windows) => format!("/{}{}", (*d as char).to_ascii_lowercase(), &s[2..]),
+                _ => s,
+            }
+        };
+        let stub = format!("{}/bin/python3", unix(&dir));
+        std::fs::write(dir.join("bin/uname"), "#!/bin/sh\necho Darwin\n").unwrap();
+        std::fs::write(dir.join("bin/python3"), format!("#!/bin/sh\necho ran > '{}/ran'\nexec '{}' \"$@\"\n", unix(&dir), py.display().to_string().replace('\\', "/"))).unwrap();
+        let tools = |there: bool| std::fs::write(dir.join("bin/xcode-select"), format!("#!/bin/sh\nexit {}\n", if there { 0 } else { 2 })).unwrap();
+        let run = || -> String {
+            let find = FIND_PY.replace("/usr/bin/python3", &stub);
+            let cmd = posix_wrap(&[("PY64", b64("python3\nnothere"))], &format!("{find}; echo found=$P"), NO_DECODER);
+            let out = Command::new(&b).args(["-c", &format!("export PATH='{}/bin':/usr/bin:/bin; eval \"$1\"", unix(&dir)), "x", &cmd]).output().unwrap();
+            format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))
+        };
+        tools(false);
+        let got = run();
+        assert!(!dir.join("ran").exists(), "not run: {got}");
+        assert!(got.contains(NO_PYTHON) && got.contains("xcode-select --install") && got.contains("Tried: python3 nothere") && !got.contains("found="), "{got}");
+        tools(true);
+        let got = run();
+        assert!(got.contains("found=python3") && dir.join("ran").exists(), "with the tools it is Python: {got}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A host with none of the tools weft's command needs to unpack itself
+    /// (base64 or openssl, gzip, awk; or python3): the terminal says so and
+    /// is the user's shell as it is. (It ended at once with code 0: the
+    /// terminal closed without a word.) The agent says so and ends.
+    #[test]
+    fn a_host_that_cannot_unpack_gets_a_plain_shell() {
+        use std::io::Write;
+        let sh = if cfg!(windows) { PathBuf::from("C:/Program Files/Git/bin/sh.exe") } else { PathBuf::from("/bin/sh") };
+        if !sh.is_file() {
+            return;
+        }
+        let run = |script: &str| -> (String, Option<i32>) {
+            let mut c = Command::new(&sh);
+            c.args(["-c", script]).env("SHELL", "/bin/sh").stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+            let mut child = c.spawn().unwrap();
+            child.stdin.take().unwrap().write_all(b"echo plain-$((40 + 2))\nexit\n").unwrap();
+            let out = child.wait_with_output().unwrap();
+            (format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)), out.status.code())
+        };
+        // What ssh hands the login shell is `exec sh -c '<this>'`.
+        let inner = |cmd: &str| cmd.strip_prefix("exec sh -c '").and_then(|c| c.strip_suffix('\'')).expect("exec sh -c '…'").to_string();
+        // No decoder at all (nothing on the PATH): said, and a shell.
+        let nothing = "PATH=/weft-nothing-here; ";
+        let (got, _) = run(&format!("{nothing}{}", inner(&remote_shell_command(None))));
+        assert!(got.contains("weft: no base64, openssl or python3 on this host") && got.contains("plain-42"), "{got}");
+        // The agent: said, and ended as failed.
+        let (got, code) = run(&format!("{nothing}{}", inner(&agent_command())));
+        assert!(got.contains("weft: no base64, openssl or python3 on this host") && code == Some(127), "{code:?} {got}");
+        // Decoded, but the bundle does not unpack (no gzip or awk there: here
+        // a bundle that is none): said, and a shell.
+        let (got, _) = run(&format!("W=AAAA; {SHELL_UNPACK}"));
+        assert!(got.contains("weft: could not unpack its shell integration") && got.contains("plain-42"), "{got}");
+        // And as ever where they are there.
+        assert!(!PLAIN_SHELL.contains(['"', '\\', '\'']) && !NO_DECODER.contains(['"', '\\', '\'']), "nothing a shell or argv parser re-quotes");
     }
 
     #[test]

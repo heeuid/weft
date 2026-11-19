@@ -35,6 +35,11 @@ shopt -s checkwinsize
 
 __weft_py=
 for __p in python3 python; do
+    # macOS: /usr/bin/python3 without the Command Line Tools is no Python,
+    # it only asks to install them (a window on that Mac): not run.
+    if [ "$(command -v "$__p" 2>/dev/null)" = /usr/bin/python3 ] && [ "$(uname 2>/dev/null)" = Darwin ] && ! xcode-select -p >/dev/null 2>&1; then
+        continue
+    fi
     if command -v "$__p" >/dev/null 2>&1 && "$__p" -c "" >/dev/null 2>&1; then
         __weft_py=$__p; break
     fi
