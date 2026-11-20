@@ -29,7 +29,7 @@ weft가 셸에서 "프롬프트가 어디고, 명령이 언제 시작해서 끝�
 
 | 셸 | 로컬 | 원격 | 통합 방법 | 종료 코드 | cwd | 실제 셸로 테스트 |
 |---|---|---|---|---|---|---|
-| bash | ✓ (macOS·Linux) | ✓ | `--rcfile <(…)` (`shell/bash.sh`) | ✓ | OSC 7 | ✓ (Linux: ssh로도) |
+| bash | ✓ (macOS·Linux) | ✓ | `--rcfile <(…)` (`shell/bash.sh`); bash 3은 here-string(`3<<<`), 4.4 미만은 PS0 대신 DEBUG 트랩 | ✓ | OSC 7 | ✓ (Linux: ssh로도; 3.2·4.2는 CI가 빌드해 확인) |
 | zsh | ✓ (macOS·Linux) | ✓ | `precmd`/`preexec` 훅 (`shell/zsh.zsh`), 아래 "zsh" 참고 | ✓ | OSC 7 | ✓ (Windows의 MSYS 5.9.2; Linux: ssh로도) |
 | fish | ✓ (macOS·Linux) | ✓ | `fish_prompt` 감싸기 + `fish_preexec` (`shell/fish.fish`), `fish -C` | ✓ | OSC 7 | ✓ (MSYS 4.9.3; Linux: ssh로도) |
 | PowerShell 7 / 5.1 | ✓ | ✓ | `prompt` 함수 + PSReadLine Enter (`shell/pwsh.ps1`) | ✓ | OSC 7 | ✓ (로컬·원격 방식 모두) |

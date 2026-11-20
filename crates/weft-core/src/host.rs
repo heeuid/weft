@@ -63,7 +63,7 @@ pub const AGENT_PY: &str = include_str!("../../../remote/agent.py");
 /// the POSIX shells with no hooks (ksh, mksh, dash, ash, sh) through ENV on
 /// a descriptor (shell/sh.sh; the two lines after its `exec` are the here
 /// document). Any other shell starts as is, with no integration.
-const SHELL_BOOT: &str = r##"WW=; if [ -n "$WS64" ]; then WW=$(printf %s "$WS64" | $D 2>/dev/null); fi; if [ -n "$WEFT_SHELL" ]; then WW=$WEFT_SHELL; fi; WP=${WW:-$SHELL}; if [ -n "$WW" ] && ! command -v "$WW" >/dev/null 2>&1; then WP=$SHELL; WU=${WP##*/}; WU=${WU%.exe}; printf '\033]7777;{"t":"shell-missing","wanted":"%s","using":"%s"}\007' "$WW" "${WU:-sh}"; fi; unset WS64 WEFT_SHELL; WS=${WP##*/}; WS=${WS%.exe}; export WEFT=1; case "$WS" in bash|'') if command -v bash >/dev/null 2>&1; then R=$(sect bash); export R D WEFT_CWD; exec bash -c 'exec bash --rcfile <(printf %s "$R") -i'; fi ;; esac; WEFT_AT=; if [ -n "$WEFT_CWD" ]; then C=$(printf %s "$WEFT_CWD" | $D 2>/dev/null) && [ -d "$C" ] && cd "$C" && WEFT_AT=$C; fi; unset WEFT_CWD; printf '\033]7777;{"t":"shell","name":"%s","pid":%s}\007' "$WS" "$$"; case "$WS" in zsh) WEFT_ZSH=$(sect zsh); export WEFT_ZSH; printf '\033]7777;{"t":"inject","shell":"zsh"}\007'; exec "$WP" -l -i ;; fish) WEFT_FISH=$(sect fish); export WEFT_FISH; exec "$WP" -l -C 'eval $WEFT_FISH' ;; nu) exec "$WP" -l -e 'try { $env.config.shell_integration.osc133 = true; $env.config.shell_integration.osc7 = true } catch { $env.config.shell_integration = true }' ;; pwsh|powershell) WEFT_PS=$(sect pwsh); export WEFT_PS; exec "$WP" -NoLogo -NoExit -Command '. ([ScriptBlock]::Create($env:WEFT_PS))' ;; ksh|ksh93|mksh|dash|ash|sh) if [ -e /dev/fd/2 ]; then R=$(sect sh); WEFT_SH=$WS; ENV=/dev/fd/3; export WEFT_SH WEFT_AT ENV; exec "$WP" -i 3<<WEFT_EOF
+const SHELL_BOOT: &str = r##"WW=; if [ -n "$WS64" ]; then WW=$(printf %s "$WS64" | $D 2>/dev/null); fi; if [ -n "$WEFT_SHELL" ]; then WW=$WEFT_SHELL; fi; WP=${WW:-$SHELL}; if [ -n "$WW" ] && ! command -v "$WW" >/dev/null 2>&1; then WP=$SHELL; WU=${WP##*/}; WU=${WU%.exe}; printf '\033]7777;{"t":"shell-missing","wanted":"%s","using":"%s"}\007' "$WW" "${WU:-sh}"; fi; unset WS64 WEFT_SHELL; WS=${WP##*/}; WS=${WS%.exe}; export WEFT=1; case "$WS" in bash|'') WY=bash; [ -n "$WS" ] && WY=$WP; if command -v "$WY" >/dev/null 2>&1; then R=$(sect bash); export R D WEFT_CWD; exec "$WY" -c 'if [ "${BASH_VERSINFO[0]}" -ge 4 ]; then exec "$BASH" --rcfile <(printf %s "$R") -i; fi; WEFT_RC3=1 exec "$BASH" --rcfile /dev/fd/3 -i 3<<<"$R"'; fi ;; esac; WEFT_AT=; if [ -n "$WEFT_CWD" ]; then C=$(printf %s "$WEFT_CWD" | $D 2>/dev/null) && [ -d "$C" ] && cd "$C" && WEFT_AT=$C; fi; unset WEFT_CWD; printf '\033]7777;{"t":"shell","name":"%s","pid":%s}\007' "$WS" "$$"; case "$WS" in zsh) WEFT_ZSH=$(sect zsh); export WEFT_ZSH; printf '\033]7777;{"t":"inject","shell":"zsh"}\007'; exec "$WP" -l -i ;; fish) WEFT_FISH=$(sect fish); export WEFT_FISH; exec "$WP" -l -C 'eval $WEFT_FISH' ;; nu) exec "$WP" -l -e 'try { $env.config.shell_integration.osc133 = true; $env.config.shell_integration.osc7 = true } catch { $env.config.shell_integration = true }' ;; pwsh|powershell) WEFT_PS=$(sect pwsh); export WEFT_PS; exec "$WP" -NoLogo -NoExit -Command '. ([ScriptBlock]::Create($env:WEFT_PS))' ;; ksh|ksh93|mksh|dash|ash|sh) if [ -e /dev/fd/2 ]; then R=$(sect sh); WEFT_SH=$WS; ENV=/dev/fd/3; export WEFT_SH WEFT_AT ENV; exec "$WP" -i 3<<WEFT_EOF
 $R
 WEFT_EOF
 fi ;; esac; if [ -n "$WP" ]; then exec "$WP" -i; fi; exec sh -i"##;
@@ -1696,6 +1696,13 @@ mod tests {
     fn bootstrap_fits_the_command_line() {
         assert!(PLAIN_SHELL.contains(NO_DECODER_SAID) && NO_DECODER.contains(NO_DECODER_SAID), "what the app knows the no-decoder host by");
         assert!(SHELL_UNPACK.starts_with(r#"printf '\033]7777;{"t":"sh"}\007'; "#), "it says it runs before anything else");
+        // The boot section runs in the unpacker's shell: it must not set the
+        // names the unpacker keeps (the bundle in WB once had the bash
+        // integration read back empty).
+        for name in ["W", "WB", "D", "B", "S", "BT", "t", "z", "d", "sect"] {
+            let set = [format!("; {name}="), format!(" {name}=$"), format!("{name}() {{")];
+            assert!(!set.iter().any(|s| SHELL_BOOT.contains(s.as_str())), "the boot section sets {name}, the unpacker's");
+        }
         let n = remote_shell_command(Some("/home/someone/projects/a long directory name")).len();
         println!("remote shell command: {n} bytes");
         assert!(n < 7000, "{n} bytes");
@@ -1967,7 +1974,7 @@ print(json.dumps({{'hits': hits, 'mine': mine, 'sys': s, 'path': g['_path']('/C:
         assert!(mine[5].as_str().unwrap().contains(':'), "time running: {mine}");
         assert_eq!((elapsed(309), elapsed(3723), elapsed(183845)), ("05:09".to_string(), "01:02:03".to_string(), "2-03:04:05".to_string()));
 
-        let mut child = Command::new("python").args(["-c", "import time; time.sleep(120)"]).spawn().expect("python");
+        let mut child = Command::new(crate::pty::tests::python()).args(["-c", "import time; time.sleep(120)"]).spawn().expect("python");
         let k = local_op(&json!({"op": "kill", "pid": child.id(), "sig": "KILL"}));
         assert_eq!(k["ok"], json!(true), "{k}");
         let t = std::time::Instant::now();
@@ -2048,7 +2055,7 @@ out['delete_empty'] = run('delete', path='')
 print(json.dumps(out))
 "#;
         let agent = concat!(env!("CARGO_MANIFEST_DIR"), "/../../remote/agent.py");
-        let out = Command::new("python").args(["-c", script, agent, &dir.display().to_string()]).output().expect("python");
+        let out = Command::new(crate::pty::tests::python()).args(["-c", script, agent, &dir.display().to_string()]).output().expect("python");
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
         let v: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stdout)));
         for done in ["mkdir", "create", "rename", "rename_dir", "delete_file", "delete_dir", "gone"] {
@@ -2139,7 +2146,7 @@ print(json.dumps(out))
         assert_eq!(local, ["README.md", "node_modules/", "src/", "src/main.rs", "src/ui/", "src/ui/view.rs"]);
         // The same op in the agent (its functions, without starting the loop).
         let script = format!("import json,sys\nsrc=open(r'{}/remote/agent.py',encoding='utf-8').read().split('\\ndef main')[0]\nexec(src)\nprint(json.dumps(op_tree({{'path': sys.argv[1]}})))", concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
-        if let Ok(out) = std::process::Command::new("python").arg("-c").arg(&script).arg(&root).output() {
+        if let Ok(out) = std::process::Command::new(crate::pty::tests::python()).arg("-c").arg(&script).arg(&root).output() {
             if out.status.success() {
                 let v: Value = serde_json::from_slice(&out.stdout).unwrap();
                 assert_eq!(names(&v), local, "agent.py op_tree");
@@ -2162,7 +2169,7 @@ print(json.dumps(out))
         assert!(!kept.contains(&"target".to_string()) && kept.contains(&"src".to_string()), "{kept:?}");
         // The agent the same.
         let script = format!("import json,sys\nsrc=open(r'{root}/remote/agent.py',encoding='utf-8').read().split('\\ndef main')[0]\nexec(src)\nprint(json.dumps(sorted(e['n'] for e in op_list({{'path': sys.argv[1], 'ignored': False}})['entries'])))");
-        if let Ok(out) = std::process::Command::new("python").arg("-c").arg(&script).arg(&root).output() {
+        if let Ok(out) = std::process::Command::new(crate::pty::tests::python()).arg("-c").arg(&script).arg(&root).output() {
             if out.status.success() {
                 let mut want = kept.clone();
                 want.retain(|n| !n.starts_with('.'));
@@ -2181,7 +2188,7 @@ print(json.dumps(out))
         for (name, src) in [("agent.py", AGENT_PY), ("serial.py", SERIAL_PY)] {
             assert!(!src.contains("capture_output") && !src.contains("text=True"), "{name}: 3.7+ subprocess arguments");
             let check = "import ast,sys; ast.parse(sys.stdin.buffer.read(), feature_version=(3, 6))";
-            let Ok(mut child) = Command::new("python").args(["-c", check]).stdin(Stdio::piped()).stderr(Stdio::piped()).spawn() else { return };
+            let Ok(mut child) = Command::new(crate::pty::tests::python()).args(["-c", check]).stdin(Stdio::piped()).stderr(Stdio::piped()).spawn() else { return };
             child.stdin.take().unwrap().write_all(src.as_bytes()).unwrap();
             let out = child.wait_with_output().unwrap();
             assert!(out.status.success(), "{name} is not 3.6 grammar: {}", String::from_utf8_lossy(&out.stderr));
@@ -2192,7 +2199,7 @@ print(json.dumps(out))
     fn serial_bridge_and_command() {
         // The bridge compiles (it runs on the remote host only: no termios here).
         let check = format!("compile(open(r'{}/remote/serial.py', encoding='utf-8').read(), 'serial.py', 'exec')", concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
-        if let Ok(out) = std::process::Command::new("python").arg("-c").arg(&check).output() {
+        if let Ok(out) = std::process::Command::new(crate::pty::tests::python()).arg("-c").arg(&check).output() {
             assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
         }
         // The command carries it whole, the port quoted.
@@ -2263,7 +2270,7 @@ print(json.dumps(out))
              print(json.dumps(w))",
             concat!(env!("CARGO_MANIFEST_DIR"), "/../..")
         );
-        if let Ok(out) = std::process::Command::new("python").env("PYTHONIOENCODING", "utf-8").arg("-c").arg(&script).arg(&root).output() {
+        if let Ok(out) = std::process::Command::new(crate::pty::tests::python()).env("PYTHONIOENCODING", "utf-8").arg("-c").arg(&script).arg(&root).output() {
             assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
             let w: Value = serde_json::from_slice(&out.stdout).unwrap();
             assert_eq!(w["items"], walk["items"], "agent.py op_walk");
@@ -2851,7 +2858,7 @@ mod loopback {
     fn the_agent_finds_python_by_the_list() {
         assert!(!agent_command().contains('"') && !agent_command().contains('\\'), "still nothing a shell or argv parser re-quotes");
         assert!(serial_command("/dev/ttyS0", 9600).contains("PY64="), "the serial bridge too");
-        let (Some(b), Some(py)) = (bash(), which("python")) else { return };
+        let (Some(b), Some(py)) = (bash(), which(crate::pty::tests::python())) else { return };
         let dir = std::env::temp_dir().join(format!("weft-find-py-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("bin")).unwrap();
@@ -2886,7 +2893,7 @@ mod loopback {
     /// not run, and what to do is said. With the tools it is Python.
     #[test]
     fn a_macs_python_that_only_asks_to_install_is_not_run() {
-        let (Some(b), Some(py)) = (bash(), which("python")) else { return };
+        let (Some(b), Some(py)) = (bash(), which(crate::pty::tests::python())) else { return };
         let dir = std::env::temp_dir().join(format!("weft-mac-py-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("bin")).unwrap();

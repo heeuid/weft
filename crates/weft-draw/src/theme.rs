@@ -403,7 +403,7 @@ pub fn install_fonts(ctx: &egui::Context, term: &str, icons: &str) -> Vec<String
     let dir = std::env::var("WINDIR").map(|w| format!("{w}\\Fonts")).unwrap_or_else(|_| "C:\\Windows\\Fonts".into());
     let mut load = |key: &str, files: &[&str]| -> Option<String> {
         for f in files {
-            for base in [dir.as_str(), "/usr/share/fonts/truetype", "/System/Library/Fonts"] {
+            for base in [dir.as_str(), "/usr/share/fonts/truetype", "/usr/share/fonts/opentype", "/usr/share/fonts", "/System/Library/Fonts", "/Library/Fonts"] {
                 if let Ok(bytes) = std::fs::read(format!("{base}/{f}")) {
                     fonts.font_data.insert(key.to_string(), Arc::new(FontData::from_owned(bytes)));
                     return Some(key.to_string());
@@ -412,11 +412,25 @@ pub fn install_fonts(ctx: &egui::Context, term: &str, icons: &str) -> Vec<String
         }
         None
     };
-    let ui = load("ui", &["segoeui.ttf", "DejaVuSans.ttf"]);
-    let kr = load("kr", &["malgun.ttf", "NanumGothic.ttf", "AppleSDGothicNeo.ttc"]);
-    let sym = load("sym", &["seguisym.ttf"]);
-    let ui_bold = load("ui_bold", &["segoeuib.ttf", "DejaVuSans-Bold.ttf"]);
-    let kr_bold = load("kr_bold", &["malgunbd.ttf", "NanumGothicBold.ttf"]);
+    // Linux keeps each family in a folder of its own (dejavu/, nanum/,
+    // noto/ on Debian and Ubuntu, google-noto-cjk/ on Fedora).
+    let ui = load("ui", &["segoeui.ttf", "dejavu/DejaVuSans.ttf", "DejaVuSans.ttf"]);
+    let kr_system = load(
+        "kr",
+        &["malgun.ttf", "nanum/NanumGothic.ttf", "NanumGothic.ttf", "noto/NotoSansCJK-Regular.ttc", "google-noto-cjk/NotoSansCJK-Regular.ttc", "AppleSDGothicNeo.ttc"],
+    );
+    // Symbols the fonts above may lack (Braille, arrows, shapes): Segoe UI
+    // Symbol; DejaVu Sans and Apple Symbols have them where it is not.
+    let sym = load("sym", &["seguisym.ttf", "dejavu/DejaVuSans.ttf", "DejaVuSans.ttf", "Apple Symbols.ttf"]);
+    let ui_bold = load("ui_bold", &["segoeuib.ttf", "dejavu/DejaVuSans-Bold.ttf", "DejaVuSans-Bold.ttf"]);
+    let kr_bold = load("kr_bold", &["malgunbd.ttf", "nanum/NanumGothicBold.ttf", "NanumGothicBold.ttf"]);
+    // No Hangul font on the system (a Linux without Korean fonts): the one
+    // built in, D2Coding, has it; else Hangul was drawn as boxes.
+    let kr = kr_system.clone().or_else(|| {
+        let d = font_data(DEFAULT_FONT).ok()?;
+        fonts.font_data.insert("kr_builtin".into(), Arc::new(d));
+        Some("kr_builtin".into())
+    });
 
     let egui_mono = fonts.families.get(&FontFamily::Monospace).cloned().unwrap_or_default();
     let egui_prop = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
@@ -436,7 +450,11 @@ pub fn install_fonts(ctx: &egui::Context, term: &str, icons: &str) -> Vec<String
     let term_chain = chain(Some("mono".into()), &egui_mono);
     fonts.families.insert(FontFamily::Monospace, term_chain.clone());
     fonts.families.insert(FontFamily::Name(TERM_FONT.into()), term_chain);
-    let prop_chain = chain(ui, &egui_prop);
+    // No UI font of the system's, nor a Hangul one: egui's own proportional
+    // one, not the icon font (JetBrains Mono) next in the chain, which drew
+    // the whole UI fixed-width on Linux.
+    let first_prop = ui.or_else(|| if kr_system.is_some() { None } else { egui_prop.first().cloned() });
+    let prop_chain = chain(first_prop, &egui_prop);
     // Bold family for rendered markdown: bold Latin and Hangul faces first,
     // then the regular chain so nothing renders as tofu.
     let mut bold: Vec<String> = ui_bold.into_iter().chain(kr_bold).collect();
@@ -529,6 +547,21 @@ pub fn apply(ctx: &egui::Context, index: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The UI's text is a proportional font on every system: on Linux the
+    /// system's (DejaVu, in a folder of its own) was not found and the icon
+    /// font, fixed-width, drew the whole UI.
+    #[test]
+    fn the_ui_font_is_proportional_everywhere() {
+        let ctx = egui::Context::default();
+        install_fonts(&ctx, DEFAULT_FONT, DEFAULT_ICON_FONT);
+        let mut widths = (0.0, 0.0);
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            let w = |s: &str| ctx.fonts(|f| f.layout_no_wrap(s.into(), FontId::proportional(14.0), Color32::WHITE).size().x);
+            widths = (w("iiiiiiii"), w("MMMMMMMM"));
+        });
+        assert!(widths.0 < widths.1 * 0.6, "i and M as wide: a fixed-width font drew the UI {widths:?}");
+    }
 
     #[test]
     fn tui_symbols_never_show_as_boxes() {

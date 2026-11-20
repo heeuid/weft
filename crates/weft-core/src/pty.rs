@@ -249,12 +249,7 @@ impl Pty {
     /// here: what is typed goes out, what comes in is shown, a lone LF as
     /// CRLF (as picocom's --imap lfcrlf). Unplugged, the pane ends.
     pub fn serial(port: &str, baud: u32, wake: impl Fn() + Send + 'static) -> Result<Pty, String> {
-        let dev = serialport::new(port, baud).timeout(std::time::Duration::from_millis(100)).open().map_err(|e| match e.kind() {
-            serialport::ErrorKind::NoDevice => format!("{port}: no such port"),
-            serialport::ErrorKind::Io(std::io::ErrorKind::PermissionDenied) => format!("{port} is in use by another program (only one can have it open)"),
-            _ if e.to_string().to_lowercase().contains("denied") => format!("{port} is in use by another program (only one can have it open)"),
-            _ => format!("{port}: {e}"),
-        })?;
+        let dev = serialport::new(port, baud).timeout(std::time::Duration::from_millis(100)).open().map_err(|e| serial_open_error(port, &e))?;
         let mut reader = dev.try_clone().map_err(|e| format!("{port}: {e}"))?;
         let (tx, rx) = mpsc::channel();
         let exited = Arc::new(AtomicBool::new(false));
@@ -357,6 +352,21 @@ impl Pty {
     }
 }
 
+/// Why a serial port did not open, in words. A port that is not there is
+/// NoDevice on Windows and a missing file (NotFound) on Linux and macOS.
+/// Refused: on Windows another program has it (one at a time there); on
+/// Linux and macOS the user may not open it (its group, dialout or uucp),
+/// which "in use" sent looking in the wrong place.
+fn serial_open_error(port: &str, e: &serialport::Error) -> String {
+    let denied = matches!(e.kind(), serialport::ErrorKind::Io(std::io::ErrorKind::PermissionDenied)) || e.to_string().to_lowercase().contains("denied");
+    match e.kind() {
+        serialport::ErrorKind::NoDevice | serialport::ErrorKind::Io(std::io::ErrorKind::NotFound) => format!("{port}: no such port"),
+        _ if denied && cfg!(windows) => format!("{port} is in use by another program (only one can have it open)"),
+        _ if denied => format!("{port}: you may not open it: its group (ls -l {port}) is one your user is not in (Linux: sudo usermod -aG dialout $USER, then log in again)"),
+        _ => format!("{port}: {e}"),
+    }
+}
+
 /// Kill a process and all its descendants.  On Windows, msys/cygwin `exec`
 /// is emulated with child processes, so killing only the top process would
 /// leave shells (and inherited pipe handles) behind.
@@ -376,9 +386,19 @@ pub fn kill_tree(pid: u32) -> bool {
             .spawn()
             .is_ok()
     }
+    // The process group the terminal's shell leads (a session of its own),
+    // by the system call. It was `kill -TERM -<pid>`, and procps-ng 4.0.4
+    // (Ubuntu 24.04) reads that as kill(-<first digit>): -500 went to group
+    // 5, and -1036 to -1, every process of the user.
     #[cfg(not(windows))]
     {
-        std::process::Command::new("kill").args(["-TERM", &format!("-{pid}")]).spawn().is_ok()
+        let Ok(group) = i32::try_from(pid) else { return false };
+        // 0 is our own group, 1 init's: never.
+        if group <= 1 {
+            return false;
+        }
+        // SAFETY: kill(2) takes plain integers and touches no memory.
+        unsafe { libc::kill(-group, libc::SIGTERM) == 0 }
     }
 }
 
@@ -461,6 +481,68 @@ pub(crate) mod tests {
     /// too): some here count this process's console hosts.
     pub(crate) static TURN: Mutex<()> = Mutex::new(());
 
+    /// The Python the tests run: "python" on Windows ("python3" there is
+    /// the Store's stand-in, which only prints "Python"); elsewhere
+    /// "python3", which macOS and most Linuxes have (and often no "python").
+    pub(crate) fn python() -> &'static str {
+        if cfg!(windows) { "python" } else { "python3" }
+    }
+
+    /// Ending a terminal ends its process group and nothing else: two
+    /// processes, each leading a group of its own; the one asked for ends,
+    /// the other is untouched (procps-ng 4.0.4's `kill -TERM -<pid>` sent
+    /// the signal to the group named by the pid's first digit, and to every
+    /// process of the user for 1…). Groups 0 and 1 are never signalled.
+    #[test]
+    #[cfg(unix)]
+    fn ending_a_terminal_ends_its_group_only() {
+        use std::os::unix::process::CommandExt;
+        let spawn = || {
+            let mut c = std::process::Command::new("sleep");
+            c.arg("60").process_group(0);
+            // TERM as by default, whatever this process inherited (an
+            // ignored signal stays ignored across exec).
+            // SAFETY: signal(2) is async-signal-safe, fit for after fork.
+            unsafe {
+                c.pre_exec(|| {
+                    libc::signal(libc::SIGTERM, libc::SIG_DFL);
+                    Ok(())
+                });
+            }
+            c.spawn().unwrap()
+        };
+        let (mut a, mut b) = (spawn(), spawn());
+        assert!(kill_tree(a.id()), "the group was signalled");
+        let ended = (0..100).any(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            a.try_wait().unwrap().is_some()
+        });
+        assert!(ended, "the group asked for ended");
+        assert!(b.try_wait().unwrap().is_none(), "another group is untouched");
+        assert!(!kill_tree(0) && !kill_tree(1), "our own group and init's are never signalled");
+        assert!(b.try_wait().unwrap().is_none(), "still untouched");
+        let _ = b.kill();
+        let _ = b.wait();
+    }
+
+    /// Why a serial port did not open, as each system says it: not there
+    /// (Windows' NoDevice, Linux's and macOS' missing file), refused (another
+    /// program on Windows; the user's groups on Linux and macOS).
+    #[test]
+    fn a_serial_port_that_does_not_open_says_why() {
+        use serialport::{Error, ErrorKind};
+        let io = |k| Error::new(ErrorKind::Io(k), "os error");
+        assert_eq!(serial_open_error("COM99", &Error::new(ErrorKind::NoDevice, "x")), "COM99: no such port");
+        assert_eq!(serial_open_error("/dev/ttyUSB9", &io(std::io::ErrorKind::NotFound)), "/dev/ttyUSB9: no such port");
+        let refused = serial_open_error("/dev/ttyUSB0", &io(std::io::ErrorKind::PermissionDenied));
+        if cfg!(windows) {
+            assert!(refused.contains("in use by another program"), "{refused}");
+        } else {
+            assert!(refused.contains("you may not open it") && refused.contains("dialout") && !refused.contains("in use"), "{refused}");
+        }
+        assert_eq!(serial_open_error("COM3", &Error::new(ErrorKind::InvalidInput, "bad baud")), "COM3: bad baud");
+    }
+
     /// The console hosts (Windows: one per pseudo console) that are this
     /// process's children.
     fn console_hosts() -> std::collections::HashSet<u32> {
@@ -497,7 +579,7 @@ pub(crate) mod tests {
     fn a_dropped_terminal_is_closed_before_the_end() {
         let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
         let hosts = console_hosts();
-        let argv: Vec<String> = ["python", "-c", "import time; time.sleep(60)"].iter().map(|s| s.to_string()).collect();
+        let argv: Vec<String> = [python(), "-c", "import time; time.sleep(60)"].iter().map(|s| s.to_string()).collect();
         // Dropped at once, before anything it sent was answered; dropped
         // after a moment; and one that was answered as a terminal does.
         let early: Vec<Pty> = (0..2).map(|_| Pty::spawn(&argv, None, &[], 80, 24, || {}).expect("python")).collect();
@@ -522,14 +604,14 @@ pub(crate) mod tests {
     fn a_process_started_meanwhile_keeps_no_terminal_open() {
         let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
         let hosts = console_hosts();
-        let argv: Vec<String> = ["python", "-c", "import time; time.sleep(60)"].iter().map(|s| s.to_string()).collect();
+        let argv: Vec<String> = [python(), "-c", "import time; time.sleep(60)"].iter().map(|s| s.to_string()).collect();
         let mut panes: Vec<Pty> = (0..2).map(|_| Pty::spawn(&argv, None, &[], 80, 24, || {}).expect("python")).collect();
         thread::sleep(Duration::from_millis(700));
         for p in &mut panes {
             p.write(b"\x1b[1;1R");
         }
         // As restart does: a plain spawn, the new program left running.
-        let mut new_one = std::process::Command::new("python").args(["-c", "import time; time.sleep(30)"]).spawn().expect("python");
+        let mut new_one = std::process::Command::new(python()).args(["-c", "import time; time.sleep(30)"]).spawn().expect("python");
         drop(panes);
         assert_eq!(finish_closing(Duration::from_secs(20)), 0, "every pseudo console was closed");
         no_console_host_is_left(&hosts);
@@ -571,7 +653,7 @@ pub(crate) mod tests {
         assert_eq!(fit_cursor_report(b"plain \x1b[A", 24, 80), b"plain \x1b[A");
         let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
         let hosts = console_hosts();
-        let argv: Vec<String> = ["python", "-c", "import time; time.sleep(60)"].iter().map(|s| s.to_string()).collect();
+        let argv: Vec<String> = [python(), "-c", "import time; time.sleep(60)"].iter().map(|s| s.to_string()).collect();
         let mut pty = Pty::spawn(&argv, None, &[], 80, 24, || {}).expect("python");
         thread::sleep(Duration::from_millis(700));
         // As a terminal whose screen is 43 rows by now, its cursor at the bottom.
@@ -620,7 +702,7 @@ pub(crate) mod tests {
     #[cfg(windows)]
     fn terminals_run_on_windows_own_console_host_by_default() {
         let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
-        let argv: Vec<String> = ["python", "-c", "import time; time.sleep(60)"].iter().map(|s| s.to_string()).collect();
+        let argv: Vec<String> = [python(), "-c", "import time; time.sleep(60)"].iter().map(|s| s.to_string()).collect();
         let before = console_hosts();
         let pty = Pty::spawn(&argv, None, &[], 80, 24, || {}).expect("python");
         assert_eq!(choose_console_host("ignored: it was decided already").what, "Windows' own (conhost.exe)");

@@ -40,9 +40,16 @@ pub struct Harness {
     pub now: f64,
 }
 
+/// The Python the tests run: "python" on Windows ("python3" there is the
+/// Store's stand-in, which only prints "Python"); elsewhere "python3",
+/// which macOS and most Linuxes have (and often no "python").
+pub fn py() -> &'static str {
+    if cfg!(windows) { "python" } else { "python3" }
+}
+
 /// A terminal that just sits there (python), so no real shell is needed.
 pub fn idle_profile(name: &str) -> Value {
-    json!({"name": name, "kind": "custom", "pty": ["python", "-c", "import time; time.sleep(120)"], "agent": ["python", "-c", "0"]})
+    json!({"name": name, "kind": "custom", "pty": [py(), "-c", "import time; time.sleep(120)"], "agent": [py(), "-c", "0"]})
 }
 
 #[allow(dead_code)]

@@ -161,17 +161,20 @@ fn editor_marks_buttons_and_read_mode() {
     assert_eq!(h.app.editor.files[i].text, before, "read mode takes no typing");
 }
 
-/// A serial port that isn't there: the tab says so; the status bar names it.
+/// A serial port that isn't there: the tab says so, in weft's words on
+/// every system (on Linux and macOS it was the OS's "No such file or
+/// directory"); the status bar names it.
 #[test]
 fn serial_tab_explains_a_missing_port() {
+    let port = if cfg!(windows) { "COM99" } else { "/dev/ttyWEFT99" };
     let mut h = Harness::new(json!({}));
-    h.app.open_serial("local", "COM99", 115_200);
+    h.app.open_serial("local", port, 115_200);
     h.frames(3);
     let id = h.app.active_pane_id().unwrap();
     let err = h.app.panes[&id].spawn_error.clone().unwrap_or_default();
-    assert!(err.contains("COM99") && (err.contains("no such port") || err.contains("in use")), "{err}");
-    assert!(h.shows("serial COM99"), "the status bar");
-    assert!(h.app.settings.profiles.iter().any(|p| p.name == "COM99"), "kept as a host, for the session");
+    assert_eq!(err, format!("{port}: no such port"));
+    assert!(h.shows(&format!("serial {port}")), "the status bar");
+    assert!(h.app.settings.profiles.iter().any(|p| p.name == port), "kept as a host, for the session");
 }
 
 /// An image in a tab behind another gives its texture back.
@@ -948,7 +951,7 @@ time.sleep(600)
 "#,
     )
     .unwrap();
-    let prof = json!({"name": "t", "kind": "custom", "pty": ["python", "-u", script.display().to_string()], "agent": ["python", "-c", "0"]});
+    let prof = json!({"name": "t", "kind": "custom", "pty": [crate::testkit::py(), "-u", script.display().to_string()], "agent": [crate::testkit::py(), "-c", "0"]});
     let mut h = Harness::new(json!({"profiles": [prof], "term_font": font, "icon_font": "builtin:d2coding"}));
     // (Letter by letter in a font that isn't fixed-width: joined up.)
     assert!(h.wait_for(30.0, |h| h.texts.iter().map(|t| t.0.as_str()).collect::<String>().contains("done")), "the program's output is on screen ({font})");
@@ -1193,7 +1196,7 @@ fn script_harness(body: &str, more: serde_json::Value) -> (Harness, std::path::P
     let tail = format!("print('ready-marker', flush=True)\nout = open(r'{}', 'a', encoding='utf-8')\nwhile True:\n    line = sys.stdin.readline()\n    if not line:\n        break\n    out.write(line)\n    out.flush()\n    after(line)\n", received.display());
     let after = if body.contains("def after(") { "" } else { "def after(line):\n    pass\n" };
     std::fs::write(&script, format!("{head}{after}{body}\n{tail}")).unwrap();
-    let prof = json!({"name": "t", "kind": "custom", "pty": ["python", "-u", script.display().to_string()], "agent": ["python", "-c", "0"]});
+    let prof = json!({"name": "t", "kind": "custom", "pty": [crate::testkit::py(), "-u", script.display().to_string()], "agent": [crate::testkit::py(), "-c", "0"]});
     let mut settings = json!({"profiles": [prof]});
     for (k, v) in more.as_object().unwrap() {
         settings[k] = v.clone();
@@ -2562,7 +2565,7 @@ fn cwd_profile(name: &str, dir: Option<&str>) -> serde_json::Value {
         Some(d) => format!("import sys, time; sys.stdout.write(chr(27) + ']7;file://h{d}' + chr(7) + 'in {d}'); sys.stdout.flush(); time.sleep(120)"),
         None => "import time; print('nowhere', flush=True); time.sleep(120)".to_string(),
     };
-    json!({"name": name, "kind": "custom", "pty": ["python", "-u", "-c", say], "agent": ["python", "-c", "0"]})
+    json!({"name": name, "kind": "custom", "pty": [crate::testkit::py(), "-u", "-c", say], "agent": [crate::testkit::py(), "-c", "0"]})
 }
 
 /// Files follows the terminal: the folder of the tab or pane that has the
@@ -3267,7 +3270,7 @@ fn a_password_given_once_serves_the_waiting_terminals() {
     // A stand-in ssh: with weft's ticket (a password given) it is in;
     // without, it asks as ssh does and waits.
     let script = "import os,sys,time\nif os.environ.get('WEFT_ASKPASS_TICKET'):\n    sys.stdout.write('logged-in\\r\\n')\nelse:\n    sys.stdout.write(\"u@h's password: \")\nsys.stdout.flush()\ntime.sleep(60)\n";
-    let prof = json!({"name": "pw", "kind": "custom", "pty": ["python", "-u", "-c", script], "agent": ["python", "-c", "0"]});
+    let prof = json!({"name": "pw", "kind": "custom", "pty": [crate::testkit::py(), "-u", "-c", script], "agent": [crate::testkit::py(), "-c", "0"]});
     let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}, prof]}));
     let ids: Vec<usize> = (0..3).map(|_| h.app.spawn_pane("pw", None)).collect();
     h.app.new_tab("local", None);
@@ -3396,7 +3399,8 @@ fn the_graphics_backend_is_chosen_and_kept() {
     h.frames(2);
     assert!(h.shows("Graphics backend") && h.shows("Now: wgpu Dx12: Some GPU"), "the window, and what draws now");
     assert!(h.shows("auto: the steadiest here"));
-    h.click(h.at("OpenGL"));
+    // The button itself (on Linux auto's label says OpenGL too).
+    h.click(h.at_exact("OpenGL"));
     h.frames(1);
     h.click(h.at("Save"));
     h.frames(2);
@@ -3429,12 +3433,10 @@ fn the_graphics_backend_is_chosen_and_kept() {
 /// it is taken, and while it moves every frame: every line whole, from the
 /// text area's top down.
 #[test]
-#[cfg(windows)]
 fn a_terminals_first_line_is_in_sight() {
-    let Some(_) = crate::host::which("python.exe").filter(|p| !p.display().to_string().contains("WindowsApps")) else { return };
     // (It says weft's command ran there first: no other shell is tried.)
     let said = "import sys\nsys.stdout.write('\\x1b]7777;{\"t\":\"sh\"}\\x07')\nsys.stdout.write(\"'exec' is not recognized as an internal or external command,\\r\\noperable program or batch file.\\r\\nConnection to 10.0.0.1 closed.\\r\\n\")\nsys.stdout.flush()\n";
-    let srv = json!({"name": "srv", "kind": "custom", "pty": ["python", "-u", "-c", said], "agent": ["python", "-c", "0"]});
+    let srv = json!({"name": "srv", "kind": "custom", "pty": [crate::testkit::py(), "-u", "-c", said], "agent": [crate::testkit::py(), "-c", "0"]});
     let lines = ["'exec' is not recognized", "operable program", "Connection to 10.0.0.1 closed."];
     let in_sight = |h: &Harness, pane: usize, when: &str| {
         let top = h.app.panes[&pane].text_top;
@@ -3473,9 +3475,7 @@ fn a_terminals_first_line_is_in_sight() {
 /// each pane), in focus mode, with the font a size larger and smaller, and
 /// after each change has been taken.
 #[test]
-#[cfg(windows)]
 fn the_first_line_shows_in_every_layout() {
-    let Some(_) = crate::host::which("python.exe").filter(|p| !p.display().to_string().contains("WindowsApps")) else { return };
     const FIRST: &str = "FIRST-LINE-OF-IT";
     let script = |stay: bool| {
         format!(
@@ -3484,7 +3484,7 @@ fn the_first_line_shows_in_every_layout() {
             if stay { "time.sleep(600)\n" } else { "" }
         )
     };
-    let host = |name: &str, stay: bool| json!({"name": name, "kind": "custom", "pty": ["python", "-u", "-c", script(stay)], "agent": ["python", "-c", "0"]});
+    let host = |name: &str, stay: bool| json!({"name": name, "kind": "custom", "pty": [crate::testkit::py(), "-u", "-c", script(stay)], "agent": [crate::testkit::py(), "-c", "0"]});
     // Each pane's first row holds the first line, whole.
     // Looked at just after the change (its size not taken yet) and once it
     // has been taken.
@@ -3551,8 +3551,8 @@ fn the_first_line_shows_in_every_layout() {
 fn a_windows_hosts_refusal_ended_with_0_still_moves_on() {
     let Some(_) = crate::host::which("python.exe").filter(|p| !p.display().to_string().contains("WindowsApps")) else { return };
     let conpty = "import sys, subprocess, time\nc = sys.argv[1] if len(sys.argv) > 1 else ''\nif c.startswith('exec '):\n    sys.stdout.write(\"'exec' is not recognized as an internal or external command,\\r\\noperable program or batch file.\\r\\n\")\n    sys.stdout.flush()\n    time.sleep(0.5)\n    sys.exit(0)\nsys.exit(subprocess.run(['cmd', '/c', c]).returncode)\n";
-    let host = json!({"name": "conwin", "kind": "custom", "pty": ["python", "-u", "-c", conpty], "agent": ["cmd", "/c"]});
-    let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}, host], "remote_python": ["python"], "sidebar": true, "follow_cwd": false}));
+    let host = json!({"name": "conwin", "kind": "custom", "pty": [crate::testkit::py(), "-u", "-c", conpty], "agent": ["cmd", "/c"]});
+    let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}, host], "remote_python": [crate::testkit::py()], "sidebar": true, "follow_cwd": false}));
     h.app.new_tab("conwin", None);
     let pane = h.app.active_pane_id().unwrap();
     assert!(
@@ -3579,13 +3579,13 @@ fn a_windows_host_gets_powershell_and_the_agent() {
     // Neither POSIX nor Windows: fails any command, a prompt without one.
     let odd = "import sys\nif len(sys.argv) > 1:\n    sys.stdout.write('unknown command\\r\\n')\n    sys.stdout.flush()\n    sys.exit(1)\nsys.stdout.write('odd> ')\nsys.stdout.flush()\nimport time\ntime.sleep(60)\n";
     let unreachable = "import sys\nsys.stdout.write('ssh: connect to host 10.0.0.9 port 22: Connection refused\\r\\n')\nsys.stdout.flush()\nsys.exit(255)\n";
-    let py = |name: &str, script: &str| json!({"name": name, "kind": "custom", "pty": ["python", "-u", "-c", script], "agent": ["python", "-c", "0"]});
+    let py = |name: &str, script: &str| json!({"name": name, "kind": "custom", "pty": [crate::testkit::py(), "-u", "-c", script], "agent": [crate::testkit::py(), "-c", "0"]});
     let win = json!({"name": "win", "kind": "custom", "pty": ["cmd", "/c"], "agent": ["cmd", "/c"]});
     // Kept as Windows, POSIX now (Git Bash, no PowerShell on its PATH).
     let bash = "C:/Program Files/Git/bin/bash.exe";
     let sh = json!([bash, "-c", "export PATH=/usr/bin:/bin; eval \"$1\"", "x"]);
     let was_win = json!({"name": "waswin", "kind": "custom", "pty": sh, "agent": sh, "shell": "windows"});
-    let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}, win, py("odd", odd), py("down", unreachable), was_win], "remote_python": ["python"], "sidebar": true, "follow_cwd": false}));
+    let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}, win, py("odd", odd), py("down", unreachable), was_win], "remote_python": [crate::testkit::py()], "sidebar": true, "follow_cwd": false}));
     let shows = |h: &Harness, id: usize, what: &str| h.app.panes.get(&id).is_some_and(|p| {
         let t = &p.term;
         t.lines_text(t.first_line(), t.end_line() + 1).contains(what)
@@ -3614,7 +3614,7 @@ fn a_windows_host_gets_powershell_and_the_agent() {
     assert!(h.wait_for(90.0, |h| matches!(status(h, "win"), Some(crate::host::ConnStatus::Failed(e)) if e.starts_with(crate::host::NO_PYTHON) && e.contains("where python") && e.contains("Tried: no-such-python"))), "{:?}", status(&h, "win"));
     h.frames(2);
     assert!(h.shows("python…"), "the list's button");
-    h.app.set_remote_python(vec!["python".into()]);
+    h.app.set_remote_python(vec![crate::testkit::py().into()]);
     // After a restart: PowerShell at once (weft's POSIX command not tried).
     h.restart();
     let again = h.app.panes.iter().find(|(_, p)| p.host == "win").map(|(id, _)| *id).expect("the session's tab");
@@ -3676,7 +3676,7 @@ fn shells_say_what_weft_has_for_them_and_can_be_chosen() {
     if !std::path::Path::new(bash).is_file() {
         return;
     }
-    let lo = json!({"name": "lo", "kind": "custom", "pty": [bash, "-c"], "agent": ["python", "-c", "0"]});
+    let lo = json!({"name": "lo", "kind": "custom", "pty": [bash, "-c"], "agent": [crate::testkit::py(), "-c", "0"]});
     let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}, lo], "remote_shells": {"lo": "dash"}}));
     let log = |h: &Harness| std::fs::read_dir(h.app.data.path("logs")).unwrap().filter_map(|e| std::fs::read_to_string(e.ok()?.path()).ok()).collect::<String>();
     let shows = |h: &Harness, id: usize, what: &str| h.app.panes.get(&id).is_some_and(|p| {

@@ -1713,7 +1713,9 @@ impl App {
             }
         });
         let all = self.records.take().unwrap_or_default();
-        ui.horizontal(|ui| {
+        // Wrapped: in a narrow panel (or a wider font, Linux's) Records… was
+        // cut off at the panel's edge, out of reach.
+        ui.horizontal_wrapped(|ui| {
             ui.checkbox(&mut self.records_in_output, RichText::new("in output too").size(12.0)).on_hover_text("also find the text in what the commands printed");
             let mut hosts: Vec<&str> = all.iter().map(|r| r.host.as_str()).collect();
             hosts.sort();
@@ -3602,10 +3604,18 @@ impl App {
                 nav = 1;
             }
             // In a narrow editor the bar ran on past the edge, and its ×
-            // with it: the field gives way first (the rest needs about 300),
-            // and what still has no room goes on the next line.
+            // with it: the field gives way first, to what the rest took in
+            // the last frame (measured: a wider font, Linux's DejaVu, or a
+            // long error took more than the 300 once set aside, and the ×
+            // went to the next line), and what still has no room goes on
+            // the next line.
+            let rest_id = Id::new("editor-find-rest");
+            let rest_was = ui.data(|d| d.get_temp::<f32>(rest_id)).unwrap_or(300.0);
             ui.horizontal_wrapped(|ui| {
-                let q = ui.add(TextEdit::singleline(&mut bar.query).id(Id::new("editor-find-q")).hint_text("find…").desired_width((ui.available_width() - 300.0).clamp(100.0, 220.0)));
+                let gap = ui.spacing().item_spacing.x;
+                let mut rest = 0.0;
+                let mut took = |r: &egui::Response| rest += r.rect.width() + gap;
+                let q = ui.add(TextEdit::singleline(&mut bar.query).id(Id::new("editor-find-q")).hint_text("find…").desired_width((ui.available_width() - rest_was).clamp(60.0, 220.0)));
                 if bar.focus {
                     q.request_focus();
                     bar.focus = false;
@@ -3622,37 +3632,54 @@ impl App {
                 if (q.has_focus() || q.lost_focus()) && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
                     close = true;
                 }
-                if ui.selectable_label(bar.case, RichText::new("Aa").size(12.0)).on_hover_text("match case").clicked() {
+                let r = ui.selectable_label(bar.case, RichText::new("Aa").size(12.0)).on_hover_text("match case");
+                took(&r);
+                if r.clicked() {
                     bar.case = !bar.case;
                     nav = 2;
                 }
                 let before = bar.mode;
-                egui::ComboBox::from_id_salt("editor-find-mode").width(62.0).selected_text(RichText::new(bar.mode.label()).size(12.0)).show_ui(ui, |ui| {
+                let r = egui::ComboBox::from_id_salt("editor-find-mode").width(62.0).selected_text(RichText::new(bar.mode.label()).size(12.0)).show_ui(ui, |ui| {
                     for m in editfind::MatchMode::ALL {
                         ui.selectable_value(&mut bar.mode, m, m.label()).on_hover_text(m.hint());
                     }
                 });
+                took(&r.response);
                 if bar.mode != before {
                     nav = 2;
                 }
-                match &ms {
+                let r = match &ms {
                     Ok(_) if count > 0 => ui.label(RichText::new(format!("{}/{count}", bar.cur + 1)).size(11.5).color(theme::text_dim())),
                     Ok(_) if !bar.query.is_empty() => ui.label(RichText::new("no match").size(11.5).color(theme::warn())),
                     Ok(_) => ui.label(""),
                     Err(e) => ui.label(RichText::new(e).size(11.5).color(theme::error())),
                 };
-                if ui.add_enabled(count > 0, egui::Button::new("↑").small()).on_hover_text("previous (Shift+Enter, Shift+F3)").clicked() {
+                took(&r);
+                let r = ui.add_enabled(count > 0, egui::Button::new("↑").small()).on_hover_text("previous (Shift+Enter, Shift+F3)");
+                took(&r);
+                if r.clicked() {
                     nav = -1;
                 }
-                if ui.add_enabled(count > 0, egui::Button::new("↓").small()).on_hover_text("next (Enter, F3)").clicked() {
+                let r = ui.add_enabled(count > 0, egui::Button::new("↓").small()).on_hover_text("next (Enter, F3)");
+                took(&r);
+                if r.clicked() {
                     nav = 1;
                 }
-                if ui.selectable_label(bar.replacing, RichText::new("replace").size(12.0)).on_hover_text("Ctrl+H").clicked() {
+                let r = ui.selectable_label(bar.replacing, RichText::new("replace").size(12.0)).on_hover_text("Ctrl+H");
+                took(&r);
+                if r.clicked() {
                     bar.replacing = !bar.replacing;
                 }
-                if icons::button(ui, Icon::Cross, "close (Esc)").clicked() {
+                let r = icons::button(ui, Icon::Cross, "close (Esc)");
+                took(&r);
+                if r.clicked() {
                     close = true;
                 }
+                // Measured with room to spare; the × on another line than the
+                // field all the same: more room asked of the field next time.
+                let wrapped = r.rect.top() > q.rect.bottom();
+                let room = if wrapped { rest_was.max(rest) + 4.0 * gap } else { rest + 2.0 * gap };
+                ui.data_mut(|d| d.insert_temp(rest_id, room));
             });
             if bar.replacing {
                 ui.horizontal_wrapped(|ui| {

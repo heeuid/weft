@@ -74,7 +74,7 @@ impl Textures {
                 ((clip_rect.max.x * pixels_per_point).round().max(0.0) as usize).min(width),
                 ((clip_rect.max.y * pixels_per_point).round().max(0.0) as usize).min(height),
             ];
-            for tri in mesh.indices.chunks_exact(3) {
+            for tri in mesh.indices.as_chunks::<3>().0 {
                 let mut v = [0, 1, 2].map(|i| &mesh.vertices[tri[i] as usize]);
                 let at = |v: &egui::epaint::Vertex| (v.pos.x * pixels_per_point, v.pos.y * pixels_per_point);
                 // How far `q` is to one side of the edge from `a` to `b`.

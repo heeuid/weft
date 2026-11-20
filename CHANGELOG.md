@@ -5,6 +5,40 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.11.2
+
+Fixed
+- **Linux: closing a terminal could end every program of the user.** weft
+  ended a terminal's processes with `kill -TERM -<pid>`, and procps-ng 4.0.4
+  (Ubuntu 24.04) reads that as the pid's first digit: -500 went to process
+  group 5, and a pid starting with 1 to all of the user's processes
+  (browser, editor, the desktop session). It is a system call now, to the
+  terminal's own group only. Windows (taskkill) was not affected.
+- **macOS' bash (3.2), and bash up to 4.3 (CentOS 7's 4.2):** commands ran
+  without their start being told, so a command's text and its output were
+  one, and its exit code was missing; on 3.2 the integration did not load
+  at all (it cannot read its startup file from a pipe). The bash that
+  starts is now the login shell's own, not the first on PATH (a Homebrew
+  bash 5 gave way to /bin/bash 3.2 over ssh).
+- **Linux drew weft's whole UI in a fixed-width font** (the icon font): the
+  UI font (DejaVu Sans) and Korean fonts (Nanum, Noto Sans CJK) were looked
+  for one folder too high. Without a Korean font on the system Hangul was
+  drawn as boxes; the built-in D2Coding has it now. Braille and other
+  symbols come from DejaVu Sans on Linux and Apple Symbols on macOS.
+- **The editor's find bar** sized its field for Windows' font: with a wider
+  one (or a long error in it) the bar's × went to a second line. The field
+  now gives way to what the rest of the bar takes.
+- **History's Records… button** was cut off at the edge of a narrow side
+  panel; the row goes on to a second line.
+- **A serial port that does not open** said "No such file or directory" on
+  Linux and macOS, and "in use by another program" where the user is not
+  in the port's group; weft says which (and how to join it on Linux).
+
+CI runs on the Rust it is checked with here (1.96.0; a newer one is tried
+apart, not failing the run), builds bash 3.2 and 4.2 for the ssh test, and
+its Windows job makes its key without a passphrase (PowerShell 7 passed
+`'""'` as two quote marks).
+
 ## 0.11.1
 
 Fixed

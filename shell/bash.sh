@@ -8,6 +8,10 @@
 __weft_dec=$D
 __weft_cwd=$WEFT_CWD
 unset W D R WEFT_CWD
+# bash 3 had this file on descriptor 3 (it cannot read an rcfile from a
+# pipe): read now, closed.
+if [ -n "$WEFT_RC3" ]; then exec 3<&-; fi
+unset WEFT_RC3
 
 # --rcfile replaces the normal startup files: read a login shell's, as bash
 # does (INVOCATION in its manual), so it is as a plain ssh login: the
@@ -71,9 +75,9 @@ __weft_abs() {
 
 __weft_precmd() {
     local ec=$?
+    __weft_armed=
     __weft_osc "133;D;$ec"
     __weft_osc "7;file://${HOSTNAME}${PWD}"
-    __weft_in_cmd=
     return $ec
 }
 
@@ -82,6 +86,8 @@ __weft_ps1() {
         *'133;A'*) ;;
         *) PS1='\[\033]133;A\007\]'"$PS1"'\[\033]133;B\007\]' ;;
     esac
+    # The prompt is next: the first command after it is the user's.
+    __weft_armed=1
 }
 
 PROMPT_COMMAND="__weft_precmd${PROMPT_COMMAND:+;$PROMPT_COMMAND};__weft_ps1"
@@ -89,12 +95,16 @@ PROMPT_COMMAND="__weft_precmd${PROMPT_COMMAND:+;$PROMPT_COMMAND};__weft_ps1"
 if [ "${BASH_VERSINFO[0]}" -gt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -ge 4 ]; }; then
     PS0='\033]133;C\007'
 else
-    # bash < 4.4 (macOS /bin/bash) has no PS0: use the DEBUG trap once per command.
+    # bash < 4.4 (macOS /bin/bash) has no PS0: the DEBUG trap, which runs
+    # before every simple command, the prompt's own (PROMPT_COMMAND) too.
+    # Only the first one after the prompt is shown is the user's (its
+    # function sets __weft_armed last); it said 133;C at the prompt's own
+    # before, and not at the user's command.
     __weft_preexec() {
         [ -n "$COMP_LINE" ] && return
-        [ -n "$__weft_in_cmd" ] && return
+        [ -z "$__weft_armed" ] && return
         case "$BASH_COMMAND" in __weft_precmd*) return ;; esac
-        __weft_in_cmd=1
+        __weft_armed=
         __weft_osc "133;C"
     }
     trap '__weft_preexec' DEBUG
