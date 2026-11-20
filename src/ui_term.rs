@@ -999,7 +999,20 @@ impl App {
                 (Vec::new(), 0, w)
             } else {
                 let all = visual_rows(t);
-                let n = all.len();
+                // A size not taken yet (it is once it has held a moment)
+                // with fewer rows than the terminal has: shown as the
+                // terminal will be, its blank rows below the cursor left
+                // out first. Fitted from its bottom, the first rows went out
+                // of sight, and stayed so where the height moved every frame
+                // (issue #4).
+                let spare = if t.rows > rows {
+                    let cursor = t.cursor_abs();
+                    let blank_below = all.iter().rev().take_while(|v| v.abs(t).is_some_and(|a| a > cursor && t.line(a).is_some_and(|r| r.is_blank()))).count();
+                    blank_below.min(t.rows - rows)
+                } else {
+                    0
+                };
+                let n = all.len() - spare;
                 let p = self.panes.get_mut(&id).unwrap();
                 p.scroll = p.scroll.min(n.saturating_sub(rows));
                 // Copy mode: scroll so its cursor stays on screen.

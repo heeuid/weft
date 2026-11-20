@@ -72,7 +72,7 @@ fi ;; esac; if [ -n "$WP" ]; then exec "$WP" -i; fi; exec sh -i"##;
 /// python), unpack the bundle in $W and run its `boot` section. Nothing
 /// unpacked (none of the tools there): said, and the user's shell as it is
 /// (it ended at once with code 0, and the terminal closed without a word).
-const SHELL_UNPACK: &str = r##"t() { printf QQ== | $D >/dev/null 2>&1; }; D="base64 -d"; t || D="base64 -D"; t || D="openssl base64 -d -A"; t || D="python3 -m base64 -d"; z() { if command -v gzip >/dev/null 2>&1; then gzip -dc; else python3 -c "import sys,gzip;sys.stdout.buffer.write(gzip.decompress(sys.stdin.buffer.read()))"; fi; }; WB=$(printf %s "$W" | $D 2>/dev/null | z 2>/dev/null); sect() { printf %s "$WB" | awk -v s="#@$1" '$0==s{f=1;next} /^#@/{f=0} f'; }; BT=$(sect boot 2>/dev/null); if [ -z "$BT" ]; then echo "weft: cannot unpack its shell integration here: a plain shell, without it"; exec "${SHELL:-sh}" -i; fi; eval "$BT""##;
+const SHELL_UNPACK: &str = r##"printf '\033]7777;{"t":"sh"}\007'; t() { printf QQ== | $D >/dev/null 2>&1; }; D="base64 -d"; t || D="base64 -D"; t || D="openssl base64 -d -A"; t || D="python3 -m base64 -d"; z() { if command -v gzip >/dev/null 2>&1; then gzip -dc; else python3 -c "import sys,gzip;sys.stdout.buffer.write(gzip.decompress(sys.stdin.buffer.read()))"; fi; }; WB=$(printf %s "$W" | $D 2>/dev/null | z 2>/dev/null); sect() { printf %s "$WB" | awk -v s="#@$1" '$0==s{f=1;next} /^#@/{f=0} f'; }; BT=$(sect boot 2>/dev/null); if [ -z "$BT" ]; then echo "weft: cannot unpack its shell integration here: a plain shell, without it"; exec "${SHELL:-sh}" -i; fi; eval "$BT""##;
 
 /// Windows ConPTY truncates command lines around 8 KB, so the rc travels gzipped.
 fn gz_b64(s: &str) -> String {
@@ -222,6 +222,10 @@ pub fn b64(s: &str) -> String {
 /// What a terminal does where weft's command cannot even be decoded: says
 /// so and is the user's shell as it is. (No quote or backslash in it: see
 /// posix_wrap.)
+/// How a host with none of the decoders starts weft's command: it ran
+/// there (a POSIX sh), it could not unpack (the app does not try another
+/// shell for it).
+pub const NO_DECODER_SAID: &str = "weft: no base64, openssl or python3 here";
 const PLAIN_SHELL: &str = "echo weft: no base64, openssl or python3 here: a plain shell, without its integration; IFS=; exec ${SHELL:-sh} -i";
 /// And the agent, or the serial bridge: says so and ends.
 const NO_DECODER: &str = "echo weft: no base64, openssl or python3 here: the Files panel, editor and search do not run >&2; exit 127";
@@ -1690,6 +1694,8 @@ mod tests {
     /// carries the target and options.
     #[test]
     fn bootstrap_fits_the_command_line() {
+        assert!(PLAIN_SHELL.contains(NO_DECODER_SAID) && NO_DECODER.contains(NO_DECODER_SAID), "what the app knows the no-decoder host by");
+        assert!(SHELL_UNPACK.starts_with(r#"printf '\033]7777;{"t":"sh"}\007'; "#), "it says it runs before anything else");
         let n = remote_shell_command(Some("/home/someone/projects/a long directory name")).len();
         println!("remote shell command: {n} bytes");
         assert!(n < 7000, "{n} bytes");

@@ -3418,6 +3418,152 @@ fn the_graphics_backend_is_chosen_and_kept() {
     assert_eq!(crate::renderer_setting(&saved).as_deref(), Some(""));
 }
 
+/// A terminal's first lines stay in sight (issue #4, macOS: the first
+/// line hidden under the tab bar). A new size is taken once it has held
+/// for a moment; until then the text was fitted from its bottom, so a
+/// terminal taller than the pane showed its last rows (blank ones below
+/// the cursor) and not its first, and a height that moved every frame (a
+/// Mac's layout by half pixels) kept it so. As on the report, a remote
+/// shell's two lines and ssh's "Connection to … closed.", then the end; at
+/// scale 1 and 2 and heights a pixel apart, just after each change, after
+/// it is taken, and while it moves every frame: every line whole, from the
+/// text area's top down.
+#[test]
+#[cfg(windows)]
+fn a_terminals_first_line_is_in_sight() {
+    let Some(_) = crate::host::which("python.exe").filter(|p| !p.display().to_string().contains("WindowsApps")) else { return };
+    // (It says weft's command ran there first: no other shell is tried.)
+    let said = "import sys\nsys.stdout.write('\\x1b]7777;{\"t\":\"sh\"}\\x07')\nsys.stdout.write(\"'exec' is not recognized as an internal or external command,\\r\\noperable program or batch file.\\r\\nConnection to 10.0.0.1 closed.\\r\\n\")\nsys.stdout.flush()\n";
+    let srv = json!({"name": "srv", "kind": "custom", "pty": ["python", "-u", "-c", said], "agent": ["python", "-c", "0"]});
+    let lines = ["'exec' is not recognized", "operable program", "Connection to 10.0.0.1 closed."];
+    let in_sight = |h: &Harness, pane: usize, when: &str| {
+        let top = h.app.panes[&pane].text_top;
+        for line in lines {
+            let r = h.find(line).unwrap_or_else(|| panic!("{when}: {line:?} not drawn: {}", h.save_shot("first-line").display()));
+            assert!(r.top() >= top - 0.5, "{when}: {line:?} at {} above the text's top {top}", r.top());
+        }
+    };
+    for scale in [1.0_f32, 2.0] {
+        let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}, srv.clone()], "sidebar": true, "follow_cwd": false}));
+        h.ctx.set_pixels_per_point(scale);
+        h.app.new_tab("srv", None);
+        let pane = h.app.active_pane_id().unwrap();
+        assert!(h.wait_for(30.0, |h| h.app.panes[&pane].exited && h.shows("Connection to 10.0.0.1 closed.")), "ended");
+        for height in (560..580).rev() {
+            h.size = egui::vec2(1200.0, height as f32);
+            h.frames(2);
+            in_sight(&h, pane, &format!("scale {scale}, height {height}, just changed"));
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            h.frames(2);
+            in_sight(&h, pane, &format!("scale {scale}, height {height}, taken"));
+        }
+        // Back and forth by a row's height, every frame: never taken.
+        for i in 0..20 {
+            h.size = egui::vec2(1200.0, if i % 2 == 0 { 700.0 } else { 520.0 });
+            h.frames(1);
+            in_sight(&h, pane, &format!("scale {scale}, moving ({i})"));
+        }
+    }
+}
+
+/// The first line, whatever the layout: a terminal whose text fits shows
+/// its first line whole as the first row of its text area, in every pane.
+/// A shell still at its prompt and one that has ended; at scale 1, 1.5 and
+/// 2; with the side panel and without, split right and down (a header over
+/// each pane), in focus mode, with the font a size larger and smaller, and
+/// after each change has been taken.
+#[test]
+#[cfg(windows)]
+fn the_first_line_shows_in_every_layout() {
+    let Some(_) = crate::host::which("python.exe").filter(|p| !p.display().to_string().contains("WindowsApps")) else { return };
+    const FIRST: &str = "FIRST-LINE-OF-IT";
+    let script = |stay: bool| {
+        format!(
+            "import sys, time\nsys.stdout.write('\\x1b]7777;{{\"t\":\"sh\"}}\\x07{FIRST} one\\r\\nsecond line\\r\\n')\nsys.stdout.write('$ ' if {} else 'Connection to 10.0.0.1 closed.\\r\\n')\nsys.stdout.flush()\n{}",
+            if stay { "True" } else { "False" },
+            if stay { "time.sleep(600)\n" } else { "" }
+        )
+    };
+    let host = |name: &str, stay: bool| json!({"name": name, "kind": "custom", "pty": ["python", "-u", "-c", script(stay)], "agent": ["python", "-c", "0"]});
+    // Each pane's first row holds the first line, whole.
+    // Looked at just after the change (its size not taken yet) and once it
+    // has been taken.
+    let check = |h: &mut Harness, when: &str| {
+        for pass in ["just changed", "taken"] {
+            if pass == "just changed" {
+                h.frames(1);
+            } else {
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                h.frames(3);
+            }
+            let mut ids: Vec<usize> = Vec::new();
+            h.app.tabs[h.app.active_tab].root.leaves(&mut ids);
+            let tops: Vec<f32> = ids.iter().filter_map(|id| h.app.panes.get(id)).map(|p| p.text_top).collect();
+            let firsts: Vec<egui::Rect> = h.texts.iter().filter(|(t, _)| t.contains(FIRST)).map(|(_, r)| *r).collect();
+            assert_eq!(firsts.len(), tops.len(), "{when} ({pass}): the first line in each of the {} panes: {}", tops.len(), h.save_shot("first-line-layout").display());
+            for r in &firsts {
+                assert!(tops.iter().any(|t| r.top() > *t - 0.5 && r.top() - t < 2.0), "{when} ({pass}): the first line at {} is not a pane's first row {tops:?}: {}", r.top(), h.save_shot("first-line-layout").display());
+            }
+        }
+    };
+    for stay in [true, false] {
+        for scale in [1.0_f32, 1.5, 2.0] {
+            let name = if stay { "live" } else { "ended" };
+            let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}, host(name, stay)], "sidebar": true, "follow_cwd": false}));
+            h.ctx.set_pixels_per_point(scale);
+            h.app.new_tab(name, None);
+            let pane = h.app.active_pane_id().unwrap();
+            assert!(h.wait_for(30.0, |h| h.shows(FIRST) && (stay || h.app.panes[&pane].exited)), "{name}: started");
+            let at = |what: &str| format!("{name}, scale {scale}: {what}");
+            check(&mut h, &at("as opened"));
+            h.command("side_panel");
+            check(&mut h, &at("side panel off"));
+            h.command("side_panel");
+            check(&mut h, &at("side panel on"));
+            let size = h.app.settings.font_size;
+            for f in [size + 3.0, size - 2.0, size] {
+                h.app.settings.font_size = f;
+                check(&mut h, &at(&format!("font {f}")));
+            }
+            h.command("split_right");
+            assert!(h.wait_for(30.0, |h| h.texts.iter().filter(|(t, _)| t.contains(FIRST)).count() == 2 && (stay || h.app.panes.values().all(|p| p.exited))), "{}", at("split right"));
+            check(&mut h, &at("split right"));
+            h.command("split_down");
+            assert!(h.wait_for(30.0, |h| h.texts.iter().filter(|(t, _)| t.contains(FIRST)).count() == 3 && (stay || h.app.panes.values().all(|p| p.exited))), "{}", at("split down"));
+            check(&mut h, &at("split down"));
+            h.command("focus_mode");
+            check(&mut h, &at("focus mode"));
+            h.command("focus_mode");
+            check(&mut h, &at("focus mode left"));
+        }
+    }
+}
+
+/// Windows' OpenSSH ends a session that has a terminal with code 0
+/// whatever ran in it (seen with a real one: `ssh -tt host "exit 3"` is 0),
+/// so cmd's refusal of weft's POSIX command looked like a shell that had
+/// run and ended well, and nothing more was tried (issue #3, macOS to a
+/// Windows server: "'exec' is not recognized", connection closed). The
+/// POSIX command says so first thing where it runs; it did not:
+/// PowerShell next.
+#[test]
+#[cfg(windows)]
+fn a_windows_hosts_refusal_ended_with_0_still_moves_on() {
+    let Some(_) = crate::host::which("python.exe").filter(|p| !p.display().to_string().contains("WindowsApps")) else { return };
+    let conpty = "import sys, subprocess, time\nc = sys.argv[1] if len(sys.argv) > 1 else ''\nif c.startswith('exec '):\n    sys.stdout.write(\"'exec' is not recognized as an internal or external command,\\r\\noperable program or batch file.\\r\\n\")\n    sys.stdout.flush()\n    time.sleep(0.5)\n    sys.exit(0)\nsys.exit(subprocess.run(['cmd', '/c', c]).returncode)\n";
+    let host = json!({"name": "conwin", "kind": "custom", "pty": ["python", "-u", "-c", conpty], "agent": ["cmd", "/c"]});
+    let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}, host], "remote_python": ["python"], "sidebar": true, "follow_cwd": false}));
+    h.app.new_tab("conwin", None);
+    let pane = h.app.active_pane_id().unwrap();
+    assert!(
+        h.wait_for(90.0, |h| h.app.panes.get(&pane).is_some_and(|p| p.shell_pid.is_some() && p.seen.1)),
+        "PowerShell, after the refusal: {:?} {:?}",
+        h.app.profile("conwin").remote_shell(),
+        h.app.panes.get(&pane).map(|p| p.term.lines_text(p.term.first_line(), p.term.end_line() + 1))
+    );
+    assert_eq!(h.app.profile("conwin").remote_shell(), crate::host::RemoteShell::Windows, "found and kept");
+}
+
 /// The shell a remote host runs commands with is found by trying, and
 /// kept: weft's POSIX command first; it fails there (code 1, not ssh's own
 /// 255), so Windows' (PowerShell); neither works: a shell weft does not

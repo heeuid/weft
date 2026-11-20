@@ -1102,6 +1102,12 @@ pub struct Pane {
     pub started_shell: Option<String>,
     /// The zsh integration was typed in for this shell start.
     pub injected: bool,
+    /// weft's POSIX command ran there: it says so first thing (OSC 7777
+    /// "sh"), before it unpacks anything.
+    pub boot_ran: bool,
+    /// Ctrl-C was typed in it: one stopped at ssh's password prompt is not
+    /// a host that refused weft's command.
+    pub interrupted: bool,
     /// Startup timing logged: first output, first prompt.
     pub seen: (bool, bool),
     /// Where its text area's top is on screen, as last drawn.
@@ -1153,6 +1159,8 @@ impl Pane {
             started_as: RemoteShell::Posix,
             started_shell: None,
             injected: false,
+            boot_ran: false,
+            interrupted: false,
             id,
             host: host.to_string(),
             term: Term::new(100, 30),
@@ -1202,6 +1210,9 @@ impl Pane {
         // Enter starts a command for shells that don't mark it themselves.
         if bytes.contains(&b'\r') {
             self.term.user_enter();
+        }
+        if bytes.contains(&3) {
+            self.interrupted = true;
         }
         if let Some(t) = self.trace.as_mut() {
             t.input(bytes);
@@ -1986,19 +1997,24 @@ impl App {
     const JUDGE_AFTER: Duration = Duration::from_millis(500);
 
     fn shell_failed(&mut self, id: usize, host: &str, code: Option<u32>, said: &str) {
-        let Some(code) = code.filter(|c| *c != 0) else { return };
-        if ssh_failed(said) {
+        // No code: ended by a signal (stopped), not refused.
+        let Some(code) = code else { return };
+        if ssh_failed(said) || said.contains(crate::host::NO_DECODER_SAID) {
             return;
         }
+        let (boot_ran, chose) = self.panes.get(&id).map(|p| (p.boot_ran || p.shell_pid.is_some(), p.started_shell.clone())).unwrap_or_default();
         // Started with the shell chosen for the host, which did not start:
         // its login shell instead, said (once: other terminals of the host
         // may have failed with it too).
-        if let Some(choice) = self.panes.get(&id).and_then(|p| p.started_shell.clone()) {
+        if let Some(choice) = chose.filter(|_| boot_ran && code != 0) {
             if self.shell_choice_off.insert(host.to_string()) {
                 self.data.log(&format!("pane {id} [{host}]: the chosen shell {choice} ended with {code} before its prompt; its login shell instead"));
                 self.toast(format!("{host}: the shell chosen for it, {choice}, did not start (it ended with code {code}): its login shell is used instead. Shells… (command palette) to choose another"), ToastKind::Info);
             }
             self.actions.push(Action::Restart(id));
+            return;
+        }
+        if boot_ran {
             return;
         }
         let profile = self.profile(host);
@@ -2334,6 +2350,8 @@ impl App {
         pane.term.show_guesses = self.settings.guess_blocks;
         pane.injected = false;
         pane.shell_pid = None;
+        pane.boot_ran = false;
+        pane.interrupted = false;
         pane.parser = vte::Parser::new();
         pane.widgets.clear();
         pane.hist_seen = 0;
@@ -3049,9 +3067,13 @@ impl App {
                 }
                 if !pane.exited && ended {
                     pane.exited = true;
-                    // Ended before weft's shell said it had started, or a
-                    // prompt showed: what ran it there? (see shell_failed)
-                    if (pane.shell_pid.is_none() || pane.started_shell.is_some()) && !pane.seen.1 {
+                    // Ended before weft's command said it ran there, or (a
+                    // chosen shell) before its prompt: what ran it there?
+                    // (see shell_failed). Not by the code alone: Windows'
+                    // OpenSSH ends a session with a terminal with 0 whatever
+                    // ran, and a refusal can look like a prompt.
+                    let never_ran = pane.shell_pid.is_none() && !pane.boot_ran;
+                    if (never_ran || (pane.started_shell.is_some() && !pane.seen.1)) && !pane.interrupted {
                         pane.judge_at = Some(now + Self::JUDGE_AFTER);
                         self.ctx.request_repaint_after(Self::JUDGE_AFTER);
                     }
@@ -3246,6 +3268,12 @@ impl App {
                 self.open_file(host, &s("path"), line);
             }
             "notify" => self.toast(format!("{host}: {}", s("msg")), ToastKind::Info),
+            // weft's POSIX command runs there (not a Windows host's cmd).
+            "sh" => {
+                if let Some(p) = self.panes.get_mut(&pane_id) {
+                    p.boot_ran = true;
+                }
+            }
             "shell" => {
                 if let Some(p) = self.panes.get_mut(&pane_id) {
                     p.shell_pid = v.get("pid").and_then(|x| x.as_u64());

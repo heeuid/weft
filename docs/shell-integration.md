@@ -63,7 +63,7 @@ cmd에는 훅이 없지만 `PROMPT`에 이스케이프(`$E`)를 넣을 수 있�
 
 ```
 패널:      ssh -tt host 'exec sh -c '\''W=<묶음>; WEFT_CWD=…; B=<풀기 스크립트>; eval …'\'''
-            └ 풀기 스크립트: base64 해독기·gunzip 찾기(POSIX 도구, 없으면 python) → 묶음 해제 → boot 구간 실행
+            └ 풀기 스크립트: 실행 알림(OSC 7777 sh) → base64 해독기·gunzip 찾기(POSIX 도구, 없으면 python) → 묶음 해제 → boot 구간 실행
                └ boot: 셸/PID 알림(OSC 7777 shell) → 로그인 셸에 맞는 통합으로 exec
 에이전트:  ssh -T host '…python3 -c "exec(stdin)"' ← agent.py를 stdin으로 (python 표준 라이브러리만)
 ```
@@ -104,7 +104,7 @@ weft로 연 bash에서만 쓸 수 있고, 다른 셸이나 스크립트 안에�
 | `52;c;base64` | 로컬 클립보드에 쓰기 | `wclip`, neovim(ssh), tmux |
 | `52;c;?` | 클립보드 **읽기** 요청 → **응답하지 않음** (출력만으로 클립보드를 빼 가는 것을 막음) | – |
 | `133;A/B/C/D[;코드]` | 프롬프트 시작 / 입력 시작 / 명령 시작 / 명령 끝(종료 코드, 없으면 모름) | 셸 통합 |
-| `7777;base64(JSON)` 또는 `7777;{JSON}` | weft 전용 이벤트: `open`(파일 열기), `notify`, `widget`(files/table/choose/progress), `inject`(zsh 통합 입력, 1회), `shell`(셸 이름·PID) | bash 헬퍼, 부트스트랩 |
+| `7777;base64(JSON)` 또는 `7777;{JSON}` | weft 전용 이벤트: `open`(파일 열기), `notify`, `widget`(files/table/choose/progress), `inject`(zsh 통합 입력, 1회), `sh`(weft의 POSIX 명령이 그 호스트에서 돎: 이것도 셸 알림도 없이 끝나면 cmd 같은 다른 셸이 받은 것이라 다음 방식을 시도. Windows OpenSSH는 터미널이 있는 세션을 늘 코드 0으로 끝내 종료 코드로는 알 수 없음), `shell`(셸 이름·PID) | bash 헬퍼, 부트스트랩 |
 
 ### 검토했다가 뺀 것: OSC 가드(비밀 토큰)
 

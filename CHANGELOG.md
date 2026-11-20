@@ -5,6 +5,25 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.11.1
+
+Fixed
+- **A Windows server reached over ssh got "'exec' is not recognized" and
+  the connection closed** (issue #3; from macOS or Linux, and from Windows
+  too). Windows' OpenSSH ends a session that has a terminal with code 0
+  whatever ran in it, so its cmd refusing weft's POSIX command looked like
+  a shell that had ended well, and PowerShell was never tried. weft's
+  command now says first thing that it runs; where it did not, the next
+  shell is tried, whatever the code. Ctrl-C at ssh's password prompt is
+  not taken for a refusal.
+- **A terminal's first lines went out of sight under the tab bar**
+  (issue #4, seen on macOS). A new pane size is taken once it has held for
+  a moment; until then the text was fitted from its bottom, and where the
+  height moved by half a pixel every frame (a Mac's layout) it stayed so.
+  The same at every change of size: the font made larger (zoom), a split,
+  the side panel opened. It is now shown as the terminal will be, its
+  blank rows below the cursor left out first.
+
 ## 0.11.0
 
 Added
