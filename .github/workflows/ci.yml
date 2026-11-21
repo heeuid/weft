@@ -121,7 +121,10 @@ jobs:
           sudo apt-get install -y byacc
           for v in 3.2.57 4.2.53; do
             curl -sSfL "https://ftp.gnu.org/gnu/bash/bash-$v.tar.gz" | tar xz
-            (cd "bash-$v" && CFLAGS="-O2 -std=gnu89 -fcommon -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-pointer-types -Wno-implicit-int" ./configure --prefix="$HOME/bash-$v" --without-bash-malloc > /dev/null && make -j4 > /dev/null && make install > /dev/null)
+            # The C of their time for every compile, their build tools too
+            # (gcc 15 takes C23, where f() has no arguments).
+            flags="-O2 -std=gnu89 -fcommon -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-pointer-types -Wno-implicit-int"
+            (cd "bash-$v" && CC="gcc -std=gnu89" CFLAGS="$flags" CFLAGS_FOR_BUILD="$flags" ./configure --prefix="$HOME/bash-$v" --without-bash-malloc > /dev/null && make -j4 > /dev/null && make install > /dev/null)
             echo "$HOME/bash-$v/bin/bash" | sudo tee -a /etc/shells
             sudo ln -sf "$HOME/bash-$v/bin/bash" /usr/local/bin/bash
             sudo usermod -s "$HOME/bash-$v/bin/bash" "$USER"

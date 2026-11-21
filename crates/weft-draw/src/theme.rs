@@ -419,9 +419,17 @@ pub fn install_fonts(ctx: &egui::Context, term: &str, icons: &str) -> Vec<String
         "kr",
         &["malgun.ttf", "nanum/NanumGothic.ttf", "NanumGothic.ttf", "noto/NotoSansCJK-Regular.ttc", "google-noto-cjk/NotoSansCJK-Regular.ttc", "AppleSDGothicNeo.ttc"],
     );
-    // Symbols the fonts above may lack (Braille, arrows, shapes): Segoe UI
-    // Symbol; DejaVu Sans and Apple Symbols have them where it is not.
-    let sym = load("sym", &["seguisym.ttf", "dejavu/DejaVuSans.ttf", "DejaVuSans.ttf", "Apple Symbols.ttf"]);
+    // Symbols the fonts above may lack (Braille, arrows, shapes, dingbats):
+    // Segoe UI Symbol; DejaVu Sans on Linux; on macOS three, none of which
+    // has them all (Apple Symbols has no ✘, Zapf Dingbats no Braille).
+    let sym: Vec<String> = [
+        ("sym", &["seguisym.ttf", "dejavu/DejaVuSans.ttf", "DejaVuSans.ttf", "Apple Symbols.ttf"][..]),
+        ("sym_dingbats", &["ZapfDingbats.ttf"][..]),
+        ("sym_braille", &["Apple Braille.ttf"][..]),
+    ]
+    .into_iter()
+    .filter_map(|(key, files)| load(key, files))
+    .collect();
     let ui_bold = load("ui_bold", &["segoeuib.ttf", "dejavu/DejaVuSans-Bold.ttf", "DejaVuSans-Bold.ttf"]);
     let kr_bold = load("kr_bold", &["malgunbd.ttf", "nanum/NanumGothicBold.ttf", "NanumGothicBold.ttf"]);
     // No Hangul font on the system (a Linux without Korean fonts): the one

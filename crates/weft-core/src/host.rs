@@ -2009,7 +2009,9 @@ print(json.dumps({{'hits': hits, 'mine': mine, 'sys': s, 'path': g['_path']('/C:
             let _ = done.send(local_op(&json!({"op": "list", "path": path, "hidden": true, "ignored": false})));
         });
         let v = wait.recv_timeout(std::time::Duration::from_secs(60)).expect("the listing came back");
-        let names: Vec<&str> = v["entries"].as_array().unwrap().iter().filter_map(|e| e["n"].as_str()).filter(|n| *n != ".git").collect();
+        // In the folder's own order (the panel sorts): ext4's is not by name.
+        let mut names: Vec<&str> = v["entries"].as_array().unwrap().iter().filter_map(|e| e["n"].as_str()).filter(|n| *n != ".git").collect();
+        names.sort();
         assert_eq!(names, [".gitignore", "kept.txt"], "the 4000 ignored ones are left out");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2187,7 +2189,9 @@ print(json.dumps(out))
     fn remote_python_stays_3_6() {
         for (name, src) in [("agent.py", AGENT_PY), ("serial.py", SERIAL_PY)] {
             assert!(!src.contains("capture_output") && !src.contains("text=True"), "{name}: 3.7+ subprocess arguments");
-            let check = "import ast,sys; ast.parse(sys.stdin.buffer.read(), feature_version=(3, 6))";
+            // ast's feature_version is 3.8+; an older Python (Rocky 8's 3.6)
+            // compiles it with its own grammar, which is the very check.
+            let check = "import ast,sys\nsrc = sys.stdin.buffer.read()\nif sys.version_info >= (3, 8):\n    ast.parse(src, feature_version=(3, 6))\nelse:\n    compile(src, 'agent', 'exec')";
             let Ok(mut child) = Command::new(crate::pty::tests::python()).args(["-c", check]).stdin(Stdio::piped()).stderr(Stdio::piped()).spawn() else { return };
             child.stdin.take().unwrap().write_all(src.as_bytes()).unwrap();
             let out = child.wait_with_output().unwrap();
@@ -2535,9 +2539,18 @@ mod loopback {
         pump(&mut pty, &mut t, &mut p, |t| t.screen[t.cy].text().contains(cmd), 5);
         t.user_enter();
         pty.write(b"\r");
-        let done = pump(&mut pty, &mut t, &mut p, |t| t.blocks.iter().any(|b| b.command.contains(cmd) && b.state() == BlockState::Done), 15);
-        assert!(done, "{choice:?}: {:?} {:?}", t.blocks.iter().map(|b| (&b.command, b.exit)).collect::<Vec<_>>(), screen(&t));
-        let b = t.blocks.iter().find(|b| b.command.contains(cmd)).unwrap();
+        // A shell with part of the integration (the login shell is busybox
+        // ash on Alpine, dash or ksh elsewhere) tells no command text: its
+        // block is the one that printed the output, with its exit code.
+        let shell = t.events.iter().find_map(|e| match e {
+            TermEvent::Weft { value, .. } if value["t"] == "shell" => value["name"].as_str().map(String::from),
+            _ => None,
+        });
+        let partial = shell.as_deref().and_then(shell_info).is_some_and(|i| i.support == ShellSupport::Partial);
+        let ours = |t: &Term, b: &crate::term::Block| if partial { b.command.is_empty() && t.block_output(b).trim() == "weft-ok" } else { b.command.contains(cmd) };
+        let done = pump(&mut pty, &mut t, &mut p, |t| t.blocks.iter().any(|b| ours(t, b) && b.state() == BlockState::Done), 15);
+        assert!(done, "{choice:?} ({shell:?}): {:?} {:?}", t.blocks.iter().map(|b| (&b.command, b.exit)).collect::<Vec<_>>(), screen(&t));
+        let b = t.blocks.iter().find(|b| ours(&t, b) && b.state() == BlockState::Done).unwrap();
         assert_eq!(b.exit, exit, "{choice:?}: {:?} {:?}", t.blocks.iter().map(|b| (&b.command, b.exit, b.state())).collect::<Vec<_>>(), screen(&t));
         assert_eq!(t.block_output(b).trim(), "weft-ok", "{choice:?}");
         if here {
@@ -2567,6 +2580,13 @@ mod loopback {
         if std::env::var("WEFT_TEST_SH").is_ok() {
             env.push(("PATH".to_string(), std::env::var("PATH").unwrap_or_default()));
         }
+        // zsh with none of the user's startup files starts its new-user menu
+        // (zsh-newuser-install; not for root), as in any terminal: an empty
+        // ~/.zshrc of its own, as nearly every zsh user has.
+        let zdot = std::env::temp_dir().join(format!("weft-zdot-{}", std::process::id()));
+        std::fs::create_dir_all(&zdot).unwrap();
+        std::fs::write(zdot.join(".zshrc"), "").unwrap();
+        env.push(("ZDOTDIR".to_string(), zdot.display().to_string().replace('\\', "/")));
         let with = |more: &[(&str, &str)]| env.iter().cloned().chain(more.iter().map(|(k, v)| (k.to_string(), v.to_string()))).collect::<Vec<_>>();
         let mut tried = Vec::new();
         for name in ["bash", "zsh", "fish", "ksh", "mksh", "dash", "ash", "tcsh"] {

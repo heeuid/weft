@@ -5,6 +5,21 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.11.3
+
+Fixed
+- **macOS: ✘ and other dingbats drew as boxes** in terminal programs:
+  Apple Symbols has none. Every symbol font of the system is used in turn
+  now: on macOS Zapf Dingbats and Apple Braille besides Apple Symbols.
+
+CI, the rest of the first run on every system: the remote side's tests on
+Rocky Linux 8 (its Python 3.6 checks the agent by compiling it; `ast`'s
+`feature_version` is 3.8+) and Alpine (its login shell, busybox ash, has
+part of weft's integration, and is checked as such); a folder's listing
+compared in any order (ext4's is not by name); zsh given an empty
+`.zshrc` (with none, its new-user menu comes first, for a user that is
+not root); bash 3.2 and 4.2 built with their C on gcc 15 (C23).
+
 ## 0.11.2
 
 Fixed
