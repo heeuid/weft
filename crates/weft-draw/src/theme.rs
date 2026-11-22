@@ -559,6 +559,12 @@ pub fn apply(ctx: &egui::Context, index: usize) {
     style.text_styles.insert(Monospace, FontId::monospace(13.0));
     style.spacing.item_spacing = Vec2::new(6.0, 4.0);
     style.spacing.button_padding = Vec2::new(8.0, 3.0);
+    // A tooltip once the pointer has rested on a thing a moment, and on
+    // the next thing after resting there too: egui's half second came up
+    // while passing over the Files rows, and after one had come up, every
+    // row passed showed its own at once (its grace time).
+    style.interaction.tooltip_delay = 0.8;
+    style.interaction.tooltip_grace_time = 0.0;
     style.spacing.interact_size.y = 22.0;
 
     let mut v = if light { egui::Visuals::light() } else { egui::Visuals::dark() };

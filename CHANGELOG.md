@@ -5,6 +5,16 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.11.6
+
+- **Tooltips came up too soon** (half a second, while passing over the
+  Files rows), and once one had, every row passed showed its own at
+  once. A tooltip comes once the pointer has rested on a thing for 0.8 s,
+  and on the next thing only after resting there too.
+- A test of a terminal's first lines waited 30 s for a stand-in shell to
+  end; a busy CI Mac took longer once (0.11.5 on main): 90 s, as the
+  others that start terminals.
+
 ## 0.11.5
 
 What weft did on one system only, on every one, and characters it could

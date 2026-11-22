@@ -1681,6 +1681,42 @@ fn a_character_weft_lacks_is_drawn_with_an_installed_font() {
     assert!(h.ctx.fonts(|f| f.has_glyph(&egui::FontId::proportional(13.0), c)), "the UI's text has it too (a file name)");
 }
 
+/// A tooltip comes once the pointer rests on a thing (0.8 s), and on the
+/// next thing only after resting there too: passing over Files' rows
+/// showed one at once, and after the first, every row's came at once.
+#[test]
+fn a_tooltip_waits_for_the_pointer_to_rest() {
+    let dir = std::env::temp_dir().join(format!("weft-tips-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for n in ["first.txt", "second.txt"] {
+        std::fs::write(dir.join(n), "x").unwrap();
+    }
+    let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}], "sidebar": true, "follow_cwd": false}));
+    // The style weft starts with (main applies it).
+    crate::theme::apply(&h.ctx, crate::theme::active());
+    h.app.side.tab = crate::app::SideTab::Files;
+    h.app.set_root("local", &dir.display().to_string().replace('\\', "/"));
+    assert!(h.wait_for(10.0, |h| h.has("first.txt") && h.has("second.txt")), "listed");
+    let tip = "double-click: open in editor";
+    let (a, b) = (h.at_exact("first.txt"), h.at_exact("second.txt"));
+    // A frame is a 60th of a second. (The pointer comes from elsewhere,
+    // as a hand's does: one never moved is "still" for ever.)
+    h.hover(egui::pos2(a.x + 300.0, a.y + 300.0));
+    h.frames(5);
+    h.hover(a);
+    h.frames(30);
+    assert!(!h.shows(tip), "not at half a second");
+    h.frames(40);
+    assert!(h.shows(tip), "after resting there");
+    // On to the next row: it waits again.
+    h.hover(b);
+    h.frames(10);
+    assert!(!h.shows(tip), "not at once on the next row");
+    h.frames(60);
+    assert!(h.shows(tip), "after resting there too");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The mouse in a terminal: the wheel scrolls back, a drag selects
 /// characters, a double click a word, a triple click a line, Alt+drag a
 /// block of columns; a click drops the selection; Ctrl+click opens a path.
@@ -3523,7 +3559,8 @@ fn a_terminals_first_line_is_in_sight() {
         assert_eq!(h.ctx.pixels_per_point(), scale, "drawn at that scale");
         h.app.new_tab("srv", None);
         let pane = h.app.active_pane_id().unwrap();
-        assert!(h.wait_for(30.0, |h| h.app.panes[&pane].exited && h.shows("Connection to 10.0.0.1 closed.")), "ended");
+        // (90 s: a busy CI Mac took more than 30 to start Python and end.)
+        assert!(h.wait_for(90.0, |h| h.app.panes[&pane].exited && h.shows("Connection to 10.0.0.1 closed.")), "ended");
         for height in (560..580).rev() {
             h.size = egui::vec2(1200.0, height as f32);
             h.frames(2);
