@@ -248,6 +248,19 @@ pub struct Term {
     /// was typed, where output starts, when. Used only if a D comes without a
     /// C (cmd marks prompts but not command starts).
     pending_start: Option<(String, u64, Instant)>,
+    /// The command weft itself sends with the next Enter (a rerun, the
+    /// palette's, a cd here): its text, where the screen has none of it
+    /// yet when the Enter is noted (cmd: its block had no command).
+    sent_command: Option<String>,
+    /// Something was typed at this prompt (told by the app, which sends
+    /// it; Ctrl-C and Ctrl-U take it back): an Enter on an empty line starts
+    /// nothing. (Not kept past a prompt: keys a running program took, q or
+    /// y, made an empty Enter after it a block. A command typed ahead while
+    /// another ran makes none so: these shells tell nothing to know it by.) A shell without
+    /// a mark for where its input begins (the sh family) gives no text to
+    /// tell it by, and an empty Enter became a block with the last exit
+    /// code.
+    typed: bool,
     /// Set by a reflow: (first old absolute line, new absolute line per old line).
     line_remap: Option<(u64, Vec<u64>)>,
 }
@@ -299,6 +312,8 @@ impl Term {
             last_output: None,
             prompt_end: None,
             pending_start: None,
+            sent_command: None,
+            typed: false,
             line_remap: None,
         }
     }
@@ -387,7 +402,32 @@ impl Term {
     }
 
     pub fn at_prompt(&self) -> bool {
-        !self.alt_active && self.blocks.last().map(|b| b.state() == BlockState::Prompt).unwrap_or(false)
+        // Guessed blocks out of sight count too: a shell without marks
+        // (tcsh, a plain ssh) was never at its prompt, and Rerun, the
+        // palette's commands and Files' "cd here" were always refused.
+        // A guessed one not where it is a question: a pause after ssh's
+        // "password: " or "Verification code: " was guessed a prompt too,
+        // and a cd or a rerun went in as the password.
+        let last = if !self.integrated && !self.show_guesses { self.unseen.last() } else { self.blocks.last() };
+        let shell_like = |b: &Block| !b.guessed || !self.prompt_end.is_some_and(question_end);
+        // A command started by an Enter, its start not marked (the sh
+        // family): running, though its block is still the prompt's.
+        !self.alt_active && self.pending_start.is_none() && last.is_some_and(|b| b.state() == BlockState::Prompt && shell_like(b))
+    }
+
+    /// A command runs, as far as can be told: one its shell marked, one an
+    /// Enter started where the shell marks no start, or one guessed where
+    /// there are no marks (out of sight too: closing a tcsh's `tail -f`
+    /// asked nothing, and its tab showed nothing running).
+    pub fn running(&self) -> bool {
+        let guessed = if !self.integrated && !self.show_guesses { self.unseen.last() } else { None };
+        self.pending_start.is_some() || self.blocks.last().or(guessed).is_some_and(|b| b.state() == BlockState::Running)
+    }
+
+    /// A command an Enter started where the shell marks no start (the sh
+    /// family), not ended yet: its text ("" when not known).
+    pub fn pending_command(&self) -> Option<&str> {
+        self.pending_start.as_ref().map(|p| p.0.as_str())
     }
 
     /// Whitespace/bracket-delimited token under a cell (for clickable paths/URLs).
@@ -563,7 +603,9 @@ impl Term {
                 }
             }
         };
-        for b in self.blocks.iter_mut() {
+        // (The guessed ones out of sight too: their lines were left as
+        // they were.)
+        for b in self.blocks.iter_mut().chain(self.unseen.iter_mut()) {
             b.prompt_line = remap(b.prompt_line);
             b.input = b.input.map(|(l, c)| (remap(l), c.min(cols - 1)));
             b.out_line = b.out_line.map(remap);
@@ -575,6 +617,7 @@ impl Term {
         }
         let dropped = self.dropped;
         self.blocks.retain(|b| b.prompt_line >= dropped);
+        self.unseen.retain(|b| b.prompt_line >= dropped);
         self.line_remap = Some((base, new_abs));
     }
 
@@ -618,6 +661,7 @@ impl Term {
         }
         let dropped = self.dropped;
         self.blocks.retain(|b| b.prompt_line >= dropped);
+        self.unseen.retain(|b| b.prompt_line >= dropped);
     }
 
     pub fn clear_history(&mut self) {
@@ -625,6 +669,7 @@ impl Term {
         self.history.clear();
         let dropped = self.dropped;
         self.blocks.retain(|b| b.prompt_line >= dropped);
+        self.unseen.retain(|b| b.prompt_line >= dropped);
     }
 
     // ---- primitive operations --------------------------------------------
@@ -951,12 +996,53 @@ impl Term {
         !self.blocks.is_empty() || !self.unseen.is_empty()
     }
 
+    /// The last prompt is a guessed one that ends as a question (`:`,
+    /// `?`): ssh's for a password, or a menu's.
+    pub fn at_prompt_question(&self) -> bool {
+        let last = if !self.integrated && !self.show_guesses { self.unseen.last() } else { self.blocks.last() };
+        !self.integrated && last.is_some_and(|b| b.state() == BlockState::Prompt && b.guessed) && self.prompt_end.is_some_and(question_end)
+    }
+
+    /// What was typed at a guessed question is on the screen: the answer
+    /// was echoed. A password, a one-time code or a PIN is asked with echo
+    /// off, a menu's choice is seen as it is typed: that tells them apart
+    /// in any language.
+    pub fn question_answer_shown(&self) -> bool {
+        let last = if !self.integrated && !self.show_guesses { self.unseen.last() } else { self.blocks.last() };
+        let Some(input) = last.filter(|b| b.state() == BlockState::Prompt && b.guessed).and_then(|b| b.input) else { return false };
+        !self.text_between(input, (self.cursor_abs(), self.cx)).trim().is_empty()
+    }
+
+    /// A shell's prompt has come: marked, or guessed where it is not a
+    /// question (ssh's "password: " guessed one is not: the shell had not
+    /// started).
+    pub fn shell_prompted(&self) -> bool {
+        self.integrated || (self.prompted() && !self.prompt_end.is_some_and(question_end))
+    }
+
     /// The user sent Enter to the shell (call before writing it).
     pub fn user_enter(&mut self) {
         self.guessing(|t| t.user_enter_now())
     }
 
+    /// The user typed something (not Enter alone) into this terminal.
+    pub fn user_typed(&mut self) {
+        self.typed = true;
+    }
+
+    /// weft sends `cmd` with the next Enter (it is not on the screen yet
+    /// as that Enter is noted). None: that send was dropped.
+    pub fn user_runs(&mut self, cmd: Option<&str>) {
+        self.sent_command = cmd.map(str::to_string);
+    }
+
+    /// The user emptied the line (Ctrl-C, Ctrl-U): nothing typed at it.
+    pub fn user_cleared(&mut self) {
+        self.typed = false;
+    }
+
     fn user_enter_now(&mut self) {
+        let typed = self.typed;
         if self.alt_active || self.saw_start {
             return;
         }
@@ -966,15 +1052,33 @@ impl Term {
         }
         if self.integrated {
             // The shell may yet send 133;C (this may be its first command):
-            // only note what was typed.
+            // only note what was typed. The first Enter only: later ones go
+            // to what runs (cat, a password), and moved the block's output
+            // down past what it had printed.
+            if self.pending_start.is_some() {
+                return;
+            }
             let here = (self.cursor_abs(), self.cx);
-            let cmd = b.input.map(|inp| self.text_between(inp, here)).unwrap_or_default();
+            let mut cmd = b.input.map(|inp| self.text_between(inp, here)).unwrap_or_default();
+            // (Before what the screen has: what was left on the line is
+            // still there as the Enter is noted, and it was taken.)
+            if let Some(sent) = self.sent_command.take() {
+                cmd = sent;
+            }
+            if cmd.trim().is_empty() && !typed {
+                return;
+            }
             self.pending_start = Some((cmd.trim_end().to_string(), here.0 + if here.1 > 0 { 1 } else { 0 }, Instant::now()));
             return;
         }
+        // (The text weft sends: the screen has none of it yet.)
+        let sent = self.sent_command.take();
         self.mark_output();
         if let Some(b) = self.blocks.last_mut() {
             b.guessed = true;
+            if let Some(cmd) = sent {
+                b.command = cmd;
+            }
         }
     }
 
@@ -1025,8 +1129,13 @@ impl Term {
                 if idle < Duration::from_millis(400) {
                     return true;
                 }
+                // The same end as the guessed prompt's; or, where that one
+                // was a question (ssh's "password: " was guessed first, and
+                // the shell's "$ " never ended its block), any other.
+                let after_question = self.prompt_end.is_some_and(question_end);
                 match self.at_prompt_like() {
-                    Some(c) if Some(c) == self.prompt_end => {
+                    Some(c) if Some(c) == self.prompt_end || (after_question && !question_end(c)) => {
+                        self.prompt_end = Some(c);
                         // The prompt line itself is not output.
                         let end = self.cursor_abs();
                         self.finish_block(end, None);
@@ -1662,6 +1771,8 @@ impl Perform for Term {
                 match arg(1).as_str() {
                     "A" => {
                         self.pending_start = None;
+                        self.sent_command = None;
+                        self.typed = false;
                         self.mark_prompt()
                     }
                     "B" => self.mark_input(),
@@ -1824,6 +1935,15 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
 
+/// A guessed prompt that ends so is a question something else asks
+/// ("password: ", "Verification code: ", "(yes/no/[fingerprint])? "), not
+/// a shell's. (A list of how shells' prompts end left many out: `~`,
+/// `)`, oh-my-zsh's.)
+fn question_end(c: char) -> bool {
+    // (And their full-width forms: a password asked in Chinese, 密码：)
+    matches!(c, ':' | '?' | '：' | '？')
+}
+
 #[cfg(test)]
 mod sync_tests {
     use super::*;
@@ -1878,13 +1998,50 @@ mod guess_tests {
         assert!(!t.prompted());
         t.tick_at(later(&t, 300));
         assert!(t.blocks.is_empty() && t.prompted(), "a prompt, and no block");
+        assert!(t.at_prompt(), "at its prompt (Rerun, cd here): the guess out of sight counts");
+        assert!(!t.running(), "nothing runs at the prompt");
         feed(&mut t, "ls");
         t.user_enter();
-        feed(&mut t, "\r\na.txt  b.txt\r\n$ ");
+        // Running, out of sight: the close check and the tab know it.
+        feed(&mut t, "\r\na.txt");
+        t.tick_at(later(&t, 100));
+        assert!(t.running() && !t.at_prompt(), "a guessed command runs");
+        feed(&mut t, "  b.txt\r\n$ ");
         t.events.clear();
         t.tick_at(later(&t, 500));
         assert!(t.blocks.is_empty(), "nothing guessed is shown");
         assert!(t.events.iter().any(|e| matches!(e, TermEvent::GuessedDone)), "the command probably ended: told");
+        assert!(t.at_prompt(), "at the prompt again");
+        // ssh's password prompt, or a one-time code's, guessed a prompt
+        // after its pause: not one to send a command to.
+        // Shown or not. Not a shell's prompt either (the shell has not
+        // started); the shell's, after the answer, is (its block ended at
+        // it, though the first guess ended in ':').
+        for shown in [false, true] {
+            for asked in ["u@h's password: ", "Verification code: ", "Are you sure you want to continue connecting (yes/no/[fingerprint])? ", "密码：", "是否继续？ "] {
+                let mut t = Term::new(24, 80);
+                t.show_guesses = shown;
+                feed(&mut t, asked);
+                t.tick_at(later(&t, 300));
+                assert!(t.prompted() && !t.at_prompt() && !t.shell_prompted(), "{asked} (shown: {shown})");
+                t.user_typed();
+                t.user_enter();
+                // oh-my-zsh's prompt: it ends in `~`, as many do.
+                feed(&mut t, "\r\nLast login: Mon\r\n➜  ~ ");
+                t.tick_at(later(&t, 500));
+                assert!(t.at_prompt() && t.shell_prompted(), "{asked}, then the shell's prompt (shown: {shown})");
+                // A program that pauses on "45%": still running (the
+                // prompt's end is the shell's now, not a question's).
+                t.user_typed();
+                t.user_enter();
+                feed(&mut t, "wget x\r\n 45%");
+                t.tick_at(later(&t, 500));
+                assert!(!t.at_prompt(), "{asked}: a program's 45% is no prompt (shown: {shown})");
+                feed(&mut t, "\r\ndone\r\n➜  ~ ");
+                t.tick_at(later(&t, 500));
+                assert!(t.at_prompt(), "{asked}: its prompt again (shown: {shown})");
+            }
+        }
         // Many commands: what is kept out of sight stays small.
         for _ in 0..20 {
             feed(&mut t, "ls");
@@ -1951,6 +2108,153 @@ mod guess_tests {
         feed(&mut t, &prompt.replace("D;0", "D;1"));
         let got: Vec<_> = t.blocks.iter().map(|b| (b.command.as_str(), b.exit, b.state())).collect();
         assert_eq!(got[1..], [("false", Some(1), BlockState::Done), ("", None, BlockState::Prompt)]);
+    }
+
+    /// A shell that marks prompts and exit codes but not where input begins
+    /// or a command starts (the sh family: D, A, no B or C): its command
+    /// starts at the first Enter typed at its prompt. Enters typed into
+    /// what runs (cat, a password) leave the block's output where it began;
+    /// an Enter on an empty line starts nothing (it was a block with the
+    /// last exit code).
+    #[test]
+    fn a_shell_with_start_marks_stays_so_after_an_empty_enter() {
+        // zsh and bash before 4.4 send no C for an empty line, only D and
+        // A. Their next Enter that runs nothing (a line continued, a menu's
+        // choice) is not a command's start: still at the prompt, and no
+        // block for it when Ctrl-C ends that line. (Deciding "marks its
+        // starts" anew at each prompt broke this; see the sh family's.)
+        let mut t = Term::new(80, 24);
+        let prompt = |code: i32| format!("\x1b]133;D;{code}\x07\x1b]133;A\x07% \x1b]133;B\x07");
+        feed(&mut t, &prompt(0));
+        feed(&mut t, "ls");
+        t.user_typed();
+        t.user_enter();
+        feed(&mut t, "\r\n\x1b]133;C\x07file\r\n");
+        feed(&mut t, &prompt(0));
+        let done = t.blocks.iter().filter(|b| b.state() == BlockState::Done).count();
+        t.user_enter();
+        feed(&mut t, "\r\n");
+        feed(&mut t, &prompt(0));
+        feed(&mut t, "for f in *; do");
+        t.user_typed();
+        t.user_enter();
+        feed(&mut t, "\r\nfor> ");
+        assert!(t.at_prompt() && t.pending_command().is_none(), "a continued line is not a running command");
+        t.user_cleared();
+        feed(&mut t, "^C\r\n");
+        feed(&mut t, &prompt(130));
+        assert_eq!(t.blocks.iter().filter(|b| b.state() == BlockState::Done && !b.command.is_empty()).count(), done, "nothing ran: no block");
+    }
+
+    #[test]
+    fn a_menus_answer_is_seen_a_passwords_is_not() {
+        // A password, a code, a PIN: asked with echo off, in any language.
+        for asked in ["Passwort: ", "パスワード: ", "Пароль: ", "Verification code: ", "Enter PIN for 'PIV Card': "] {
+            let mut t = Term::new(80, 24);
+            t.show_guesses = false;
+            feed(&mut t, asked);
+            t.tick_at(later(&t, 300));
+            assert!(t.at_prompt_question(), "{asked}");
+            t.user_typed(); // the secret, not shown
+            assert!(!t.question_answer_shown(), "{asked}");
+        }
+        // A menu's choice: shown as it is typed.
+        for (asked, answer) in [("Select host: ", "web1"), ("Choice [1-3]? ", "2")] {
+            let mut t = Term::new(80, 24);
+            t.show_guesses = false;
+            feed(&mut t, asked);
+            t.tick_at(later(&t, 300));
+            t.user_typed();
+            feed(&mut t, answer);
+            assert!(t.at_prompt_question() && t.question_answer_shown(), "{asked}");
+        }
+    }
+
+    #[test]
+    fn a_run_weft_sends_is_its_blocks_command() {
+        // cmd: B and D marks, no C. Something was left on the line, and
+        // weft runs `make` (Esc, then the command): as the Enter is noted
+        // the screen still has what was left, or nothing of `make` yet.
+        let mut t = Term::new(80, 24);
+        feed(&mut t, "\x1b]133;A\x07C:> \x1b]133;B\x07junk");
+        t.user_typed();
+        t.user_runs(Some("make"));
+        t.user_enter();
+        assert_eq!(t.pending_command(), Some("make"), "the run's text, not what was left");
+        feed(&mut t, "\r\nbuilt\r\n\x1b]133;D;0\x07\x1b]133;A\x07C:> \x1b]133;B\x07");
+        assert!(t.blocks.iter().any(|b| b.state() == BlockState::Done && b.command == "make"));
+        // The user's own Enter after: what is on the screen, as ever.
+        feed(&mut t, "dir");
+        t.user_typed();
+        t.user_enter();
+        assert_eq!(t.pending_command(), Some("dir"));
+        // A shell without marks, its guesses shown: the run's text too.
+        let mut t = Term::new(80, 24);
+        feed(&mut t, "$ ");
+        t.tick_at(later(&t, 300));
+        feed(&mut t, "junk");
+        t.user_typed();
+        t.user_runs(Some("make"));
+        t.user_enter();
+        assert_eq!(t.blocks.last().map(|b| b.command.as_str()), Some("make"), "a guessed block's command");
+    }
+
+    #[test]
+    fn a_shell_without_start_marks_takes_the_first_enter() {
+        let prompt = |code: i32| format!("\x1b]133;D;{code}\x07\x1b]133;A\x07$ ");
+        let mut t = Term::new(80, 24);
+        feed(&mut t, &prompt(0));
+        // cat, then two lines typed into it, then its end.
+        feed(&mut t, "cat");
+        t.user_typed();
+        assert!(t.at_prompt() && t.pending_command().is_none(), "at the prompt, cat typed");
+        t.user_enter();
+        // Running (its block is still the prompt's until its end is told):
+        // not at the prompt, for weft's run, cd here and the close check.
+        assert!(!t.at_prompt() && t.pending_command().is_some(), "cat runs (its text not told by these shells)");
+        feed(&mut t, "\r\none\r\n");
+        t.user_typed();
+        t.user_enter();
+        feed(&mut t, "one\r\ntwo\r\n");
+        t.user_typed();
+        t.user_enter();
+        feed(&mut t, "two\r\n");
+        feed(&mut t, &prompt(0));
+        let b = t.blocks.iter().find(|b| b.state() == BlockState::Done).expect("cat's block");
+        assert_eq!(t.block_output(b).trim(), "one\none\ntwo\ntwo", "all of what cat printed");
+        // A failing command, then Enter alone: no block for that.
+        feed(&mut t, "false");
+        t.user_typed();
+        t.user_enter();
+        feed(&mut t, "\r\n");
+        feed(&mut t, &prompt(1));
+        let done = t.blocks.iter().filter(|b| b.state() == BlockState::Done).count();
+        t.user_enter();
+        feed(&mut t, "\r\n");
+        feed(&mut t, &prompt(1));
+        assert_eq!(t.blocks.iter().filter(|b| b.state() == BlockState::Done).count(), done, "an empty Enter made no block");
+        assert_eq!(t.blocks.iter().rfind(|b| b.state() == BlockState::Done).and_then(|b| b.exit), Some(1), "false's code, once");
+        // A key a running program took (less's q), then Enter alone at the
+        // next prompt: no block (what was typed does not outlive a prompt).
+        feed(&mut t, "less x");
+        t.user_typed();
+        t.user_enter();
+        feed(&mut t, "\r\n");
+        t.user_typed(); // q, to less
+        feed(&mut t, &prompt(0));
+        let done = t.blocks.iter().filter(|b| b.state() == BlockState::Done).count();
+        t.user_enter();
+        feed(&mut t, "\r\n");
+        feed(&mut t, &prompt(0));
+        assert_eq!(t.blocks.iter().filter(|b| b.state() == BlockState::Done).count(), done, "q was less's: no block");
+        // Typed at the prompt, then emptied with Ctrl-C: Enter makes none.
+        feed(&mut t, "oops");
+        t.user_typed();
+        t.user_cleared();
+        feed(&mut t, "^C\r\n");
+        t.user_enter();
+        feed(&mut t, &prompt(130));
+        assert_eq!(t.blocks.iter().filter(|b| b.state() == BlockState::Done).count(), done, "an emptied line: no block");
     }
 
     #[test]
@@ -2101,6 +2405,23 @@ mod tests {
         let (anchor, v) = ev.unwrap();
         assert_eq!(anchor, 1);
         assert_eq!(v["msg"], "한글");
+    }
+
+    /// An event as plain JSON (the shells send it so, with no base64 tool):
+    /// any UTF-8 text survives, bytes 0x80-0xBF inside it included (ST's
+    /// 0x9C among them, as in many Hangul syllables).
+    #[test]
+    fn osc7777_plain_json_keeps_any_text() {
+        let text: String = ('가'..='힣').step_by(37).chain("é—…".chars()).collect();
+        assert!(text.as_bytes().contains(&0x9c));
+        let mut t = Term::new(10, 3);
+        let js = serde_json::json!({"t": "notify", "msg": text}).to_string();
+        run(&mut t, &format!("]7777;{js}"));
+        let v = t.events.iter().find_map(|e| match e {
+            TermEvent::Weft { value, .. } => Some(value.clone()),
+            _ => None,
+        });
+        assert_eq!(v.expect("the event")["msg"], text.as_str());
     }
 
     #[test]

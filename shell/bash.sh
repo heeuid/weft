@@ -37,30 +37,19 @@ unset __weft_cwd
 export WEFT=1 TERM=xterm-256color COLORTERM=truecolor
 shopt -s checkwinsize
 
-__weft_py=
-for __p in python3 python; do
-    # macOS: /usr/bin/python3 without the Command Line Tools is no Python,
-    # it only asks to install them (a window on that Mac): not run.
-    if [ "$(command -v "$__p" 2>/dev/null)" = /usr/bin/python3 ] && [ "$(uname 2>/dev/null)" = Darwin ] && ! xcode-select -p >/dev/null 2>&1; then
-        continue
-    fi
-    if command -v "$__p" >/dev/null 2>&1 && "$__p" -c "" >/dev/null 2>&1; then
-        __weft_py=$__p; break
-    fi
-done
-unset __p
 
 # --- low level -------------------------------------------------------------
 
 __weft_osc() { printf '\033]%s\007' "$1" >/dev/tty; }
 
-# Structured events travel as base64(JSON) so any byte survives the OSC.
-__weft_ev() { __weft_osc "7777;$(printf %s "$1" | base64 | tr -d '\r\n')"; }
+# Structured events travel as plain JSON (no base64 tool needed): its
+# strings come from __weft_js, which leaves no control byte to end the OSC.
+__weft_ev() { __weft_osc "7777;$1"; }
 
 __weft_js() {
     local s=$1
     s=${s//\\/\\\\}; s=${s//\"/\\\"}; s=${s//$'\t'/\\t}
-    s=${s//$'\n'/\\n}; s=${s//$'\r'/}
+    s=${s//$'\n'/\\n}; s=${s//[[:cntrl:]]/}
     printf '"%s"' "$s"
 }
 
@@ -90,9 +79,19 @@ __weft_ps1() {
     __weft_armed=1
 }
 
-PROMPT_COMMAND="__weft_precmd${PROMPT_COMMAND:+;$PROMPT_COMMAND};__weft_ps1"
+# An array of more than one, which bash 5.1+ runs element by element: ours
+# first and last, as for a string (a later element could set PS1 anew after
+# __weft_ps1). Before 5.1 only its first element runs: ours go into that
+# one, as ever. Joined by newlines: the user's often ends in `;` (`history
+# -a; $PROMPT_COMMAND` with it empty), and `; ;` is an error at every
+# prompt that ran none of it.
+if [[ ${PROMPT_COMMAND[1]+x} ]] && (( BASH_VERSINFO[0] * 100 + BASH_VERSINFO[1] > 500 )); then
+    PROMPT_COMMAND=(__weft_precmd "${PROMPT_COMMAND[@]}" __weft_ps1)
+else
+    PROMPT_COMMAND="__weft_precmd${PROMPT_COMMAND:+$'\n'$PROMPT_COMMAND}"$'\n'__weft_ps1
+fi
 
-if [ "${BASH_VERSINFO[0]}" -gt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -ge 4 ]; }; then
+if (( BASH_VERSINFO[0] * 100 + BASH_VERSINFO[1] >= 404 )); then
     PS0='\033]133;C\007'
 else
     # bash < 4.4 (macOS /bin/bash) has no PS0: the DEBUG trap, which runs
@@ -101,14 +100,21 @@ else
     # function sets __weft_armed last); it said 133;C at the prompt's own
     # before, and not at the user's command.
     __weft_preexec() {
-        [ -n "$COMP_LINE" ] && return
-        [ -z "$__weft_armed" ] && return
+        [ -n "${COMP_LINE:-}" ] && return
+        [ -z "${__weft_armed:-}" ] && return
         case "$BASH_COMMAND" in __weft_precmd*) return ;; esac
         __weft_armed=
         __weft_osc "133;C"
     }
     trap '__weft_preexec' DEBUG
 fi
+
+# --- weft's key to empty the line --------------------------------------------
+# Ctrl+Alt+Shift+F12, in every editing mode (emacs, vi's insert and command:
+# from the command one into insert first): weft's runs (Rerun, cd here)
+# empty what was typed with it, whatever mode the line is in.
+bind -m emacs '"\e[24;8~": kill-whole-line' && bind -m vi-insert '"\e[24;8~": kill-whole-line' && bind -m vi-command '"\e[24;8~": "i\e[24;8~"' && __weft_ev '{"t":"clear-key"}'
+
 
 # --- helpers: GUI widgets woven into the text grid ---------------------------
 # Each helper prints a plain-text fallback that occupies exactly the rows the
@@ -163,88 +169,40 @@ wprogress() {
     return 0
 }
 
-__weft_py_common='
-import sys, os, json, base64, time, stat
-def ev(o):
-    try:
-        t = open("/dev/tty", "w")
-    except OSError:
-        t = sys.stdout
-    t.write("\033]7777;" + base64.b64encode(json.dumps(o).encode()).decode() + "\007")
-    t.flush()
-    return t
-def fit(t, line):
-    # Clip the text fallback to the terminal width so it never soft-wraps
-    # and stays exactly under the GUI widget rows.
-    w = int(os.environ.get("COLUMNS") or 0)  # live value from bash (checkwinsize)
-    if w <= 0:
-        try:
-            w = os.get_terminal_size(t.fileno()).columns
-        except (OSError, ValueError, AttributeError):
-            w = 200
-    return line if len(line) < w else line[:max(w - 2, 1)] + "~"
-def human(n):
-    for u in "BKMGT":
-        if n < 1024: return ("%d%s" % (n, u)) if u == "B" else ("%.1f%s" % (n, u))
-        n /= 1024.0
-    return "%.1fP" % n
-'
-
-__weft_py_wls='
-d = os.path.abspath(os.path.expanduser(sys.argv[1] if len(sys.argv) > 1 else "."))
-hidden = os.environ.get("WEFT_LS_ALL") == "1"
-rows = []
-for e in os.scandir(d):
-    if e.name.startswith(".") and not hidden: continue
-    try:
-        st = e.stat(follow_symlinks=False)
-        isdir = e.is_dir()
-    except OSError:
-        continue
-    rows.append({"name": e.name + ("/" if isdir else ""), "path": e.path, "dir": isdir,
-                 "size": 0 if isdir else st.st_size, "mtime": int(st.st_mtime),
-                 "mode": stat.filemode(st.st_mode)})
-rows.sort(key=lambda r: (not r["dir"], r["name"].lower()))
-t = ev({"t": "widget", "kind": "files", "id": "ls%d-%d" % (os.getpid(), time.time()),
-        "rows": len(rows) + 1, "dir": d, "entries": rows})
-t.write(fit(t, "%-10s %8s  %-16s %s" % ("MODE", "SIZE", "MODIFIED", "NAME")) + "\n")
-for r in rows:
-    t.write(fit(t, "%-10s %8s  %-16s %s" % (r["mode"], "-" if r["dir"] else human(r["size"]),
-            time.strftime("%Y-%m-%d %H:%M", time.localtime(r["mtime"])), r["name"])) + "\n")
-t.flush()
-'
-
-__weft_py_wtable='
-lines = [l.rstrip("\n") for l in sys.stdin if l.strip()]
-if not lines: sys.exit(0)
-tab = "\t" in lines[0]
-head = lines[0].split("\t") if tab else lines[0].split()
-rows = []
-for l in lines[1:]:
-    cells = l.split("\t") if tab else l.split(None, len(head) - 1)
-    rows.append(cells + [""] * (len(head) - len(cells)))
-t = ev({"t": "widget", "kind": "table", "id": "tb%d-%d" % (os.getpid(), time.time()),
-        "rows": len(lines), "columns": head, "data": rows})
-t.write("".join(fit(t, l) + "\n" for l in lines))
-t.flush()
-'
-
-# wls [DIR] : directory listing as an interactive table (WEFT_LS_ALL=1 for dotfiles)
-wls() {
-    if [ -n "$__weft_py" ]; then
-        COLUMNS=$COLUMNS "$__weft_py" -c "$__weft_py_common$__weft_py_wls" "$@"
-    else
-        ls -la "$@"
-    fi
+# Clip a line to the terminal's width: it never wraps, and stays under its
+# widget's rows. COLUMNS: bash's own (checkwinsize).
+__weft_fit() {
+    local w=${COLUMNS:-0} l
+    while IFS= read -r l; do
+        if [ "$w" -gt 2 ] && [ ${#l} -ge "$w" ]; then l="${l:0:w-2}~"; fi
+        printf '%s\n' "$l"
+    done
 }
 
-# CMD | wtable : turn whitespace/TSV columns (ps aux, df -h, ...) into a sortable table
+# wls [DIR] : directory listing as an interactive table (WEFT_LS_ALL=1 for
+# dotfiles). Its rows are ls' (a header, then one a name); weft lists the
+# folder itself, through its agent.
+wls() {
+    local d t n
+    d=$(cd -- "${1:-.}" 2>/dev/null && pwd -P) || { ls -l "$@"; return; }
+    if [ "${WEFT_LS_ALL:-}" = 1 ]; then t=$(ls -lA -- "$d" | __weft_fit); else t=$(ls -l -- "$d" | __weft_fit); fi
+    n=$(printf '%s\n' "$t" | wc -l)
+    __weft_ev "{\"t\":\"widget\",\"kind\":\"files\",\"id\":\"ls$$-$RANDOM\",\"rows\":${n// /},\"dir\":$(__weft_js "$d"),\"hidden\":$([ "${WEFT_LS_ALL:-}" = 1 ] && echo true || echo false)}"
+    printf '%s\n' "$t" >/dev/tty
+}
+
+# CMD | wtable : turn whitespace/TSV columns (ps aux, df -h, ...) into a
+# sortable table; weft splits the text into its columns.
 wtable() {
-    if [ -n "$__weft_py" ]; then
-        COLUMNS=$COLUMNS "$__weft_py" -c "$__weft_py_common$__weft_py_wtable"
-    else
-        cat
-    fi
+    local l t= n=0
+    while IFS= read -r l || [ -n "$l" ]; do
+        [ -n "${l//[[:space:]]/}" ] || continue
+        t+=$l$'\n'; n=$((n + 1))
+    done
+    [ "$n" -gt 0 ] || return 0
+    t=$(printf '%s' "$t" | __weft_fit)
+    __weft_ev "{\"t\":\"widget\",\"kind\":\"table\",\"id\":\"tb$$-$RANDOM\",\"rows\":$n,\"text\":$(__weft_js "$t")}"
+    printf '%s\n' "$t" >/dev/tty
 }
 
 __weft_osc "7;file://${HOSTNAME}${PWD}"

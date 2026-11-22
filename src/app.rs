@@ -639,15 +639,14 @@ pub struct SavedView {
 impl Default for Settings {
     fn default() -> Self {
         let mut profiles = vec![Profile::local()];
-        let git_bash = "C:/Program Files/Git/bin/bash.exe";
-        if cfg!(windows) && std::path::Path::new(git_bash).is_file() {
+        if let Some(git_bash) = host::git_bash().filter(|_| cfg!(windows)).map(|p| p.display().to_string().replace('\\', "/")) {
             // A POSIX "remote" that is really local: exercises exactly the code
             // path an ssh host takes (in-memory rc + stdin-shipped agent).
             profiles.push(Profile {
                 name: "posix-loopback".into(),
                 kind: HostKind::Custom {
-                    pty: vec![git_bash.into(), "-c".into()],
-                    agent: vec![git_bash.into(), "-c".into()],
+                    pty: vec![git_bash.clone(), "-c".into()],
+                    agent: vec![git_bash, "-c".into()],
                     shell: Default::default(),
                     plain: false,
                 },
@@ -655,13 +654,6 @@ impl Default for Settings {
         }
         Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, layout: Layout::default(), show_hidden: false, show_ignored: true, find_mode: Default::default(), palette_mode: d_palette_mode(), cursor_style: Default::default(), local_shell: Default::default(), mermaid: Default::default(), follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, term_font: d_font_file(), icon_font: d_icon_font(), records: Default::default(), passwords: Default::default(), keys: Default::default(), session: Vec::new(), side_tabs: Default::default(), open: Default::default(), confirm_unsaved: true, confirm_running: true, console_host: String::new(), renderer: String::new(), search: Default::default(), remote_python: d_pythons(), remote_shells: Default::default(), unix_shell: String::new(), guess_blocks: false }
     }
-}
-
-/// The terminal's line is ssh asking for a password ("u@h's password: ",
-/// "(u@h) Password: ").
-pub fn waits_for_password(t: &Term) -> bool {
-    let line = t.line(t.cursor_abs()).map(|r| r.text()).unwrap_or_default().to_lowercase();
-    line.trim_end().ends_with("password:")
 }
 
 /// "Shells…": the choices being edited.
@@ -673,6 +665,10 @@ pub struct ShellsWindow {
     pub remote: String,
     pub unix: String,
     pub local: host::LocalShell,
+    /// This computer's choices as they were when the window opened: only
+    /// what is changed here is saved (a local shell set elsewhere while it
+    /// was open was put back).
+    pub was: Option<(host::LocalShell, String)>,
 }
 
 /// What to say of a shell weft has less than everything in (none: all of
@@ -705,11 +701,17 @@ pub fn ssh_failed(said: &str) -> bool {
         "Too many authentication failures",
         "Received disconnect from",
         "Unable to negotiate",
+        "Bad configuration option",
         "Bad owner or permissions",
         "No route to host",
         "Could not resolve hostname",
     ];
     SSH_WORDS.iter().any(|w| said.contains(w))
+}
+
+/// ssh's words for a connection that was lost after it got in.
+pub fn connection_lost(said: &str) -> bool {
+    ["closed by remote host", "Broken pipe", "Connection reset", "Connection timed out", "Connection aborted", "Timeout, server"].iter().any(|w| said.contains(w))
 }
 
 /// A saved tab without the terminals whose host is not kept: a split
@@ -1086,6 +1088,10 @@ impl OutputTrace {
     }
 }
 
+/// The key weft's shell integrations bind to empty the line in any editing
+/// mode: Ctrl+Alt+Shift+F12, as xterm sends it (one no one types).
+pub const CLEAR_KEY: &[u8] = b"\x1b[24;8~";
+
 pub struct Pane {
     /// A recording of this terminal's traffic, while one is being made.
     pub trace: Option<OutputTrace>,
@@ -1105,11 +1111,47 @@ pub struct Pane {
     /// weft's POSIX command ran there: it says so first thing (OSC 7777
     /// "sh"), before it unpacks anything.
     pub boot_ran: bool,
+    /// The shell this start runs is Windows' PowerShell or cmd, whose line
+    /// Esc empties (not nu, nor a POSIX shell: Ctrl-U). Of the shell that
+    /// started, not of the settings now.
+    pub clear_with_esc: bool,
+    /// weft's integration bound its own key to empty the line (CLEAR_KEY):
+    /// a run empties it so, in any editing mode (vi's, PSReadLine's Emacs).
+    pub clear_key: bool,
+    /// What its shell takes a cd and a path in (of the shell that
+    /// started: a local cmd or nu on Windows, sh on macOS and Linux).
+    pub lang: host::ShellLang,
+    /// What to send it, and when: a run's command after the Esc that
+    /// empties a Windows shell's line (a console that reads late, or ssh
+    /// on the way, could take both in one read, and Esc the command's
+    /// first key).
+    pub send_at: Option<(Instant, Vec<u8>)>,
+    /// When it did, and the lines sent by then: a chosen shell that did not
+    /// start ends soon after, with nothing typed into it (however long a
+    /// password and a one-time code took before).
+    pub booted: Option<(Instant, u32)>,
     /// Ctrl-C was typed in it: one stopped at ssh's password prompt is not
     /// a host that refused weft's command.
     pub interrupted: bool,
+    /// When this start of it began, and the lines the user sent it since
+    /// (Enter): a host that refused weft's command, or a shell that did not
+    /// start, ends at once, after a password at most; a session that was
+    /// used (a forced command's tmux, a plain shell) is not one of those.
+    pub started_at: Instant,
+    pub lines_sent: u32,
+    /// What ran weft's command said it does not know `exec`: cmd and
+    /// PowerShell name it in quotes, the language's own ("'exec' is not
+    /// recognized", "'exec'은(는) …", "Der Befehl "exec" …"; see
+    /// host::says_exec_unknown).
+    /// A refusal, whenever it comes (a password typed late, a one-time code
+    /// after it). (Not the console's win32-input-mode request: this PC's
+    /// own console makes it too, for every terminal on Windows.)
+    pub exec_refused: bool,
     /// Startup timing logged: first output, first prompt.
     pub seen: (bool, bool),
+    /// A prompt that is not a sign-in's question was seen (a shell's, or a
+    /// menu's "Select host: "): what ends after it is no refusal.
+    pub menu_seen: bool,
     /// Where its text area's top is on screen, as last drawn.
     pub text_top: f32,
     pub id: usize,
@@ -1160,6 +1202,14 @@ impl Pane {
             started_shell: None,
             injected: false,
             boot_ran: false,
+            started_at: Instant::now(),
+            lines_sent: 0,
+            booted: None,
+            clear_with_esc: false,
+            clear_key: false,
+            lang: host::ShellLang::Posix,
+            send_at: None,
+            exec_refused: false,
             interrupted: false,
             id,
             host: host.to_string(),
@@ -1188,6 +1238,7 @@ impl Pane {
             rec_seen: 0,
             rec_cwd: None,
             seen: (false, false),
+            menu_seen: false,
             text_top: 0.0,
             flash_block: None,
         }
@@ -1206,14 +1257,74 @@ impl Pane {
         }
     }
 
+    /// What it says now may be a Windows shell's refusal of weft's command:
+    /// nothing has run there yet, no prompt has come (a refusal comes
+    /// before one), and no more lines were sent than a first connection
+    /// takes: the host key's yes, a mistyped password, the password, a
+    /// one-time code (five, for one more of those). (Later, a quoted exec is a session's
+    /// own: `"exec": {` in a bastion's menu or a forced command's tmux.)
+    pub fn may_be_refused(&self) -> bool {
+        !self.boot_ran && self.shell_pid.is_none() && !self.seen.1 && self.lines_sent <= 5
+    }
+
+    /// weft's POSIX command said it ran there.
+    fn boot_ran(&mut self) {
+        self.boot_ran = true;
+        self.booted.get_or_insert((Instant::now(), self.lines_sent));
+    }
+
     pub fn send(&mut self, bytes: &[u8]) {
-        // Enter starts a command for shells that don't mark it themselves.
+        // A run's command waiting after its Esc: keys typed meanwhile go
+        // after it, at its time (sent at once, they were put before it,
+        // "x" and "ls": xls; or took it with them, and Esc with it).
+        // Ctrl-C drops it: what was asked for is not wanted.
+        if let Some((_, waiting)) = &mut self.send_at {
+            if bytes.contains(&3) {
+                self.send_at = None;
+                self.term.user_runs(None);
+            } else {
+                waiting.extend_from_slice(bytes);
+                return;
+            }
+        }
+        // Enter starts a command for shells that don't mark it themselves;
+        // an Enter alone on an empty line, none.
+        // In their order: Ctrl-C or Ctrl-U empties the line, what follows it
+        // is typed (weft's own run sends Ctrl-U, the command and Enter).
+        let after = bytes.iter().rposition(|b| matches!(*b, 3 | 21));
+        if after.is_some() {
+            self.term.user_cleared();
+        }
+        if bytes[after.map_or(0, |i| i + 1)..].iter().any(|b| *b != b'\r') {
+            self.term.user_typed();
+        }
         if bytes.contains(&b'\r') {
+            // A guessed question answered with the answer on the screen: a
+            // menu's ("Select host: "), not a password's or a code's (asked
+            // with echo off), in any language. (ssh's own host key question,
+            // in English always, echoes its yes.)
+            if !self.menu_seen && self.term.at_prompt_question() && self.term.question_answer_shown() {
+                let line = self.term.line(self.term.cursor_abs()).map(|r| r.text()).unwrap_or_default();
+                if !line.contains("(yes/no/") && !line.contains("Please type 'yes'") {
+                    self.menu_seen = true;
+                }
+            }
+            // The folder the command run at this prompt runs in, now: its
+            // end and the next prompt's folder can come before the next
+            // frame looks (a local `cd /tmp` was recorded as run in /tmp,
+            // in every shell).
+            let at = self.term.blocks.last().filter(|b| b.state() == BlockState::Prompt).map(|b| b.id);
             self.term.user_enter();
+            if let Some(id) = at {
+                if self.rec_cwd.as_ref().is_none_or(|c| c.0 != id) {
+                    self.rec_cwd = Some((id, self.term.cwd.clone().or(self.initial_cwd.clone()).unwrap_or_default()));
+                }
+            }
         }
         if bytes.contains(&3) {
             self.interrupted = true;
         }
+        self.lines_sent += bytes.iter().filter(|b| **b == b'\r').count() as u32;
         if let Some(t) = self.trace.as_mut() {
             t.input(bytes);
         }
@@ -1499,6 +1610,8 @@ pub fn text_hash(text: &str) -> u64 {
 
 pub enum Pending {
     List { path: String },
+    /// A Files widget's folder (wls), listed for it.
+    WidgetFiles { pane: usize, id: String },
     Open { path: String, line: usize },
     Save { path: String },
     Complete { pane: usize },
@@ -1995,18 +2108,30 @@ impl App {
     /// process has ended; without it, ssh's failure was taken for the
     /// shell's).
     const JUDGE_AFTER: Duration = Duration::from_millis(500);
+    /// How soon a refusal (or a shell that did not start) ends the terminal.
+    const AT_ONCE: Duration = Duration::from_secs(20);
 
     fn shell_failed(&mut self, id: usize, host: &str, code: Option<u32>, said: &str) {
         // No code: ended by a signal (stopped), not refused.
         let Some(code) = code else { return };
-        if ssh_failed(said) || said.contains(crate::host::NO_DECODER_SAID) {
+        if said.contains(crate::host::NO_DECODER_SAID) {
             return;
         }
+        let refused = self.panes.get(&id).is_some_and(|p| p.exec_refused || (p.may_be_refused() && host::says_exec_unknown(said)));
         let (boot_ran, chose) = self.panes.get(&id).map(|p| (p.boot_ran || p.shell_pid.is_some(), p.started_shell.clone())).unwrap_or_default();
         // Started with the shell chosen for the host, which did not start:
         // its login shell instead, said (once: other terminals of the host
         // may have failed with it too).
-        if let Some(choice) = chose.filter(|_| boot_ran && code != 0) {
+        // (Where weft's command ran there. Not by its "shell" event: the
+        // bash branch starts bash before it, and a chosen bash that did not
+        // start had no fallback so.) ssh's words on the screen do not
+        // count here: weft's command ran, so ssh got in ("Permission denied,
+        // please try again" from a mistyped password before stopped this).
+        // A connection lost just then is not the shell's: ssh ends with 255
+        // and says so. (255 alone is not that: a shell killed by a signal
+        // as it starts, pwsh without libicu say, ends ssh with 255 too.)
+        let lost = code == 255 && connection_lost(said);
+        if let Some(choice) = chose.filter(|_| boot_ran && code != 0 && !lost) {
             if self.shell_choice_off.insert(host.to_string()) {
                 self.data.log(&format!("pane {id} [{host}]: the chosen shell {choice} ended with {code} before its prompt; its login shell instead"));
                 self.toast(format!("{host}: the shell chosen for it, {choice}, did not start (it ended with code {code}): its login shell is used instead. Shells… (command palette) to choose another"), ToastKind::Info);
@@ -2017,11 +2142,33 @@ impl App {
         if boot_ran {
             return;
         }
+        // Ended with 0 and no word of `exec`: what the host runs instead (a
+        // bastion's menu left with one line, a tmux detached, a note and
+        // its end) ended as it does. Windows' refusal names exec in quotes,
+        // in cmd and PowerShell alike, whatever its code.
+        if code == 0 && !refused {
+            return;
+        }
+        // ssh's own failure (it never got in), unless a shell there refused
+        // weft's command: a mistyped password first ("Permission denied,
+        // please try again") left ssh's words on the screen of one that did.
+        if ssh_failed(said) && !refused {
+            return;
+        }
         let profile = self.profile(host);
         if !matches!(profile.kind, HostKind::Ssh { .. } | HostKind::Custom { .. }) {
             return;
         }
         let current = profile.remote_shell();
+        // A custom profile's way in is its own (docker, kubectl, anything):
+        // its failures say nothing weft can know in any tool's words. A
+        // POSIX one moves on only where a shell refused weft's command in
+        // so many words (cmd's and PowerShell's exec); a container not
+        // running is left as it is (it was saved as Windows', then
+        // "Other"). Once moved on, the next try's end counts as ever.
+        if matches!(profile.kind, HostKind::Custom { .. }) && current == RemoteShell::Posix && !refused {
+            return;
+        }
         // Started for a shell already given up on (another terminal of the
         // host failed first): it starts again for the one tried now.
         if self.panes.get(&id).is_some_and(|p| p.started_as != current) {
@@ -2272,15 +2419,16 @@ impl App {
         if self.conns.contains_key(host) {
             self.reconnect(host);
         }
-        // Its terminals that have not got in, waiting at ssh's own password
-        // prompt (as all of a session's do after a start) or ended: started
-        // again with it, instead of each asking for it once more. One that
-        // got in is left as it is.
+        // Its terminals that have not got in, waiting at a question before
+        // any shell (ssh's password, as all of a session's do after a start;
+        // told by its shape, in any words) or ended: started again with it,
+        // instead of each asking for it once more. One that got in is left
+        // as it is.
         if given {
             let waiting: Vec<usize> = self
                 .panes
                 .iter()
-                .filter(|(_, p)| p.host == host && !p.seen.1 && (p.exited || waits_for_password(&p.term)))
+                .filter(|(_, p)| p.host == host && !p.seen.1 && (p.exited || p.term.at_prompt_question()))
                 .map(|(id, _)| *id)
                 .collect();
             for id in waiting {
@@ -2327,9 +2475,13 @@ impl App {
             env.extend(e);
             // Windows' shells say nothing of themselves as they start.
             if cfg!(windows) && self.settings.local_shell == host::LocalShell::Cmd {
-                self.shell_notice("local", "cmd");
+                self.shell_notice(&pane.host.clone(), "cmd");
             }
         }
+        // (A Windows host's terminal is PowerShell too: Esc there as well.)
+        let local_esc = prof.is_local() && cfg!(windows) && !argv.first().and_then(|a| std::path::Path::new(a).file_stem()).is_some_and(|s| s.eq_ignore_ascii_case("nu"));
+        pane.clear_with_esc = local_esc || (!prof.is_local() && pane.started_as == RemoteShell::Windows);
+        pane.lang = if prof.is_local() && cfg!(windows) { argv.first().map(|a| host::ShellLang::of_local(a)).unwrap_or_default() } else { prof.shell_lang() };
         // X11 forwarding: ssh sends the GUI to the X server here (started if
         // installed and not running); DISPLAY last, so it wins over askpass's.
         if matches!(prof.kind, host::HostKind::Ssh { x11: true, .. }) {
@@ -2352,9 +2504,26 @@ impl App {
         pane.shell_pid = None;
         pane.boot_ran = false;
         pane.interrupted = false;
+        pane.started_at = Instant::now();
+        pane.exec_refused = false;
+        // This start's first output and prompt are yet to come (kept from
+        // the last start, a chosen shell that ended at once after a restart
+        // was never judged: no fallback to the login shell).
+        pane.seen = (false, false);
+        pane.menu_seen = false;
+        pane.clear_key = false;
+        pane.lines_sent = 0;
+        pane.booted = None;
+        pane.send_at = None;
         pane.parser = vte::Parser::new();
         pane.widgets.clear();
         pane.hist_seen = 0;
+        // Its blocks are counted from 1 again: Records took the first ones
+        // of a terminal started again for seen; and an end still to be
+        // judged was judged against the new process.
+        pane.rec_seen = 0;
+        pane.rec_cwd = None;
+        pane.judge_at = None;
         match Pty::spawn(&argv, local_cwd.as_deref(), &env, pane.term.cols as u16, pane.term.rows as u16, self.wake_term()) {
             Ok(p) => {
                 pane.pty = Some(p);
@@ -2380,6 +2549,9 @@ impl App {
         pane.parser = vte::Parser::new();
         pane.widgets.clear();
         pane.hist_seen = 0;
+        pane.rec_seen = 0;
+        pane.rec_cwd = None;
+        pane.judge_at = None;
         let result = if via == "local" {
             self.data.log(&format!("pane {} serial {port} at {baud}", pane.id));
             Pty::serial(port, baud, self.wake_term()).map_err(|e| {
@@ -2981,18 +3153,68 @@ impl App {
         }
     }
 
+    /// The terminal Files' actions for `host` go to: the active one, if it
+    /// is that host's (another host's got this one's paths: a Linux path
+    /// cd'd in this PC's PowerShell).
+    pub fn pane_of(&self, host: &str) -> Option<usize> {
+        self.active_pane_id().filter(|id| self.panes.get(id).is_some_and(|p| p.host == host))
+    }
+
+    /// A cd to `path`, in the language of that terminal's shell.
+    pub fn cd_in(&self, id: usize, path: &str) -> String {
+        self.panes.get(&id).map(|p| p.lang).unwrap_or_default().cd(path)
+    }
+
+    /// `path` quoted for that terminal's shell.
+    pub fn quote_in(&self, id: usize, path: &str) -> String {
+        self.panes.get(&id).map(|p| p.lang).unwrap_or_default().quote(path)
+    }
+
     pub fn run_in_pane(&mut self, id: usize, cmd: &str) {
-        let local = self.profile(&self.panes.get(&id).map(|p| p.host.clone()).unwrap_or_default()).is_local();
+        // Nothing to run (a block whose text the shell did not tell): not
+        // an empty line sent.
+        if cmd.trim().is_empty() {
+            return;
+        }
         let Some(p) = self.panes.get_mut(&id) else { return };
-        if !p.term.at_prompt() {
+        // (A run's command still to go after its Esc: busy too, or the
+        // second run took its place and the first was lost.)
+        if !p.term.at_prompt() || p.send_at.is_some() {
             self.toast("pane is busy — command not sent", ToastKind::Error);
             return;
         }
-        // Clear whatever is on the line, then run.
-        let mut bytes = if local { b"\x1b".to_vec() } else { b"\x15".to_vec() };
+        // Clear whatever is on the line, then run: Esc in Windows' own
+        // PowerShell and cmd; Ctrl-U elsewhere (bash and zsh read Esc and
+        // the command's first letter as one key, Meta-l for `ls`: the
+        // command lost its first letter on macOS and Linux). Esc on a write
+        // of its own: with the command in the same write the console takes
+        // it with the next key, and what was on the line stayed; and on a
+        // write of its own but at once, a console that reads late (a busy
+        // PC, ssh on the way) took both together: the command 150 ms after
+        // it. (By the shell that started: nu chosen but not installed is
+        // PowerShell.)
+        // Its text for the block (a shell that marks no start reads it off
+        // the screen at the Enter, before the shell has echoed it).
+        p.term.user_runs(Some(cmd));
+        // weft's own key where its integration bound one: Esc and Ctrl-U are
+        // the default editing modes' (vi's insert mode takes Esc as leaving
+        // it, PSReadLine's Emacs mode as Meta).
+        let mut bytes = if p.clear_key {
+            CLEAR_KEY.to_vec()
+        } else if p.clear_with_esc {
+            p.send(b"\x1b");
+            Vec::new()
+        } else {
+            b"\x15".to_vec()
+        };
         bytes.extend_from_slice(cmd.as_bytes());
         bytes.push(b'\r');
-        p.send(&bytes);
+        if p.clear_with_esc && !p.clear_key {
+            p.send_at = Some((Instant::now() + Duration::from_millis(150), bytes));
+            self.ctx.request_repaint_after(Duration::from_millis(150));
+        } else {
+            p.send(&bytes);
+        }
     }
 
     pub fn paste_into(&mut self, id: usize, text: &str) {
@@ -3029,6 +3251,14 @@ impl App {
             // Shells without OSC 133: prompts and command ends are guessed when
             // output settles, so look again shortly even without new output.
             guessing |= pane.term.tick();
+            if let Some((at, _)) = &pane.send_at {
+                if Instant::now() >= *at {
+                    let (_, bytes) = pane.send_at.take().unwrap();
+                    pane.send(&bytes);
+                } else {
+                    self.ctx.request_repaint_after(*at - Instant::now());
+                }
+            }
             if let Some(pty) = pane.pty.as_mut() {
                 // An app's synchronized update (DEC 2026) comes in whole.
                 let now = Instant::now();
@@ -3049,6 +3279,23 @@ impl App {
                 if !bytes.is_empty() {
                     let before = pane.term.end_line();
                     pane.term.feed(&mut pane.parser, &bytes);
+                    if !pane.boot_ran && bytes.windows(host::NO_DECODER_SAID.len()).any(|w| w == host::NO_DECODER_SAID.as_bytes()) {
+                        // (Pane::boot_ran, with pty borrowed.)
+                        pane.boot_ran = true;
+                        pane.booted.get_or_insert((now, pane.lines_sent));
+                    }
+                    // Its "sh" now, not with the other events after this
+                    // loop: a chosen shell that ends at once ends in this
+                    // read too, and was judged as if weft's command had not
+                    // run yet (no fallback after a password and a code).
+                    if !pane.boot_ran && pane.term.events.iter().any(|e| matches!(e, TermEvent::Weft { value, .. } if value["t"] == "sh")) {
+                        pane.boot_ran = true;
+                        pane.booted.get_or_insert((now, pane.lines_sent));
+                    }
+                    // (Pane::may_be_refused, with pty borrowed.)
+                    if !pane.exec_refused && (!pane.boot_ran && pane.shell_pid.is_none() && !pane.seen.1 && pane.lines_sent <= 5) && host::says_exec_unknown(&String::from_utf8_lossy(&bytes)) {
+                        pane.exec_refused = true;
+                    }
                     if !pane.seen.0 {
                         pane.seen.0 = true;
                         timings.push(format!("startup: pane {id} [{}] first output at {}", pane.host, crate::since_start()));
@@ -3061,7 +3308,11 @@ impl App {
                 }
                 // (Looked at without new output too: a guessed prompt is
                 // found a moment after its text came.)
-                if !pane.seen.1 && pane.term.prompted() {
+                // (Or a menu's question, told at its answer: see Pane::send.)
+                if !pane.menu_seen && pane.term.shell_prompted() {
+                    pane.menu_seen = true;
+                }
+                if !pane.seen.1 && pane.term.shell_prompted() {
                     pane.seen.1 = true;
                     timings.push(format!("startup: pane {id} [{}] first prompt at {}", pane.host, crate::since_start()));
                 }
@@ -3073,7 +3324,21 @@ impl App {
                     // OpenSSH ends a session with a terminal with 0 whatever
                     // ran, and a refusal can look like a prompt.
                     let never_ran = pane.shell_pid.is_none() && !pane.boot_ran;
-                    if (never_ran || (pane.started_shell.is_some() && !pane.seen.1)) && !pane.interrupted {
+                    // At once, a password at most: not a session that was
+                    // used and then ended (it reconnected as another shell,
+                    // and a forced command's host was saved as "Other").
+                    // (Pane::may_be_refused, with pty borrowed.)
+                    let refused = pane.exec_refused || (never_ran && (!pane.boot_ran && pane.shell_pid.is_none() && !pane.seen.1 && pane.lines_sent <= 5) && host::says_exec_unknown(&pane.term.lines_text(pane.term.first_line(), pane.term.end_line() + 1)));
+                    let at_once = refused || (pane.lines_sent <= 1 && pane.started_at.elapsed() < Self::AT_ONCE);
+                    // A chosen shell: soon after weft's command ran, nothing
+                    // typed into it since (not counting the time and lines
+                    // a password and a one-time code took before).
+                    let chose_quit = pane.started_shell.is_some() && !pane.seen.1 && pane.booted.is_some_and(|(at, n)| pane.lines_sent <= n && at.elapsed() < Self::AT_ONCE);
+                    // (Not once the shell's prompt or a menu's was seen: a
+                    // bastion left with `quit` and code 1 was taken for a
+                    // refusal and the host saved as "Other". A refusal comes
+                    // before any prompt, after questions only.)
+                    if ((never_ran && (refused || (at_once && !pane.menu_seen))) || chose_quit) && !pane.interrupted {
                         pane.judge_at = Some(now + Self::JUDGE_AFTER);
                         self.ctx.request_repaint_after(Self::JUDGE_AFTER);
                     }
@@ -3095,7 +3360,9 @@ impl App {
             for b in &pane.term.blocks {
                 if b.id > pane.hist_seen && b.state() != BlockState::Prompt {
                     pane.hist_seen = b.id;
-                    pane.rec_cwd = Some((b.id, pane.term.cwd.clone().or(pane.initial_cwd.clone()).unwrap_or_default()));
+                    if pane.rec_cwd.as_ref().is_none_or(|c| c.0 != b.id) {
+                        pane.rec_cwd = Some((b.id, pane.term.cwd.clone().or(pane.initial_cwd.clone()).unwrap_or_default()));
+                    }
                     if !b.command.is_empty() && !b.private {
                         new_history.push((pane.host.clone(), b.command.clone()));
                     }
@@ -3167,7 +3434,7 @@ impl App {
             // after that pane shows its first prompt.
             let failed = matches!(self.conns.get(&h).map(|c| &c.status), Some(ConnStatus::Failed(_)));
             if failed && !self.agent_retried.contains(&h) {
-                let prompted = self.panes.values().any(|p| p.host == h && p.term.prompted());
+                let prompted = self.panes.values().any(|p| p.host == h && p.term.shell_prompted());
                 if prompted {
                     self.agent_retried.insert(h.clone());
                     self.reconnect(&h);
@@ -3271,12 +3538,26 @@ impl App {
             // weft's POSIX command runs there (not a Windows host's cmd).
             "sh" => {
                 if let Some(p) = self.panes.get_mut(&pane_id) {
-                    p.boot_ran = true;
+                    p.boot_ran();
+                }
+            }
+            // Its integration bound weft's key to empty the line.
+            "clear-key" => {
+                if let Some(p) = self.panes.get_mut(&pane_id) {
+                    p.clear_key = true;
                 }
             }
             "shell" => {
                 if let Some(p) = self.panes.get_mut(&pane_id) {
+                    // A shell starting anew: its own keys are still to be told.
+                    p.clear_key = false;
                     p.shell_pid = v.get("pid").and_then(|x| x.as_u64());
+                    // The shell it started, not the profile's guess: a nu or
+                    // pwsh chosen, or the login shell (POSIX quotes broke
+                    // there).
+                    if p.lang == host::ShellLang::Posix {
+                        p.lang = host::ShellLang::of_started(&s("name"));
+                    }
                 }
                 self.data.log(&format!("pane {pane_id} [{host}] shell {} pid {}", s("name"), v["pid"]));
                 self.shell_notice(host, &s("name"));
@@ -3285,9 +3566,14 @@ impl App {
             // looked): its login shell runs instead. Said.
             "shell-missing" => {
                 let (wanted, using) = (s("wanted"), s("using"));
+                if let Some(p) = self.panes.get_mut(&pane_id) {
+                    p.started_shell = None;
+                }
                 self.data.log(&format!("pane {pane_id} [{host}]: the chosen shell {wanted} is not there; its login shell ({using}) instead"));
                 if self.shell_notes.insert(format!("{host}\nmissing {wanted}")) {
-                    self.toast(format!("{host}: the shell chosen for it, {wanted}, is not there: its login shell ({using}) is used instead. Shells… (command palette) to choose another"), ToastKind::Info);
+                    // (Most often there, but not on the PATH a command gets.)
+                    let hint = if wanted.starts_with('/') { "" } else { " (not on the PATH a command gets there: give its full path)" };
+                    self.toast(format!("{host}: the shell chosen for it, {wanted}, is not there{hint}: its login shell ({using}) is used instead. Shells… (command palette) to choose another"), ToastKind::Info);
                 }
             }
             // A remote zsh takes its integration only by typing it (see
@@ -3297,12 +3583,19 @@ impl App {
                     if !p.injected && !p.term.integrated {
                         p.injected = true;
                         p.send(b" eval \"$WEFT_ZSH\"\r");
+                        p.lines_sent = p.lines_sent.saturating_sub(1);
                     }
                 }
             }
             "widget" => {
                 let Some(kind) = parse_widget(&v) else { return };
                 let id = s("id");
+                // A Files widget that names its folder only (bash's wls): its
+                // entries are listed by the host's agent, as Files' are.
+                if matches!(kind, WidgetKind::Files { .. }) && v.get("entries").is_none() {
+                    let hidden = v.get("hidden").and_then(|x| x.as_bool()).unwrap_or(false);
+                    self.request(host, json!({"op": "list", "path": s("dir"), "hidden": hidden, "ignored": true, "mode": true}), Pending::WidgetFiles { pane: pane_id, id: id.clone() });
+                }
                 let rows = v.get("rows").and_then(|r| r.as_u64()).unwrap_or(1).clamp(1, 2000) as usize;
                 let Some(p) = self.panes.get_mut(&pane_id) else { return };
                 if let Some(w) = p.widgets.iter_mut().find(|w| w.id == id) {
@@ -3326,6 +3619,16 @@ impl App {
         let err = r.get("error").and_then(|v| v.as_str()).unwrap_or("error").to_string();
         match pending {
             Pending::Xfer { t, step } => self.on_transfer(t, step, ok, &r, err),
+            Pending::WidgetFiles { pane, id } => {
+                if !ok {
+                    self.data.log(&format!("pane {pane} [{host}]: wls: {err}"));
+                    return;
+                }
+                let entries = widget_entries(&r);
+                if let Some(w) = self.panes.get_mut(&pane).and_then(|p| p.widgets.iter_mut().find(|w| w.id == id)) {
+                    w.kind = WidgetKind::Files { dir: r["path"].as_str().unwrap_or("").into(), entries };
+                }
+            }
             Pending::SerialPorts { host } => {
                 if let Some(d) = self.serial_dialog.as_mut().filter(|d| d.host == host) {
                     d.ports = Some(if ok { Ok(crate::serial_ui::parse_ports(&r)) } else { Err(err) });
@@ -3357,8 +3660,10 @@ impl App {
                 let Some(i) = self.editor.files.iter().position(|f| f.host == host && f.path == path) else { return };
                 let f = &mut self.editor.files[i];
                 f.loading = false;
-                if !ok {
-                    if err.contains("IsADirectory") {
+                // A folder, told so by the agent: shown in Files.
+                let is_dir = r.get("is_dir").and_then(|v| v.as_bool()).unwrap_or(false);
+                if !ok || is_dir {
+                    if is_dir {
                         self.editor.files.remove(i);
                         self.editor.active = self.editor.active.min(self.editor.files.len().saturating_sub(1));
                         self.settings.sidebar = true;
@@ -3670,6 +3975,67 @@ pub fn apply_completion(c: &mut Composer) {
     }
 }
 
+/// A Files widget's entries from an agent's list: folders first, by name
+/// as ls sorts in no locale of its own (its case aside).
+fn widget_entries(r: &Value) -> Vec<WEntry> {
+    let dir = r["path"].as_str().unwrap_or("");
+    let mut out: Vec<WEntry> = r["entries"]
+        .as_array()
+        .map(|a| a.as_slice())
+        .unwrap_or_default()
+        .iter()
+        .map(|e| {
+            let name = e["n"].as_str().unwrap_or("");
+            let isdir = e["d"].as_bool().unwrap_or(false);
+            WEntry {
+                name: if isdir { format!("{name}/") } else { name.to_string() },
+                path: format!("{}/{name}", dir.trim_end_matches(['/', '\\'])),
+                dir: isdir,
+                size: e["s"].as_u64().unwrap_or(0),
+                mtime: e["m"].as_i64().unwrap_or(0),
+                mode: e["p"].as_str().unwrap_or("").into(),
+            }
+        })
+        .collect();
+    out.sort_by(|a, b| b.dir.cmp(&a.dir).then(a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+    out
+}
+
+/// Columns of a command's text (ps aux, df -h): split at tabs where its
+/// first line has one, else at runs of white space, the last column taking
+/// the rest of its line (a command line with spaces). The first line names
+/// them; blank lines are none.
+fn table_of_text(text: &str) -> (Vec<String>, Vec<Vec<String>>) {
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    let Some(first) = lines.first() else { return (Vec::new(), Vec::new()) };
+    let tab = first.contains('\t');
+    let head: Vec<String> = if tab { first.split('\t').map(String::from).collect() } else { first.split_whitespace().map(String::from).collect() };
+    let n = head.len().max(1);
+    let data = lines[1..]
+        .iter()
+        .map(|l| {
+            let mut cells: Vec<String> = if tab {
+                l.split('\t').map(String::from).collect()
+            } else {
+                let mut cells = Vec::new();
+                let mut rest = l.trim_start();
+                while !rest.is_empty() && cells.len() + 1 < n {
+                    let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+                    cells.push(rest[..end].to_string());
+                    rest = rest[end..].trim_start();
+                }
+                if !rest.is_empty() {
+                    cells.push(rest.trim_end().to_string());
+                }
+                cells
+            };
+            cells.resize(head.len().max(cells.len()), String::new());
+            cells
+        })
+        .collect();
+    (head, data)
+}
+
 fn parse_widget(v: &Value) -> Option<WidgetKind> {
     let strs = |a: &Value| -> Vec<String> {
         a.as_array().map(|a| a.iter().map(|x| x.as_str().map(String::from).unwrap_or_else(|| x.to_string())).collect()).unwrap_or_default()
@@ -3677,8 +4043,11 @@ fn parse_widget(v: &Value) -> Option<WidgetKind> {
     match v.get("kind")?.as_str()? {
         "files" => Some(WidgetKind::Files {
             dir: v["dir"].as_str().unwrap_or("").into(),
+            // None yet where the host's agent lists them (wls).
             entries: v["entries"]
-                .as_array()?
+                .as_array()
+                .map(|a| a.as_slice())
+                .unwrap_or_default()
                 .iter()
                 .map(|e| WEntry {
                     name: e["name"].as_str().unwrap_or("").into(),
@@ -3690,9 +4059,13 @@ fn parse_widget(v: &Value) -> Option<WidgetKind> {
                 })
                 .collect(),
         }),
-        "table" => Some(WidgetKind::Table {
-            columns: strs(&v["columns"]),
-            data: v["data"].as_array()?.iter().map(strs).collect(),
+        // As text (bash's wtable: split here), or split already.
+        "table" => Some(match v["text"].as_str() {
+            Some(text) => {
+                let (columns, data) = table_of_text(text);
+                WidgetKind::Table { columns, data }
+            }
+            None => WidgetKind::Table { columns: strs(&v["columns"]), data: v["data"].as_array()?.iter().map(strs).collect() },
         }),
         "choose" => Some(WidgetKind::Choose { options: strs(&v["options"]) }),
         "progress" => Some(WidgetKind::Progress {
@@ -3706,6 +4079,35 @@ fn parse_widget(v: &Value) -> Option<WidgetKind> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A command's text split into columns as it was printed: at runs of
+    /// white space (the last column keeps its spaces), or at tabs; short
+    /// rows filled out.
+    #[test]
+    fn a_tables_text_is_split_into_its_columns() {
+        let (h, d) = table_of_text("USER  PID COMMAND\nroot    1 /sbin/init splash\n\nme     42 vim\n");
+        assert_eq!(h, ["USER", "PID", "COMMAND"]);
+        assert_eq!(d, [vec!["root", "1", "/sbin/init splash"], vec!["me", "42", "vim"]]);
+        let (h, d) = table_of_text("a\tb c\tz\n1\t2 3\n");
+        assert_eq!(h, ["a", "b c", "z"]);
+        assert_eq!(d, [vec!["1", "2 3", ""]]);
+        assert_eq!(table_of_text("\n \n"), (Vec::<String>::new(), Vec::<Vec<String>>::new()));
+    }
+
+    /// wls' entries come from the agent's list: folders first, by name,
+    /// each with its path and mode.
+    #[test]
+    fn wls_entries_come_from_the_agents_list() {
+        let r = serde_json::json!({"path": "/d/", "entries": [
+            {"n": "b.txt", "d": false, "l": false, "s": 5, "m": 9, "p": "-rw-r--r--"},
+            {"n": "Sub", "d": true, "l": false, "s": 0, "m": 1, "p": "drwxr-xr-x"},
+            {"n": "a.txt", "d": false, "l": false, "s": 1, "m": 2},
+        ]});
+        let e = widget_entries(&r);
+        assert_eq!(e.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["Sub/", "a.txt", "b.txt"]);
+        assert_eq!(e[0].path, "/d/Sub");
+        assert_eq!((e[2].size, e[2].mode.as_str()), (5, "-rw-r--r--"));
+    }
 
     /// A process list that arrives late from the host shown before is not
     /// taken for this host's: Kill would end a process here with a pid from

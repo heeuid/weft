@@ -23,7 +23,7 @@ if [ -r /etc/profile ]; then command . /etc/profile; fi
 if [ -r "$HOME/.profile" ]; then command . "$HOME/.profile"; fi
 if [ -n "${ENV:-}" ]; then
     __weft_env=$ENV
-    [ -r "$__weft_env" ] || eval "__weft_env=$ENV" 2>/dev/null
+    [ -r "$__weft_env" ] || eval "__weft_env=\"$ENV\"" 2>/dev/null
     if [ -r "$__weft_env" ]; then command . "$__weft_env"; fi
     unset __weft_env
 else
@@ -37,6 +37,15 @@ else
 fi
 
 if [ -n "$__weft_at" ] && [ -d "$__weft_at" ]; then cd "$__weft_at"; fi
+# FreeBSD's sh (DragonFly's too) runs no command in a prompt, NetBSD's
+# only with promptcmds (8.0 on): where none runs, the prompt is left as it
+# was (no marks, and no `__weft_p` shown in it). (Tried in a subshell
+# first: a failed `set` ends the reading of this file in dash and others.)
+__weft_cmd=1
+case $__weft_sh:`uname -s` in
+sh:FreeBSD|sh:DragonFly) __weft_cmd= ;;
+sh:NetBSD) (set -o promptcmds) 2>/dev/null && set -o promptcmds || __weft_cmd= ;;
+esac
 unset __weft_at __weft_sh
 
 export WEFT=1
@@ -51,6 +60,9 @@ __weft_p() {
 }
 # (Backquotes, not $(...): where sh is Cygwin's or MSYS' bash, $(...) in a
 # PS1 that has a newline is a syntax error at every prompt.)
-PS1='`__weft_p`'"${PS1:-\$ }"
+# (2>&-: a PS1 the user's profile exported goes to the shells started from
+# this one, where __weft_p is not: "not found" at each of their prompts.)
+[ -z "$__weft_cmd" ] || PS1='`__weft_p 2>&-`'"${PS1:-\$ }"
+unset __weft_cmd
 
 exec 3<&-

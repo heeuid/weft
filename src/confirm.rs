@@ -51,6 +51,14 @@ impl App {
             return None;
         }
         let block = p.term.blocks.last().filter(|b| b.started.is_some() && b.end_line.is_none());
+        // One an Enter started in a shell that marks no start (dash, ksh);
+        // one guessed out of sight (tcsh, a plain ssh).
+        if let (None, Some(cmd)) = (block, p.term.pending_command()) {
+            return Some(if cmd.trim().is_empty() { "a command".to_string() } else { cmd.trim().to_string() });
+        }
+        if block.is_none() && !p.term.alt_active && p.term.running() {
+            return Some("a command".to_string());
+        }
         match block {
             Some(b) => Some(if b.command.trim().is_empty() { "a command".to_string() } else { b.command.trim().to_string() }),
             None if p.term.alt_active => Some("a full-screen program".to_string()),

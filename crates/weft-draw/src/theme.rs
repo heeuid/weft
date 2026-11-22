@@ -321,21 +321,84 @@ fn font_data(spec: &str) -> Result<FontData, String> {
 /// Font files a user can pick: data/fonts (fonts you downloaded) first, then
 /// the system's. Bold, italic and other weights are left out; a path can
 /// still be entered for those.
-pub fn font_files(own: &std::path::Path) -> Vec<(String, String, bool)> {
-    let mut dirs: Vec<(std::path::PathBuf, bool)> = vec![(own.to_path_buf(), true)];
+/// The system's font folders, on every system (those not there are
+/// skipped): Windows', the user's, the X/fontconfig ones, macOS'.
+fn system_font_dirs() -> Vec<std::path::PathBuf> {
+    let mut dirs: Vec<std::path::PathBuf> = Vec::new();
     if let Ok(w) = std::env::var("WINDIR") {
-        dirs.push((format!("{w}\\Fonts").into(), false));
+        dirs.push(format!("{w}\\Fonts").into());
     }
     if let Ok(l) = std::env::var("LOCALAPPDATA") {
-        dirs.push((format!("{l}\\Microsoft\\Windows\\Fonts").into(), false));
+        dirs.push(format!("{l}\\Microsoft\\Windows\\Fonts").into());
     }
     if let Ok(h) = std::env::var("HOME") {
-        dirs.push((format!("{h}/.local/share/fonts").into(), false));
-        dirs.push((format!("{h}/Library/Fonts").into(), false));
+        dirs.push(format!("{h}/.local/share/fonts").into());
+        dirs.push(format!("{h}/.fonts").into());
+        dirs.push(format!("{h}/Library/Fonts").into());
     }
-    dirs.push(("/usr/share/fonts".into(), false));
-    dirs.push(("/usr/local/share/fonts".into(), false));
-    dirs.push(("/System/Library/Fonts".into(), false));
+    if let Ok(x) = std::env::var("XDG_DATA_DIRS") {
+        dirs.extend(x.split(':').filter(|d| !d.is_empty()).map(|d| std::path::PathBuf::from(d).join("fonts")));
+    }
+    for d in ["/usr/share/fonts", "/usr/local/share/fonts", "/System/Library/Fonts", "/Library/Fonts"] {
+        dirs.push(d.into());
+    }
+    let mut seen = std::collections::HashSet::new();
+    dirs.retain(|d| seen.insert(d.clone()));
+    dirs
+}
+
+/// Every font file under the system's font folders, by its file name
+/// (lower case): a family is found wherever the system keeps it, in a
+/// folder of its own or not (Debian's dejavu/, Fedora's
+/// dejavu-sans-fonts/, Arch's TTF/: none of them written down here).
+fn system_font_index() -> std::collections::HashMap<String, std::path::PathBuf> {
+    font_index(system_font_dirs())
+}
+
+fn font_index(dirs: Vec<std::path::PathBuf>) -> std::collections::HashMap<String, std::path::PathBuf> {
+    let mut index = std::collections::HashMap::new();
+    let mut stack: Vec<(std::path::PathBuf, u8)> = dirs.into_iter().rev().map(|d| (d, 0)).collect();
+    while let Some((d, depth)) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                if depth < 4 {
+                    stack.push((p, depth + 1));
+                }
+                continue;
+            }
+            index.entry(e.file_name().to_string_lossy().to_lowercase()).or_insert(p);
+        }
+    }
+    index
+}
+
+/// The file fontconfig gives for a pattern, where it is there (most
+/// Linuxes, some BSDs): the system's own choice, whatever its fonts are
+/// named. A family ("sans-serif"): its best match. What a font must have
+/// (":lang=ko", ":charset=2800"): one that has it, or none (fc-match gives
+/// its nearest even when none has it: a Korean font without Hangul, and
+/// the built-in one it falls back to was not used).
+fn fc_match(pattern: &str) -> Option<std::path::PathBuf> {
+    if cfg!(windows) {
+        return None;
+    }
+    let out = if pattern.starts_with(':') {
+        std::process::Command::new("fc-list").args(["-f", "%{file}\n", pattern]).output().ok()?
+    } else {
+        std::process::Command::new("fc-match").args(["-f", "%{file}", pattern]).output().ok()?
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut files: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    files.sort();
+    let p = std::path::PathBuf::from(files.first()?);
+    (out.status.success() && p.is_file()).then_some(p)
+}
+
+pub fn font_files(own: &std::path::Path) -> Vec<(String, String, bool)> {
+    let mut dirs: Vec<(std::path::PathBuf, bool)> = vec![(own.to_path_buf(), true)];
+    dirs.extend(system_font_dirs().into_iter().map(|d| (d, false)));
     let mut out: Vec<(String, String, bool)> = Vec::new();
     // Linux keeps fonts a folder or two down.
     let mut stack: Vec<(std::path::PathBuf, bool, u8)> = dirs.into_iter().rev().map(|(d, own)| (d, own, 0)).collect();
@@ -400,38 +463,30 @@ pub fn install_fonts(ctx: &egui::Context, term: &str, icons: &str) -> Vec<String
     };
     fonts.font_data.insert("mono".into(), Arc::new(term_data));
     fonts.font_data.insert("icons".into(), Arc::new(icon_data));
-    let dir = std::env::var("WINDIR").map(|w| format!("{w}\\Fonts")).unwrap_or_else(|_| "C:\\Windows\\Fonts".into());
-    let mut load = |key: &str, files: &[&str]| -> Option<String> {
-        for f in files {
-            for base in [dir.as_str(), "/usr/share/fonts/truetype", "/usr/share/fonts/opentype", "/usr/share/fonts", "/System/Library/Fonts", "/Library/Fonts"] {
-                if let Ok(bytes) = std::fs::read(format!("{base}/{f}")) {
-                    fonts.font_data.insert(key.to_string(), Arc::new(FontData::from_owned(bytes)));
-                    return Some(key.to_string());
-                }
-            }
-        }
-        None
+    // Fonts by file name, wherever the system keeps them; then what
+    // fontconfig picks for the role (any font a system has, by any name).
+    let index = system_font_index();
+    let mut load = |key: &str, files: &[&str], fc: Option<&str>| -> Option<String> {
+        let path = files.iter().find_map(|f| index.get(&f.to_lowercase()).cloned()).or_else(|| fc.and_then(fc_match))?;
+        let bytes = std::fs::read(path).ok()?;
+        fonts.font_data.insert(key.to_string(), Arc::new(FontData::from_owned(bytes)));
+        Some(key.to_string())
     };
-    // Linux keeps each family in a folder of its own (dejavu/, nanum/,
-    // noto/ on Debian and Ubuntu, google-noto-cjk/ on Fedora).
-    let ui = load("ui", &["segoeui.ttf", "dejavu/DejaVuSans.ttf", "DejaVuSans.ttf"]);
-    let kr_system = load(
-        "kr",
-        &["malgun.ttf", "nanum/NanumGothic.ttf", "NanumGothic.ttf", "noto/NotoSansCJK-Regular.ttc", "google-noto-cjk/NotoSansCJK-Regular.ttc", "AppleSDGothicNeo.ttc"],
-    );
+    let ui = load("ui", &["segoeui.ttf", "DejaVuSans.ttf"], Some("sans-serif"));
+    let kr_system = load("kr", &["malgun.ttf", "NanumGothic.ttf", "NotoSansCJK-Regular.ttc", "AppleSDGothicNeo.ttc"], Some(":lang=ko"));
     // Symbols the fonts above may lack (Braille, arrows, shapes, dingbats):
     // Segoe UI Symbol; DejaVu Sans on Linux; on macOS three, none of which
     // has them all (Apple Symbols has no ✘, Zapf Dingbats no Braille).
     let sym: Vec<String> = [
-        ("sym", &["seguisym.ttf", "dejavu/DejaVuSans.ttf", "DejaVuSans.ttf", "Apple Symbols.ttf"][..]),
-        ("sym_dingbats", &["ZapfDingbats.ttf"][..]),
-        ("sym_braille", &["Apple Braille.ttf"][..]),
+        ("sym", &["seguisym.ttf", "DejaVuSans.ttf", "Apple Symbols.ttf"][..], Some(":charset=2800")),
+        ("sym_dingbats", &["ZapfDingbats.ttf"][..], None),
+        ("sym_braille", &["Apple Braille.ttf"][..], None),
     ]
     .into_iter()
-    .filter_map(|(key, files)| load(key, files))
+    .filter_map(|(key, files, fc)| load(key, files, fc))
     .collect();
-    let ui_bold = load("ui_bold", &["segoeuib.ttf", "dejavu/DejaVuSans-Bold.ttf", "DejaVuSans-Bold.ttf"]);
-    let kr_bold = load("kr_bold", &["malgunbd.ttf", "nanum/NanumGothicBold.ttf", "NanumGothicBold.ttf"]);
+    let ui_bold = load("ui_bold", &["segoeuib.ttf", "DejaVuSans-Bold.ttf"], Some("sans-serif:bold"));
+    let kr_bold = load("kr_bold", &["malgunbd.ttf", "NanumGothicBold.ttf", "NotoSansCJK-Bold.ttc"], None);
     // No Hangul font on the system (a Linux without Korean fonts): the one
     // built in, D2Coding, has it; else Hangul was drawn as boxes.
     let kr = kr_system.clone().or_else(|| {
@@ -569,6 +624,22 @@ mod tests {
             widths = (w("iiiiiiii"), w("MMMMMMMM"));
         });
         assert!(widths.0 < widths.1 * 0.6, "i and M as wide: a fixed-width font drew the UI {widths:?}");
+    }
+
+    #[test]
+    fn a_font_is_found_by_its_name_in_any_folder() {
+        // Wherever a system keeps it (a folder of its own, two down: no
+        // distribution's layout written down), first folder first.
+        let root = std::env::temp_dir().join(format!("weft-fonts-{}", std::process::id()));
+        let deep = root.join("a").join("some-family").join("ttf");
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("WeftTest-Regular.ttf"), b"x").unwrap();
+        let other = root.join("later");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(other.join("WeftTest-Regular.ttf"), b"y").unwrap();
+        let index = font_index(vec![root.join("a"), other.clone()]);
+        assert_eq!(index.get("wefttest-regular.ttf"), Some(&deep.join("WeftTest-Regular.ttf")), "by name, any depth, the first folder's");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -4589,7 +4589,7 @@ checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
 
 [[package]]
 name = "weft"
-version = "0.11.3"
+version = "0.11.4"
 dependencies = [
  "base64 0.22.1",
  "eframe",
@@ -4614,7 +4614,7 @@ dependencies = [
 
 [[package]]
 name = "weft-core"
-version = "0.11.3"
+version = "0.11.4"
 dependencies = [
  "base64 0.22.1",
  "chacha20",
@@ -4636,7 +4636,7 @@ dependencies = [
 
 [[package]]
 name = "weft-draw"
-version = "0.11.3"
+version = "0.11.4"
 dependencies = [
  "egui",
  "syntect",

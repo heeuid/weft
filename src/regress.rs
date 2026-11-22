@@ -3268,8 +3268,9 @@ fn enter_in_the_password_dialog_connects() {
 #[test]
 fn a_password_given_once_serves_the_waiting_terminals() {
     // A stand-in ssh: with weft's ticket (a password given) it is in;
-    // without, it asks as ssh does and waits.
-    let script = "import os,sys,time\nif os.environ.get('WEFT_ASKPASS_TICKET'):\n    sys.stdout.write('logged-in\\r\\n')\nelse:\n    sys.stdout.write(\"u@h's password: \")\nsys.stdout.flush()\ntime.sleep(60)\n";
+    // without, it asks and waits (in Korean: a PAM's own words, told by
+    // the question's shape).
+    let script = "import os,sys,time\nif os.environ.get('WEFT_ASKPASS_TICKET'):\n    sys.stdout.write('logged-in\\r\\n')\nelse:\n    sys.stdout.write(\"u@h의 암호: \")\nsys.stdout.flush()\ntime.sleep(60)\n";
     let prof = json!({"name": "pw", "kind": "custom", "pty": [crate::testkit::py(), "-u", "-c", script], "agent": [crate::testkit::py(), "-c", "0"]});
     let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}, prof]}));
     let ids: Vec<usize> = (0..3).map(|_| h.app.spawn_pane("pw", None)).collect();
@@ -3279,7 +3280,8 @@ fn a_password_given_once_serves_the_waiting_terminals() {
         t.lines_text(t.first_line(), t.end_line() + 1).contains(what)
     };
     // (Three programs starting at once: slow on a busy machine.)
-    assert!(h.wait_for(90.0, |h| ids.iter().all(|&id| shows(h, id, "password:"))), "each waits at the password prompt");
+    // Waiting at a question (its shape, not its words: any language).
+    assert!(h.wait_for(90.0, |h| ids.iter().all(|&id| shows(h, id, "암호:") && h.app.panes[&id].term.at_prompt_question())), "each waits at the password prompt");
     // One of them got in (its shell showed a prompt): left alone.
     h.app.panes.get_mut(&ids[2]).unwrap().seen.1 = true;
     h.app.set_password("pw", "s3cret".into());
@@ -3447,7 +3449,10 @@ fn a_terminals_first_line_is_in_sight() {
     };
     for scale in [1.0_f32, 2.0] {
         let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}, srv.clone()], "sidebar": true, "follow_cwd": false}));
-        h.ctx.set_pixels_per_point(scale);
+        // The display's scale (a zoom set here was undone by the app's own).
+        h.native_scale = scale;
+        h.frames(2);
+        assert_eq!(h.ctx.pixels_per_point(), scale, "drawn at that scale");
         h.app.new_tab("srv", None);
         let pane = h.app.active_pane_id().unwrap();
         assert!(h.wait_for(30.0, |h| h.app.panes[&pane].exited && h.shows("Connection to 10.0.0.1 closed.")), "ended");
@@ -3465,6 +3470,108 @@ fn a_terminals_first_line_is_in_sight() {
             h.frames(1);
             in_sight(&h, pane, &format!("scale {scale}, moving ({i})"));
         }
+    }
+}
+
+/// A host that runs its own command whatever is asked (a ForceCommand's
+/// tmux, a bastion's menu), used and left as it ends (code 0): weft's
+/// command never ran there, but it was a session, not a refusal. It is not
+/// started again as Windows' (it reconnected, and the host was saved as
+/// "Other" the next time); a refusal ends at once, a password at most, and
+/// one that ends with 0 says 'exec' (Windows').
+#[test]
+fn a_host_with_its_own_command_is_left_as_it_ends() {
+    let menu = "import sys\nsys.stdout.write('menu> ')\nsys.stdout.flush()\nfor line in sys.stdin:\n    if line.strip() == 'quit':\n        sys.exit(0)\n    sys.stdout.write('you chose ' + line.strip() + '\\r\\nmenu> ')\n    sys.stdout.flush()\n";
+    let host = json!({"name": "bastion", "kind": "custom", "pty": [crate::testkit::py(), "-u", "-c", menu], "agent": [crate::testkit::py(), "-c", "0"]});
+    let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}, host], "sidebar": false, "follow_cwd": false}));
+    h.app.new_tab("bastion", None);
+    let pane = h.app.active_pane_id().unwrap();
+    assert!(h.wait_for(30.0, |h| h.shows("menu>")), "its menu");
+    h.app.panes.get_mut(&pane).unwrap().send(b"servers\r");
+    assert!(h.wait_for(10.0, |h| h.shows("you chose servers")));
+    h.app.panes.get_mut(&pane).unwrap().send(b"quit\r");
+    assert!(h.wait_for(10.0, |h| h.app.panes[&pane].exited), "it ended");
+    // Past the moment an end is judged in.
+    std::thread::sleep(std::time::Duration::from_millis(900));
+    h.frames(5);
+    assert!(h.app.panes[&pane].exited, "not started again");
+    assert_eq!(h.app.profile("bastion").remote_shell(), crate::host::RemoteShell::Posix, "the host is as it was");
+    assert!(!h.shows("trying Windows"), "nothing tried");
+    // Left with one line at once, and a host that only says something and
+    // ends with 0 (`ForceCommand echo …`): ended as they do too (only a
+    // refusal that says 'exec', Windows', moves on with 0).
+    let note = "import sys\nsys.stdout.write('use port 2222\\r\\n')\nsys.stdout.flush()\n";
+    // A menu whose output names exec in quotes (`"exec": {`, kubectl's
+    // JSON): the session's own, not a refusal.
+    let pods = "import sys\nsys.stdout.write('menu> ')\nsys.stdout.flush()\nfor line in sys.stdin:\n    if line.strip() == 'quit':\n        sys.exit(0)\n    sys.stdout.write('{\"exec\": {\"command\": [\"sh\"]}}\\r\\nmenu> ')\n    sys.stdout.flush()\n";
+    // A menu left with one line that ends with 1: a menu was seen, so no
+    // refusal (it was judged one: "at once, one line").
+    let menu_err = menu.replace("sys.exit(0)", "sys.exit(1)");
+    // And one whose menu asks with a colon (a question, but not a sign-in's).
+    // It says goodbye on a line of its own: nothing after the answer looks
+    // like a prompt, and only its echoed answer tells it was a menu.
+    let menu_asks = menu_err.replace("menu> ", "Select from the menu: ").replace("sys.exit(1)", "sys.stdout.write('\\r\\nbye\\r\\n'); sys.stdout.flush(); sys.exit(1)");
+    for (name, script, lines) in [("menu1", menu, &[&b"quit\r"[..]][..]), ("note", note, &[][..]), ("pods", pods, &[&b"get\r"[..], b"get\r", b"quit\r"][..]), ("menuerr", menu_err.as_str(), &[&b"quit\r"[..]][..]), ("menuasks", menu_asks.as_str(), &[&b"quit\r"[..]][..])] {
+        let host = json!({"name": name, "kind": "custom", "pty": [crate::testkit::py(), "-u", "-c", script], "agent": [crate::testkit::py(), "-c", "0"]});
+        h.app.settings.profiles.push(serde_json::from_value(host).unwrap());
+        h.app.new_tab(name, None);
+        let pane = h.app.active_pane_id().unwrap();
+        for line in lines {
+            assert!(h.wait_for(30.0, |h| h.shows("menu>") || h.shows("the menu:")), "{name}: its menu");
+            // As a person answers: after a look at it, the answer, then
+            // Enter once it is seen (the answer echoed is what tells a menu
+            // from a password's question).
+            h.wait_for(0.5, |_| false);
+            let (answer, enter) = line.split_at(line.len() - 1);
+            h.app.panes.get_mut(&pane).unwrap().send(answer);
+            h.wait_for(0.5, |_| false);
+            h.app.panes.get_mut(&pane).unwrap().send(enter);
+            // Its answer was on the screen as Enter went: a menu's question
+            // (asked with a colon, so no prompt was taken for one before).
+            if name == "menuasks" {
+                assert!(h.app.panes[&pane].menu_seen, "{name}: the answer echoed tells a menu");
+            }
+        }
+        assert!(h.wait_for(10.0, |h| h.app.panes[&pane].exited), "{name}: it ended");
+        std::thread::sleep(std::time::Duration::from_millis(900));
+        h.frames(5);
+        assert!(h.app.panes[&pane].exited, "{name}: not started again");
+        // (Failed once in a loaded run, not again in 8 under load: what the
+        // terminal showed tells whether the stand-in itself failed.)
+        assert_eq!(
+            h.app.profile(name).remote_shell(),
+            crate::host::RemoteShell::Posix,
+            "{name}: the host is as it was; it showed {:?}",
+            h.app.panes[&pane].term.lines_text(h.app.panes[&pane].term.first_line(), h.app.panes[&pane].term.end_line() + 1)
+        );
+    }
+}
+
+/// Copy mode's cursor on the blank rows at the bottom while the pane is
+/// made shorter (the new size not taken yet): the rows shown leave out
+/// blank ones below the terminal's cursor, and copy mode's scroll counted
+/// on its row being among them (it overflowed: a panic, or "18446744…
+/// lines below"). Its row stays in sight, the scroll stays in range.
+#[test]
+fn copy_mode_at_the_bottom_while_the_pane_shrinks() {
+    let said = "import sys, time\nsys.stdout.write('\\x1b]7777;{\"t\":\"sh\"}\\x07top line\\r\\n$ ')\nsys.stdout.flush()\ntime.sleep(600)\n";
+    let host = json!({"name": "cm", "kind": "custom", "pty": [crate::testkit::py(), "-u", "-c", said], "agent": [crate::testkit::py(), "-c", "0"]});
+    let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}, host], "sidebar": false, "follow_cwd": false}));
+    h.app.new_tab("cm", None);
+    let pane = h.app.active_pane_id().unwrap();
+    assert!(h.wait_for(30.0, |h| h.shows("top line")), "started");
+    h.command("copy_mode");
+    // To the last row of the screen: blank, below the terminal's cursor.
+    h.key(egui::Key::G, egui::Modifiers::SHIFT);
+    h.frames(2);
+    let last = h.app.panes[&pane].term.end_line() - 1;
+    assert_eq!(h.app.panes[&pane].copy.map(|c| c.cur.0), Some(last), "on the last row");
+    for height in [700.0, 500.0, 360.0] {
+        h.size = egui::vec2(1200.0, height);
+        h.frames(2);
+        let p = &h.app.panes[&pane];
+        assert!(p.scroll < 1000, "height {height}: scroll {}", p.scroll);
+        assert!(!h.texts.iter().any(|(t, _)| t.contains("lines below") && t.len() > 30), "height {height}: a scroll out of range");
     }
 }
 
@@ -3510,7 +3617,9 @@ fn the_first_line_shows_in_every_layout() {
         for scale in [1.0_f32, 1.5, 2.0] {
             let name = if stay { "live" } else { "ended" };
             let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}, host(name, stay)], "sidebar": true, "follow_cwd": false}));
-            h.ctx.set_pixels_per_point(scale);
+            h.native_scale = scale;
+            h.frames(2);
+            assert_eq!(h.ctx.pixels_per_point(), scale, "drawn at that scale");
             h.app.new_tab(name, None);
             let pane = h.app.active_pane_id().unwrap();
             assert!(h.wait_for(30.0, |h| h.shows(FIRST) && (stay || h.app.panes[&pane].exited)), "{name}: started");
@@ -3545,23 +3654,106 @@ fn the_first_line_shows_in_every_layout() {
 /// run and ended well, and nothing more was tried (issue #3, macOS to a
 /// Windows server: "'exec' is not recognized", connection closed). The
 /// POSIX command says so first thing where it runs; it did not:
-/// PowerShell next.
+/// PowerShell next. In English and in German (whose cmd quotes the name
+/// with "…": a refusal ended with 0 was taken for a session that ended).
 #[test]
 #[cfg(windows)]
 fn a_windows_hosts_refusal_ended_with_0_still_moves_on() {
     let Some(_) = crate::host::which("python.exe").filter(|p| !p.display().to_string().contains("WindowsApps")) else { return };
-    let conpty = "import sys, subprocess, time\nc = sys.argv[1] if len(sys.argv) > 1 else ''\nif c.startswith('exec '):\n    sys.stdout.write(\"'exec' is not recognized as an internal or external command,\\r\\noperable program or batch file.\\r\\n\")\n    sys.stdout.flush()\n    time.sleep(0.5)\n    sys.exit(0)\nsys.exit(subprocess.run(['cmd', '/c', c]).returncode)\n";
-    let host = json!({"name": "conwin", "kind": "custom", "pty": [crate::testkit::py(), "-u", "-c", conpty], "agent": ["cmd", "/c"]});
+    // cmd's words in English and in German (the name in "…", not '…').
+    let said = ["'exec' is not recognized as an internal or external command,\r\noperable program or batch file.\r\n", "Der Befehl \"exec\" ist entweder falsch geschrieben oder\r\nkonnte nicht gefunden werden.\r\n"];
+    for (i, words) in said.into_iter().enumerate() {
+        let file = std::env::temp_dir().join(format!("weft-refusal-{}-{i}.txt", std::process::id()));
+        std::fs::write(&file, words).unwrap();
+        let conpty = format!(
+            "import sys, subprocess, time\nc = sys.argv[1] if len(sys.argv) > 1 else ''\nif c.startswith('exec '):\n    sys.stdout.write(open(r'{}', encoding='utf-8').read())\n    sys.stdout.flush()\n    time.sleep(0.5)\n    sys.exit(0)\nsys.exit(subprocess.run(['cmd', '/c', c]).returncode)\n",
+            file.display()
+        );
+        let host = json!({"name": "conwin", "kind": "custom", "pty": [crate::testkit::py(), "-u", "-c", conpty], "agent": ["cmd", "/c"]});
+        let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}, host], "remote_python": [crate::testkit::py()], "sidebar": true, "follow_cwd": false}));
+        h.app.new_tab("conwin", None);
+        let pane = h.app.active_pane_id().unwrap();
+        assert!(
+            h.wait_for(90.0, |h| h.app.panes.get(&pane).is_some_and(|p| p.shell_pid.is_some() && p.seen.1)),
+            "{words}: PowerShell, after the refusal: {:?} {:?}",
+            h.app.profile("conwin").remote_shell(),
+            h.app.panes.get(&pane).map(|p| p.term.lines_text(p.term.first_line(), p.term.end_line() + 1))
+        );
+        assert_eq!(h.app.profile("conwin").remote_shell(), crate::host::RemoteShell::Windows, "{words}: found and kept");
+        // weft's own run there with something left on the line: emptied
+        // (Esc, PowerShell's own key, where weft's key is not bound: no
+        // PSReadLine; Ctrl-U does nothing there). Esc and its wait are what
+        // is tried here: weft's key is in a_run_empties_the_line_in_*.
+        if i == 0 {
+            assert!(h.wait_for(30.0, |h| h.app.panes[&pane].term.at_prompt() && h.app.panes[&pane].clear_key), "at PowerShell's prompt, weft's key bound");
+            h.app.panes.get_mut(&pane).unwrap().clear_key = false;
+            h.app.panes.get_mut(&pane).unwrap().send(b"junk");
+            h.wait_for(1.0, |_| false);
+            h.app.run_in_pane(pane, "echo weft-ran-remote");
+            // A second run before the first's command went (it waits after
+            // the Esc): refused, not put in the first's place.
+            h.app.run_in_pane(pane, "echo weft-lost");
+            h.frames(2);
+            assert!(h.shows("pane is busy"), "the second run refused");
+            assert!(
+                h.wait_for(30.0, |h| h.app.panes[&pane].term.lines_text(h.app.panes[&pane].term.first_line(), h.app.panes[&pane].term.end_line() + 1).lines().any(|l| l.trim() == "weft-ran-remote")),
+                "the line emptied first: {:?}",
+                h.app.panes[&pane].term.lines_text(h.app.panes[&pane].term.first_line(), h.app.panes[&pane].term.end_line() + 1)
+            );
+            assert!(!h.app.panes[&pane].term.lines_text(h.app.panes[&pane].term.first_line(), h.app.panes[&pane].term.end_line() + 1).contains("weft-lost"), "the refused one did not run");
+            // A key typed while a run's command waits: after the command,
+            // not before it.
+            assert!(h.wait_for(30.0, |h| h.app.panes[&pane].term.at_prompt()), "at the prompt again");
+            h.app.run_in_pane(pane, "echo weft-third");
+            h.app.panes.get_mut(&pane).unwrap().send(b"x");
+            assert!(
+                h.wait_for(30.0, |h| h.app.panes[&pane].term.lines_text(h.app.panes[&pane].term.first_line(), h.app.panes[&pane].term.end_line() + 1).lines().any(|l| l.trim() == "weft-third")),
+                "the command whole, the key after it: {:?}",
+                h.app.panes[&pane].term.lines_text(h.app.panes[&pane].term.first_line(), h.app.panes[&pane].term.end_line() + 1)
+            );
+            // Ctrl-C while a run's command waits: it does not run.
+            h.app.panes.get_mut(&pane).unwrap().send(b"\x1b");
+            assert!(h.wait_for(30.0, |h| h.app.panes[&pane].term.at_prompt()), "at the prompt again");
+            h.app.run_in_pane(pane, "echo weft-cancelled");
+            h.app.panes.get_mut(&pane).unwrap().send(b"\x03");
+            h.wait_for(2.0, |_| false);
+            assert!(
+                !h.app.panes[&pane].term.lines_text(h.app.panes[&pane].term.first_line(), h.app.panes[&pane].term.end_line() + 1).lines().any(|l| l.trim() == "weft-cancelled"),
+                "cancelled with Ctrl-C"
+            );
+        }
+        let _ = std::fs::remove_file(&file);
+    }
+}
+
+/// The same refusal after a password and a one-time code (two lines typed:
+/// more than "at once, a password at most" allows), as Windows' OpenSSH
+/// sends it: cmd names `exec` in quotes (its language's), and that
+/// tells a refusal whatever was typed before. (Its console's
+/// win32-input-mode request does not: this PC's console makes one for
+/// every terminal on Windows.)
+#[test]
+#[cfg(windows)]
+fn a_windows_hosts_refusal_after_a_password_and_a_code_still_moves_on() {
+    let Some(_) = crate::host::which("python.exe").filter(|p| !p.display().to_string().contains("WindowsApps")) else { return };
+    let conpty = "import sys, subprocess, time\nc = sys.argv[1] if len(sys.argv) > 1 else ''\nif c.startswith('exec '):\n    for q in ['Are you sure you want to continue connecting (yes/no/[fingerprint])? ', '\\r\\nPassword: ', '\\r\\nPermission denied, please try again.\\r\\nPassword: ', '\\r\\nVerification code: ']:\n        sys.stdout.write(q)\n        sys.stdout.flush()\n        sys.stdin.readline()\n    sys.stdout.write(\"\\x1b[?9001h\\x1b[?1004h\\x1b[?25l\\x1b[2J\\x1b[m\\x1b[H'exec' is not recognized as an internal or external command,\\r\\noperable program or batch file.\\r\\n\")\n    sys.stdout.flush()\n    time.sleep(0.5)\n    sys.exit(0)\nsys.exit(subprocess.run(['cmd', '/c', c]).returncode)\n";
+    let host = json!({"name": "otpwin", "kind": "custom", "pty": [crate::testkit::py(), "-u", "-c", conpty], "agent": ["cmd", "/c"]});
     let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}, host], "remote_python": [crate::testkit::py()], "sidebar": true, "follow_cwd": false}));
-    h.app.new_tab("conwin", None);
+    h.app.new_tab("otpwin", None);
     let pane = h.app.active_pane_id().unwrap();
+    // A first connection: the host's key, a mistyped password, the
+    // password, a code (four lines; each answered after a look).
+    for (asked, answer) in [("fingerprint", &b"yes\r"[..]), ("Password:", b"wrong\r"), ("please try again", b"secret\r"), ("Verification code:", b"123456\r")] {
+        assert!(h.wait_for(30.0, |h| h.shows(asked)), "asked: {asked}");
+        h.wait_for(0.5, |_| false);
+        h.app.panes.get_mut(&pane).unwrap().send(answer);
+    }
     assert!(
         h.wait_for(90.0, |h| h.app.panes.get(&pane).is_some_and(|p| p.shell_pid.is_some() && p.seen.1)),
-        "PowerShell, after the refusal: {:?} {:?}",
-        h.app.profile("conwin").remote_shell(),
-        h.app.panes.get(&pane).map(|p| p.term.lines_text(p.term.first_line(), p.term.end_line() + 1))
+        "PowerShell, after the refusal: {:?}",
+        h.app.profile("otpwin").remote_shell()
     );
-    assert_eq!(h.app.profile("conwin").remote_shell(), crate::host::RemoteShell::Windows, "found and kept");
+    assert_eq!(h.app.profile("otpwin").remote_shell(), crate::host::RemoteShell::Windows, "found and kept");
 }
 
 /// The shell a remote host runs commands with is found by trying, and
@@ -3576,8 +3768,10 @@ fn a_windows_hosts_refusal_ended_with_0_still_moves_on() {
 #[cfg(windows)]
 fn a_windows_host_gets_powershell_and_the_agent() {
     let Some(_) = crate::host::which("python.exe").filter(|p| !p.display().to_string().contains("WindowsApps")) else { return };
-    // Neither POSIX nor Windows: fails any command, a prompt without one.
-    let odd = "import sys\nif len(sys.argv) > 1:\n    sys.stdout.write('unknown command\\r\\n')\n    sys.stdout.flush()\n    sys.exit(1)\nsys.stdout.write('odd> ')\nsys.stdout.flush()\nimport time\ntime.sleep(60)\n";
+    // Neither POSIX nor Windows: refuses any command, naming it, a prompt
+    // without one. (A custom profile moves on only where its shell says
+    // so: see a_custom_way_in_that_fails_is_left_as_it_is.)
+    let odd = "import sys\nif len(sys.argv) > 1:\n    sys.stdout.write(\"unknown command: '\" + sys.argv[1].split()[0] + \"'\\r\\n\")\n    sys.stdout.flush()\n    sys.exit(1)\nsys.stdout.write('odd> ')\nsys.stdout.flush()\nimport time\ntime.sleep(60)\n";
     let unreachable = "import sys\nsys.stdout.write('ssh: connect to host 10.0.0.9 port 22: Connection refused\\r\\n')\nsys.stdout.flush()\nsys.exit(255)\n";
     let py = |name: &str, script: &str| json!({"name": name, "kind": "custom", "pty": [crate::testkit::py(), "-u", "-c", script], "agent": [crate::testkit::py(), "-c", "0"]});
     let win = json!({"name": "win", "kind": "custom", "pty": ["cmd", "/c"], "agent": ["cmd", "/c"]});
@@ -3608,6 +3802,13 @@ fn a_windows_host_gets_powershell_and_the_agent() {
     std::fs::write(dir.join("from-windows.txt"), "x").unwrap();
     h.app.set_root("win", &dir.display().to_string().replace('\\', "/"));
     assert!(h.wait_for(30.0, |h| h.shows("from-windows.txt")), "Files lists it");
+    // A folder opened as a file: the agent says it is one (Windows' Python
+    // raises PermissionError for it, no IsADirectoryError): shown in Files,
+    // not an editor tab with an error.
+    std::fs::create_dir_all(dir.join("inside")).unwrap();
+    std::fs::write(dir.join("inside").join("deeper.txt"), "x").unwrap();
+    h.app.open_file("win", &dir.join("inside").display().to_string().replace('\\', "/"), 1);
+    assert!(h.wait_for(30.0, |h| h.shows("deeper.txt") && !h.app.editor.files.iter().any(|f| f.host == "win")), "the folder in Files: {:?}", h.app.editor.files.iter().map(|f| (f.path.clone(), f.error.clone())).collect::<Vec<_>>());
     // No Python on the list: said as on any host, with Windows' check.
     h.app.set_remote_python(vec!["no-such-python".into()]);
     h.app.reconnect("win");
@@ -3664,6 +3865,559 @@ fn a_windows_host_gets_powershell_and_the_agent() {
     assert!(log.contains("[odd]: kept as a shell weft does not support; trying a POSIX sh and Windows' PowerShell again"), "said in the log");
 }
 
+/// "Shells…" saves what was changed in it: a local shell set elsewhere while
+/// it was open (the palette's Local shell) stays as set; a remote choice
+/// saved there leaves this computer's alone. A new local choice is tried
+/// again for every local profile, not only the one named "local".
+#[test]
+fn the_shells_window_saves_only_what_was_changed_in_it() {
+    use crate::host::LocalShell;
+    let ssh = json!({"name": "srv", "kind": "ssh", "target": "srv.example"});
+    let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}, {"name": "mine", "kind": "local"}, ssh]}));
+    h.app.open_shells_window();
+    let mut w = h.app.shells_window.clone().unwrap();
+    let elsewhere = if h.app.settings.local_shell == LocalShell::Cmd { LocalShell::Auto } else { LocalShell::Cmd };
+    h.app.settings.local_shell = elsewhere;
+    h.app.settings.unix_shell = "/bin/zsh".into();
+    w.host = Some("srv".into());
+    w.remote = "fish".into();
+    h.app.save_shells(&mut w);
+    assert_eq!(h.app.settings.local_shell, elsewhere, "the local shell set elsewhere stays");
+    assert_eq!(h.app.settings.unix_shell, "/bin/zsh");
+    assert_eq!(h.app.settings.remote_shells.get("srv").map(String::as_str), Some("fish"));
+    // A new local choice: tried again for each local profile.
+    h.app.shell_choice_off.insert("mine".into());
+    h.app.open_shells_window();
+    let mut w = h.app.shells_window.clone().unwrap();
+    w.host = None;
+    w.unix = "/bin/ksh".into();
+    h.app.save_shells(&mut w);
+    assert_eq!(h.app.settings.unix_shell, "/bin/ksh");
+    assert!(!h.app.shell_choice_off.contains("mine"), "tried again for \"mine\" too");
+    // Saved, then changed back in the same window and saved again: saved
+    // (it was weighed against the values when the window opened).
+    w.unix = "/bin/zsh".into();
+    h.app.save_shells(&mut w);
+    assert_eq!(h.app.settings.unix_shell, "/bin/zsh", "the change back is saved");
+    // Set elsewhere (the palette) while the window is open, then a Save of
+    // a remote choice: kept, shown, and kept by a second Save too.
+    h.app.settings.unix_shell = "/bin/dash".into();
+    w.remote = "/bin/ksh".into();
+    h.app.save_shells(&mut w);
+    assert_eq!((h.app.settings.unix_shell.as_str(), w.unix.as_str()), ("/bin/dash", "/bin/dash"), "kept and shown");
+    h.app.save_shells(&mut w);
+    assert_eq!(h.app.settings.unix_shell, "/bin/dash", "a second Save keeps it");
+    // A window opened on a remote host, its local choice changed: tried
+    // again for every local profile too.
+    h.app.shell_choice_off.insert("mine".into());
+    h.app.open_shells_window();
+    let mut w = h.app.shells_window.clone().unwrap();
+    w.host = Some("srv".into());
+    w.unix = "/bin/mksh".into();
+    h.app.save_shells(&mut w);
+    assert_eq!(h.app.settings.unix_shell, "/bin/mksh");
+    assert!(!h.app.shell_choice_off.contains("mine"), "a local change from a remote host's window");
+}
+
+/// A chosen shell named bash that does not start (a wrong binary, say):
+/// the login shell instead. weft's command starts bash before it says which
+/// shell it starts, so asking for that word left a chosen bash with no
+/// fallback.
+#[test]
+fn a_chosen_bash_that_does_not_start_falls_back() {
+    let bash = if cfg!(windows) { "C:/Program Files/Git/bin/bash.exe" } else { "/bin/bash" };
+    if !std::path::Path::new(bash).is_file() {
+        return;
+    }
+    let lo = json!({"name": "lo", "kind": "custom", "pty": [bash, "-c"], "agent": [crate::testkit::py(), "-c", "0"]});
+    let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}, lo]}));
+    let dir = h.dir.join("broken");
+    std::fs::create_dir_all(&dir).unwrap();
+    let bad = dir.join("bash");
+    std::fs::write(&bad, "#!/bin/sh\nexit 3\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&bad, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    h.app.save_shells(&mut crate::app::ShellsWindow { host: Some("lo".into()), remote: bad.display().to_string().replace('\\', "/"), ..Default::default() });
+    h.app.new_tab("lo", None);
+    let pane = h.app.active_pane_id().unwrap();
+    assert!(h.wait_for(90.0, |h| h.app.shell_choice_off.contains("lo")), "the chosen bash did not start, and that is told");
+    assert!(
+        h.wait_for(90.0, |h| h.app.panes.get(&pane).is_some_and(|p| p.term.integrated && p.started_shell.is_none() && !p.exited)),
+        "its login shell instead"
+    );
+}
+
+/// bash's wls and wtable with no Python in the shell: wls prints ls' text
+/// and weft fills its widget from the host's agent (the folder's entries,
+/// a folder first); wtable's text is split into columns by weft.
+#[test]
+fn wls_and_wtable_need_no_python_in_the_shell() {
+    let bash = if cfg!(windows) { crate::host::git_bash().map(|p| p.display().to_string()) } else { Some("/bin/bash".to_string()) };
+    let Some(bash) = bash.filter(|b| std::path::Path::new(b).is_file()) else { return };
+    let lo = json!({"name": "lo", "kind": "custom", "pty": [bash, "-c"], "agent": [bash, "-c"]});
+    let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}, lo], "remote_python": [crate::testkit::py()], "sidebar": false, "follow_cwd": false}));
+    // Not under the system's temp folder: Git Bash shows that as its own
+    // /tmp, a path only msys knows (as in its OSC 7).
+    let dir = std::env::current_dir().unwrap().join("target").join(format!("wls-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("inner")).unwrap();
+    std::fs::write(dir.join("zeta.txt"), "hello").unwrap();
+    std::fs::write(dir.join(".hidden"), "x").unwrap();
+    h.app.new_tab("lo", None);
+    let pane = h.app.active_pane_id().unwrap();
+    assert!(h.wait_for(60.0, |h| h.app.panes.get(&pane).is_some_and(|p| p.term.at_prompt() && p.term.integrated)), "bash with weft's integration");
+    let cd = format!("cd '{}' && wls . && printf 'NAME  SIZE NOTE\\nalpha 1 first one\\nbeta  22 second\\n' | wtable\r", dir.display().to_string().replace(std::path::MAIN_SEPARATOR, "/"));
+    h.app.panes.get_mut(&pane).unwrap().send(cd.as_bytes());
+    let files = |h: &Harness| h.app.panes[&pane].widgets.iter().find_map(|w| match &w.kind {
+        crate::app::WidgetKind::Files { entries, .. } if !entries.is_empty() => Some(entries.iter().map(|e| (e.name.clone(), e.size)).collect::<Vec<_>>()),
+        _ => None,
+    });
+    assert!(h.wait_for(60.0, |h| files(h).is_some()), "the folder listed by the agent: {:?}", h.app.panes[&pane].term.lines_text(h.app.panes[&pane].term.first_line(), h.app.panes[&pane].term.end_line() + 1));
+    assert_eq!(files(&h).unwrap(), [("inner/".to_string(), 0), ("zeta.txt".to_string(), 5)], "a folder first, no dotfile");
+    let table = |h: &Harness| h.app.panes[&pane].widgets.iter().find_map(|w| match &w.kind {
+        crate::app::WidgetKind::Table { columns, data } => Some((columns.clone(), data.clone(), w.rows)),
+        _ => None,
+    });
+    assert!(h.wait_for(30.0, |h| table(h).is_some()), "the table");
+    let (cols, data, rows) = table(&h).unwrap();
+    assert_eq!(cols, ["NAME", "SIZE", "NOTE"]);
+    assert_eq!(data, [vec!["alpha", "1", "first one"], vec!["beta", "22", "second"]]);
+    assert_eq!(rows, 3, "its rows are the lines printed");
+    // The Files widget covers ls' lines: its header and one a name.
+    let w = h.app.panes[&pane].widgets.iter().find(|w| matches!(w.kind, crate::app::WidgetKind::Files { .. })).unwrap();
+    assert_eq!(w.rows, 3, "ls -l: total and two names");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// weft's own run empties the line with the key its integration bound in
+/// every editing mode: bash in vi mode, in its command mode, with something
+/// typed. (Ctrl-U there is no "empty the line": what was typed and the
+/// command, taken as vi commands, went wrong.)
+#[test]
+fn a_run_empties_the_line_in_any_editing_mode() {
+    let bash = if cfg!(windows) { crate::host::git_bash().map(|p| p.display().to_string()) } else { Some("/bin/bash".to_string()) };
+    let Some(bash) = bash.filter(|b| std::path::Path::new(b).is_file()) else { return };
+    let lo = json!({"name": "lo", "kind": "custom", "pty": [bash, "-c"], "agent": [crate::testkit::py(), "-c", "0"]});
+    let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}, lo], "sidebar": false, "follow_cwd": false}));
+    h.app.new_tab("lo", None);
+    let pane = h.app.active_pane_id().unwrap();
+    assert!(h.wait_for(60.0, |h| h.app.panes.get(&pane).is_some_and(|p| p.term.at_prompt() && p.clear_key)), "bash, its key bound");
+    let shows = |h: &Harness, what: &str| h.app.panes.get(&pane).is_some_and(|p| p.term.lines_text(p.term.first_line(), p.term.end_line() + 1).contains(what));
+    h.app.panes.get_mut(&pane).unwrap().send(b"set -o vi; echo vi-$((1+1))\r");
+    assert!(h.wait_for(30.0, |h| shows(h, "vi-2") && h.app.panes[&pane].term.at_prompt()), "vi mode");
+    h.app.panes.get_mut(&pane).unwrap().send(b"junk words");
+    h.frames(3);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    // Into vi's command mode.
+    h.app.panes.get_mut(&pane).unwrap().send(b"\x1b");
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    h.frames(3);
+    h.app.run_in_pane(pane, "echo weft-$((6*7))");
+    assert!(h.wait_for(30.0, |h| shows(h, "weft-42") && h.app.panes[&pane].term.at_prompt()), "it ran: {:?}", h.app.panes[&pane].term.lines_text(h.app.panes[&pane].term.first_line(), h.app.panes[&pane].term.end_line() + 1));
+    assert!(!shows(&h, "junk words"), "what was typed is gone");
+    assert!(!shows(&h, "command not found"), "nothing else ran");
+}
+
+/// The same in PowerShell with PSReadLine's Emacs mode (Esc is Meta there:
+/// what was typed stayed, the command went after it).
+#[test]
+#[cfg(windows)]
+fn a_run_empties_the_line_in_powershells_emacs_mode() {
+    let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}], "sidebar": false, "follow_cwd": false}));
+    h.app.new_tab("local", None);
+    let pane = h.app.active_pane_id().unwrap();
+    assert!(h.wait_for(90.0, |h| h.app.panes.get(&pane).is_some_and(|p| p.term.at_prompt() && p.clear_key)), "PowerShell, its key bound");
+    let text = |h: &Harness| h.app.panes[&pane].term.lines_text(h.app.panes[&pane].term.first_line(), h.app.panes[&pane].term.end_line() + 1);
+    // After the integration (it binds its keys again at each prompt: a
+    // change of mode puts back that mode's own only).
+    h.app.panes.get_mut(&pane).unwrap().send(b"Set-PSReadLineOption -EditMode Emacs; 'mode-' + 'set'\r");
+    assert!(h.wait_for(60.0, |h| text(h).lines().any(|l| l.trim() == "mode-set") && h.app.panes[&pane].term.at_prompt()), "Emacs mode: {:?}", text(&h));
+    h.app.panes.get_mut(&pane).unwrap().send(b"junk words");
+    h.wait_for(1.0, |_| false);
+    h.app.run_in_pane(pane, "'weft-' + 42");
+    assert!(h.wait_for(60.0, |h| text(h).lines().any(|l| l.trim() == "weft-42")), "it ran alone: {:?}", text(&h));
+    assert!(!text(&h).contains("junk words"), "what was typed is gone: {:?}", text(&h));
+}
+
+/// weft's own run (a block's Rerun, a command from the palette) on a host
+/// whose shell has no start marks (dash): a block. It sends Ctrl-U, the
+/// command and Enter at once, and that was taken for a line emptied, with
+/// nothing typed: no block.
+#[test]
+fn a_run_on_a_dash_host_is_a_block() {
+    let (bash, dash) = if cfg!(windows) { ("C:/Program Files/Git/bin/bash.exe", "C:/Program Files/Git/usr/bin/dash.exe") } else { ("/bin/bash", "/usr/bin/dash") };
+    if !std::path::Path::new(bash).is_file() || !std::path::Path::new(dash).is_file() {
+        return;
+    }
+    let lo = json!({"name": "lo", "kind": "custom", "pty": [bash, "-c"], "agent": [crate::testkit::py(), "-c", "0"]});
+    let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}, lo]}));
+    h.app.save_shells(&mut crate::app::ShellsWindow { host: Some("lo".into()), remote: dash.into(), ..Default::default() });
+    h.app.new_tab("lo", None);
+    let pane = h.app.active_pane_id().unwrap();
+    assert!(h.wait_for(60.0, |h| h.app.panes.get(&pane).is_some_and(|p| p.seen.1 && p.term.at_prompt())), "dash, at its prompt");
+    let done = |h: &Harness| h.app.panes[&pane].term.blocks.iter().filter(|b| b.state() == weft_core::term::BlockState::Done).count();
+    let before = done(&h);
+    h.app.run_in_pane(pane, "echo weft-ran");
+    // Its block has the run's text (dash tells none of a command).
+    assert!(h.wait_for(30.0, |h| h.app.panes[&pane].term.blocks.iter().any(|b| b.state() == weft_core::term::BlockState::Done && b.command == "echo weft-ran")), "the run's own text: {:?}", h.app.panes[&pane].term.blocks.iter().map(|b| b.command.clone()).collect::<Vec<_>>());
+    assert!(h.wait_for(30.0, |h| done(h) > before), "a block: {:?}", h.app.panes[&pane].term.lines_text(h.app.panes[&pane].term.first_line(), h.app.panes[&pane].term.end_line() + 1));
+    // While a command runs (its start told by nothing but the Enter): not
+    // at the prompt (a cd here or a run went into what ran), and a running
+    // command for the close check.
+    assert!(h.wait_for(30.0, |h| h.app.panes[&pane].term.at_prompt()), "at its prompt after echo");
+    // A block of dash's has no command text: its rerun sends nothing (an
+    // empty line went).
+    let sent = h.app.panes[&pane].lines_sent;
+    h.app.run_in_pane(pane, "");
+    assert_eq!(h.app.panes[&pane].lines_sent, sent, "nothing sent for no command");
+    h.app.run_in_pane(pane, "sleep 3");
+    h.frames(3);
+    assert!(!h.shows("pane is busy"), "sleep was sent");
+    assert!(!h.app.panes[&pane].term.at_prompt(), "sleep runs");
+    assert!(h.app.running_in(pane).is_some(), "the close check knows it runs");
+    h.app.run_in_pane(pane, "echo too-early");
+    h.frames(2);
+    assert!(h.shows("pane is busy"), "refused while it runs");
+    assert!(h.wait_for(30.0, |h| h.app.panes[&pane].term.at_prompt()), "its prompt again");
+}
+
+/// weft's own run on a host whose shell weft has nothing for (a plain ssh,
+/// tcsh): it is sent. Its guessed blocks are out of sight by default, and
+/// the terminal was never "at its prompt": "pane is busy" every time.
+#[test]
+fn a_run_on_a_plain_host_is_sent() {
+    let shell = "import sys\nsys.stdout.write('$ ')\nsys.stdout.flush()\nfor line in sys.stdin:\n    sys.stdout.write('\\r\\nran: ' + line.strip().lstrip('\\x15') + '\\r\\n$ ')\n    sys.stdout.flush()\n";
+    let plain = json!({"name": "plain", "kind": "custom", "pty": [crate::testkit::py(), "-u", "-c", shell], "agent": [crate::testkit::py(), "-c", "0"], "shell": "other"});
+    let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}, plain], "sidebar": false, "follow_cwd": false}));
+    h.app.new_tab("plain", None);
+    let pane = h.app.active_pane_id().unwrap();
+    assert!(h.wait_for(30.0, |h| h.app.panes[&pane].term.at_prompt()), "at its prompt: {:?}", h.app.panes[&pane].term.lines_text(h.app.panes[&pane].term.first_line(), h.app.panes[&pane].term.end_line() + 1));
+    h.app.run_in_pane(pane, "echo weft-ran");
+    assert!(h.wait_for(30.0, |h| h.shows("ran: echo weft-ran")), "sent");
+    assert!(!h.shows("pane is busy"), "not refused");
+}
+
+/// A custom profile's own way in failing at once (docker's container not
+/// running, kubectl's pod not found, any tool's words): left as it is,
+/// not tried as Windows and then saved as "Other". Only a shell that
+/// refuses weft's command in so many words moves it on.
+#[test]
+fn a_custom_way_in_that_fails_is_left_as_it_is() {
+    let docker = "import sys\nsys.stdout.write('Error response from daemon: container 4f2a is not running\r\n')\nsys.stdout.flush()\nsys.exit(1)\n";
+    let host = json!({"name": "box", "kind": "custom", "pty": [crate::testkit::py(), "-u", "-c", docker], "agent": [crate::testkit::py(), "-c", "0"]});
+    let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}, host], "sidebar": false, "follow_cwd": false}));
+    h.app.new_tab("box", None);
+    let pane = h.app.active_pane_id().unwrap();
+    assert!(h.wait_for(30.0, |h| h.app.panes[&pane].exited), "it ended");
+    std::thread::sleep(std::time::Duration::from_millis(900));
+    h.frames(5);
+    assert!(h.app.panes[&pane].exited, "not started again");
+    assert_eq!(h.app.profile("box").remote_shell(), crate::host::RemoteShell::Posix, "the profile as it was");
+}
+
+/// ssh's own failures, in its words (English everywhere), are not taken
+/// for a shell that refused weft's command: a bad option in ~/.ssh/config
+/// too (it ends with 255, which by itself says nothing).
+#[test]
+fn ssh_says_it_failed_in_its_own_words() {
+    for said in [
+        "/home/u/.ssh/config: line 3: Bad configuration option: foo",
+        "ssh: Could not resolve hostname x",
+        "u@h: Permission denied (publickey).",
+    ] {
+        assert!(crate::app::ssh_failed(said), "{said}");
+    }
+    assert!(!crate::app::ssh_failed("'exec' is not recognized as an internal or external command"));
+}
+
+/// Files' "cd here" into a folder with a space, $, brackets and a quote:
+/// the terminal's shell is in it after (`here` prints where it is).
+fn cd_here_reaches(h: &mut Harness, pane: usize, here: &str) {
+    let dir = h.dir.join("cd here $x (it's)");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.display().to_string().replace('\\', "/");
+    assert!(h.wait_for(90.0, |h| h.app.panes[&pane].term.at_prompt()), "at its prompt");
+    let cd = h.app.cd_in(pane, &path);
+    h.app.run_in_pane(pane, &cd);
+    // The cd's block done and the next prompt there (at the prompt alone
+    // was still true before a busy PowerShell marked the cd's start).
+    let cd_done = |h: &Harness| h.app.panes[&pane].term.blocks.iter().any(|b| b.state() == weft_core::term::BlockState::Done && b.command == cd);
+    assert!(h.wait_for(90.0, |h| cd_done(h) && h.app.panes[&pane].term.at_prompt()), "after the cd");
+    h.wait_for(0.5, |_| false);
+    let sent = h.app.panes[&pane].lines_sent;
+    h.app.run_in_pane(pane, here);
+    let how = format!("sent {} (was {sent}), blocks {:?}, toasts {:?}", h.app.panes[&pane].lines_sent, h.app.panes[&pane].term.blocks.iter().rev().take(3).map(|b| (b.state(), b.command.clone())).collect::<Vec<_>>(), h.app.toasts.iter().map(|t| t.text.clone()).collect::<Vec<_>>());
+    // (90 s: Windows PowerShell, among the suite's other terminals, drew
+    // half a command and stood for 30 s twice.)
+    // A line that is the folder itself, as the shell prints where it is
+    // (the cd's own line and a failure's message have the name too).
+    // As the file system has it: Windows' short names (RUNNER~1, as CI's
+    // temp folder is given) and links (macOS' /var) are the same folder.
+    let real = std::fs::canonicalize(&dir).unwrap();
+    let is_there = |l: &str| std::fs::canonicalize(l.trim()).is_ok_and(|p| p == real);
+    assert!(
+        h.wait_for(90.0, |h| h.app.panes[&pane].term.lines_text(h.app.panes[&pane].term.first_line(), h.app.panes[&pane].term.end_line() + 1).lines().any(is_there)),
+        "{cd}: {:?} ({how})",
+        h.app.panes[&pane].term.lines_text(h.app.panes[&pane].term.first_line(), h.app.panes[&pane].term.end_line() + 1)
+    );
+}
+
+/// A terminal started again (Enter once it ended): its first commands are
+/// in Records too. Its blocks are numbered from 1 again, and Records took
+/// them for seen (the ones before the restart had those numbers).
+#[test]
+fn a_restarted_terminals_first_commands_are_recorded() {
+    let shell = "import sys\nP = '\\x1b]133;A\\x07$ \\x1b]133;B\\x07'\nsys.stdout.write('\\x1b]7777;{\"t\":\"sh\"}\\x07' + P)\nsys.stdout.flush()\nfor line in sys.stdin:\n    c = line.strip()\n    if c == 'exit':\n        sys.exit(0)\n    sys.stdout.write('\\r\\n\\x1b]133;C\\x07out-' + c + '\\r\\n\\x1b]133;D;0\\x07' + P)\n    sys.stdout.flush()\n";
+    let host = json!({"name": "marks", "kind": "custom", "pty": [crate::testkit::py(), "-u", "-c", shell], "agent": [crate::testkit::py(), "-c", "0"]});
+    let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}, host], "sidebar": false, "follow_cwd": false}));
+    assert!(h.app.settings.records.commands.on, "commands are recorded");
+    h.app.new_tab("marks", None);
+    let pane = h.app.active_pane_id().unwrap();
+    let root = h.app.data.root.clone();
+    let run = |h: &mut Harness, cmd: &str| {
+        assert!(h.wait_for(30.0, |h| h.app.panes[&pane].term.at_prompt()), "at its prompt for {cmd}");
+        h.app.panes.get_mut(&pane).unwrap().send(format!("{cmd}\r").as_bytes());
+        let out = format!("out-{cmd}");
+        assert!(h.wait_for(30.0, |h| h.app.panes[&pane].term.blocks.iter().any(|b| b.state() == weft_core::term::BlockState::Done && b.command == cmd)), "{cmd} ran: {out}");
+        h.frames(3);
+    };
+    for cmd in ["first-a", "first-b"] {
+        run(&mut h, cmd);
+    }
+    let before = crate::records::Item::Commands.size(&root);
+    h.app.panes.get_mut(&pane).unwrap().send(b"exit\r");
+    assert!(h.wait_for(30.0, |h| h.app.panes[&pane].exited), "it ended");
+    h.app.actions.push(crate::app::Action::Restart(pane));
+    assert!(h.wait_for(30.0, |h| !h.app.panes[&pane].exited && h.app.panes[&pane].term.at_prompt()), "started again");
+    run(&mut h, "again-a");
+    assert!(crate::records::Item::Commands.size(&root) > before, "the restarted terminal's first command is recorded");
+}
+
+/// A command in a shell that marks no start (dash, ksh, cmd) that changes
+/// the folder: Records has the folder it ran in, not the next prompt's
+/// (told in the same write as its end).
+#[test]
+fn a_records_folder_is_where_the_command_ran() {
+    // A shell that marks no start (the sh family, cmd) and one that does
+    // (bash, zsh, fish: after its first command too). Each command goes to
+    // the next folder: /home/a, /tmp, /var.
+    for (name, start) in [("dashlike", ""), ("bashlike", "\\x1b]133;C\\x07")] {
+        let shell = format!(
+            "import sys\nds = ['/home/a', '/tmp', '/var']\ndef p(d):\n    sys.stdout.write('\\x1b]133;A\\x07\\x1b]7;file://h' + d + '\\x07$ ')\n    sys.stdout.flush()\nsys.stdout.write('\\x1b]7777;{{\"t\":\"sh\"}}\\x07')\np(ds.pop(0))\nfor line in sys.stdin:\n    sys.stdout.write('{start}\\r\\nout\\r\\n\\x1b]133;D;0\\x07')\n    p(ds.pop(0))\n"
+        );
+        let host = json!({"name": name, "kind": "custom", "pty": [crate::testkit::py(), "-u", "-c", shell], "agent": [crate::testkit::py(), "-c", "0"]});
+        let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}, host], "sidebar": false, "follow_cwd": false}));
+        h.app.new_tab(name, None);
+        let pane = h.app.active_pane_id().unwrap();
+        let root = h.app.data.root.clone();
+        for (n, (cmd, was)) in [("cd /tmp", "/home/a"), ("cd /var", "/tmp")].into_iter().enumerate() {
+            assert!(h.wait_for(30.0, |h| h.app.panes[&pane].term.at_prompt() && h.app.panes[&pane].term.cwd.as_deref() == Some(was)), "{name}: at its prompt in {was}");
+            h.app.panes.get_mut(&pane).unwrap().send(format!("{cmd}\r").as_bytes());
+            // As in the app: the command's end and the next prompt come
+            // before the next frame (a local shell is that quick).
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            assert!(h.wait_for(30.0, |_| crate::records::load(&root).len() > n), "{name}: {cmd} recorded");
+            let rec = crate::records::load(&root).pop().unwrap();
+            assert_eq!(rec.cwd, was, "{name}: {cmd} ran in {was}: {rec:?}");
+        }
+    }
+}
+
+/// A terminal whose boot says it started nu (chosen, or the login shell)
+/// takes nu's cd and quotes, not a POSIX sh's (`cd -- '…'`: nu has no such
+/// flag); bash stays a POSIX sh's.
+#[test]
+fn a_terminal_that_started_nu_gets_nus_cd() {
+    let says = |name: &str| format!("import sys, time\nsys.stdout.write('\\x1b]7777;{{\"t\":\"sh\"}}\\x07\\x1b]7777;{{\"t\":\"shell\",\"name\":\"{name}\",\"pid\":1}}\\x07$ ')\nsys.stdout.flush()\ntime.sleep(60)\n");
+    let host = |n: &str, name: &str| json!({"name": n, "kind": "custom", "pty": [crate::testkit::py(), "-u", "-c", says(name)], "agent": [crate::testkit::py(), "-c", "0"]});
+    let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}, host("nuhost", "nu"), host("bashhost", "bash")], "sidebar": false, "follow_cwd": false}));
+    for (name, cd) in [("nuhost", "cd \"/home/u/it's\""), ("bashhost", r"cd -- '/home/u/it'\''s'")] {
+        h.app.new_tab(name, None);
+        let pane = h.app.active_pane_id().unwrap();
+        assert!(h.wait_for(30.0, |h| h.app.panes[&pane].shell_pid.is_some()), "{name}: its shell said");
+        assert_eq!(h.app.cd_in(pane, "/home/u/it's"), cd, "{name}");
+    }
+    // Files of one host send nothing to another's terminal (bashhost's is
+    // the active one now).
+    assert!(h.app.pane_of("nuhost").is_none() && h.app.pane_of("bashhost").is_some(), "the active terminal is bashhost's only");
+}
+
+/// weft's own run in a local terminal on Linux and macOS: the command as
+/// it is. Esc was sent before it to empty the line (Windows' PowerShell's
+/// way), and bash read Esc and its first letter as one key: `ls` ran as
+/// `s`.
+#[test]
+#[cfg(unix)]
+fn a_run_in_a_local_unix_terminal_keeps_its_first_letter() {
+    let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}], "sidebar": false, "follow_cwd": false}));
+    h.app.new_tab("local", None);
+    let pane = h.app.active_pane_id().unwrap();
+    assert!(h.wait_for(60.0, |h| h.app.panes[&pane].term.integrated && h.app.panes[&pane].term.at_prompt()), "at its prompt");
+    // Something left on the line: emptied first.
+    h.app.panes.get_mut(&pane).unwrap().send(b"junk");
+    h.wait_for(1.0, |_| false);
+    h.app.run_in_pane(pane, "echo weft-ran-$((40+2))");
+    assert!(h.wait_for(30.0, |h| h.shows("weft-ran-42")), "ran as it is: {:?}", h.app.panes[&pane].term.lines_text(h.app.panes[&pane].term.first_line(), h.app.panes[&pane].term.end_line() + 1));    // And "cd here": cd, not PowerShell's Set-Location (typed into bash).
+    cd_here_reaches(&mut h, pane, "pwd");
+}
+
+/// The same in Windows' own shells, which get Esc first (it empties the
+/// line there): PowerShell and cmd run the command whole.
+#[test]
+#[cfg(windows)]
+fn a_run_in_a_local_windows_terminal_keeps_its_first_letter() {
+    for (shell, cmd, out) in [("powershell", "echo weft-ran-$(40+2)", "weft-ran-42"), ("pwsh", "echo weft-ran-$(40+2)", "weft-ran-42"), ("cmd", "echo weft-ran-cmd", "weft-ran-cmd"), ("nu", "echo weft-ran-nu", "weft-ran-nu")] {
+        if matches!(shell, "pwsh" | "nu") && crate::host::which(&format!("{shell}.exe")).is_none() {
+            continue;
+        }
+        let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}], "local_shell": shell, "sidebar": false, "follow_cwd": false}));
+        h.app.new_tab("local", None);
+        let pane = h.app.active_pane_id().unwrap();
+        assert!(h.wait_for(60.0, |h| h.app.panes[&pane].term.at_prompt()), "{shell}: at its prompt");
+        // Something left on the line: emptied first.
+        h.app.panes.get_mut(&pane).unwrap().send(b"junk");
+        h.wait_for(1.0, |_| false);
+        h.app.run_in_pane(pane, cmd);
+        assert!(
+            h.wait_for(30.0, |h| h.app.panes[&pane].term.lines_text(h.app.panes[&pane].term.first_line(), h.app.panes[&pane].term.end_line() + 1).lines().any(|l| l.trim() == out)),
+            "{shell}: ran as it is: {:?}",
+            h.app.panes[&pane].term.lines_text(h.app.panes[&pane].term.first_line(), h.app.panes[&pane].term.end_line() + 1)
+        );
+        // Its block has its text (cmd's had none: read off the screen at
+        // the Enter, before cmd echoed it), so History and rerun have it.
+        assert!(
+            h.wait_for(30.0, |h| h.app.panes[&pane].term.blocks.iter().any(|b| b.state() == weft_core::term::BlockState::Done && b.command == cmd)),
+            "{shell}: the block's command: {:?}",
+            h.app.panes[&pane].term.blocks.iter().map(|b| b.command.clone()).collect::<Vec<_>>()
+        );
+        // And "cd here", in this shell's own words.
+        let here = match shell {
+            "cmd" => "cd",
+            "nu" => "pwd",
+            // (Not Get-Location: Windows PowerShell looked its name up for
+            // half a minute once, on a busy PC.)
+            _ => "$PWD.Path",
+        };
+        cd_here_reaches(&mut h, pane, here);
+    }
+}
+
+/// A chosen shell that does not start, on a host that asks a password and
+/// a one-time code first, slowly: the login shell instead (it was judged
+/// by the time and lines since the terminal opened: two lines, or over 20
+/// s, and it just ended). One that started and was typed into, then ended
+/// with an error, is the user's: kept.
+#[test]
+fn a_chosen_shell_after_a_password_and_a_code_still_falls_back() {
+    let bash = if cfg!(windows) { "C:/Program Files/Git/bin/bash.exe" } else { "/bin/bash" };
+    if !std::path::Path::new(bash).is_file() {
+        return;
+    }
+    let otp = "printf 'Password: '; read -r a; printf 'Permission denied, please try again.\r\nVerification code: '; read -r b; eval \"$1\"";
+    let lo = json!({"name": "lo", "kind": "custom", "pty": [bash, "-c", otp, "x"], "agent": [crate::testkit::py(), "-c", "0"]});
+    let used = json!({"name": "used", "kind": "custom", "pty": [bash, "-c"], "agent": [crate::testkit::py(), "-c", "0"]});
+    let dropped = json!({"name": "dropped", "kind": "custom", "pty": [bash, "-c"], "agent": [crate::testkit::py(), "-c", "0"]});
+    let crashed = json!({"name": "crashed", "kind": "custom", "pty": [bash, "-c"], "agent": [crate::testkit::py(), "-c", "0"]});
+    let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}, lo, used, dropped, crashed]}));
+    let chosen = |name: &str, body: &str| -> String {
+        let dir = h.dir.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("bash");
+        std::fs::write(&f, format!("#!/bin/sh\n{body}\n")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        f.display().to_string().replace('\\', "/")
+    };
+    let (broken, reads, lost) = (chosen("broken", "exit 3"), chosen("reads", "read -r x; exit 3"), chosen("lost", "echo 'Connection to h closed by remote host.'; exit 255"));
+    let killed = chosen("killed", "exit 255");
+    h.app.save_shells(&mut crate::app::ShellsWindow { host: Some("crashed".into()), remote: killed, ..Default::default() });
+    h.app.save_shells(&mut crate::app::ShellsWindow { host: Some("dropped".into()), remote: lost, ..Default::default() });
+    h.app.save_shells(&mut crate::app::ShellsWindow { host: Some("lo".into()), remote: broken, ..Default::default() });
+    h.app.save_shells(&mut crate::app::ShellsWindow { host: Some("used".into()), remote: reads, ..Default::default() });
+    h.app.new_tab("lo", None);
+    let pane = h.app.active_pane_id().unwrap();
+    assert!(h.wait_for(30.0, |h| h.shows("Password:")), "asked");
+    // Slow: the password typed half a minute after the terminal opened.
+    h.app.panes.get_mut(&pane).unwrap().started_at -= std::time::Duration::from_secs(30);
+    // As a person types: a pause at each question (long enough for it to
+    // be guessed a prompt; that is not the shell's).
+    h.wait_for(0.8, |_| false);
+    assert!(h.app.panes[&pane].term.prompted() && !h.app.panes[&pane].seen.1, "the question guessed, not taken for the shell's prompt");
+    h.app.panes.get_mut(&pane).unwrap().send(b"secret\r");
+    assert!(h.wait_for(30.0, |h| h.shows("Verification code:")), "asked again");
+    h.wait_for(0.8, |_| false);
+    h.app.panes.get_mut(&pane).unwrap().send(b"123456\r");
+    assert!(h.wait_for(90.0, |h| h.app.shell_choice_off.contains("lo")), "the chosen shell did not start, and that is told");
+    // Started again as the login shell: asked again.
+    for answer in [&b"secret\r"[..], b"123456\r"] {
+        assert!(h.wait_for(30.0, |h| h.app.panes.get(&pane).is_some_and(|p| p.started_shell.is_none() && p.term.lines_text(p.term.first_line(), p.term.end_line() + 1).trim_end().ends_with(':'))), "asked after the restart");
+        h.app.panes.get_mut(&pane).unwrap().send(answer);
+    }
+    assert!(
+        h.wait_for(90.0, |h| h.app.panes.get(&pane).is_some_and(|p| p.term.integrated && p.started_shell.is_none() && !p.exited)),
+        "its login shell instead"
+    );
+    // Started, typed into, ended with 3: no fallback.
+    h.app.new_tab("used", None);
+    let pane = h.app.active_pane_id().unwrap();
+    assert!(h.wait_for(60.0, |h| h.app.panes.get(&pane).is_some_and(|p| p.boot_ran && p.started_shell.is_some())), "weft's command ran");
+    h.app.panes.get_mut(&pane).unwrap().send(b"false\r");
+    assert!(h.wait_for(30.0, |h| h.app.panes.get(&pane).is_some_and(|p| p.exited)), "it ended");
+    h.wait_for(2.0, |_| false);
+    assert!(!h.app.shell_choice_off.contains("used"), "a shell typed into is the user's");
+    assert!(h.app.panes.get(&pane).is_some_and(|p| p.started_shell.is_some()), "not started again as the login shell");
+    // Ended with 255 right after weft's command ran: ssh's own end (the
+    // connection lost), not the chosen shell's.
+    h.app.new_tab("dropped", None);
+    let pane = h.app.active_pane_id().unwrap();
+    assert!(h.wait_for(60.0, |h| h.app.panes.get(&pane).is_some_and(|p| p.exited)), "it ended");
+    h.wait_for(2.0, |_| false);
+    assert!(!h.app.shell_choice_off.contains("dropped"), "a lost connection is not the shell's failure");
+    // 255 and nothing of a lost connection: a shell killed by a signal as
+    // it started (ssh ends with 255 then too): the login shell instead.
+    h.app.new_tab("crashed", None);
+    assert!(h.wait_for(60.0, |h| h.app.shell_choice_off.contains("crashed")), "a shell that died as it started is fallen back from");
+}
+
+/// A terminal started again (Enter once it has ended) whose host has been
+/// given a shell that does not start: the login shell instead, as for a new
+/// terminal. The first start's prompt was kept as seen, and the chosen
+/// shell's end was never judged: no word, and the same again at each Enter.
+#[test]
+fn a_restarted_terminal_falls_back_from_a_chosen_shell_too() {
+    let bash = if cfg!(windows) { "C:/Program Files/Git/bin/bash.exe" } else { "/bin/bash" };
+    if !std::path::Path::new(bash).is_file() {
+        return;
+    }
+    let lo = json!({"name": "lo", "kind": "custom", "pty": [bash, "-c"], "agent": [crate::testkit::py(), "-c", "0"]});
+    let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}, lo]}));
+    h.app.new_tab("lo", None);
+    let pane = h.app.active_pane_id().unwrap();
+    assert!(h.wait_for(90.0, |h| h.app.panes[&pane].term.integrated && h.app.panes[&pane].seen.1), "its login shell, at its prompt");
+    let bad = h.dir.join("badsh");
+    std::fs::write(&bad, "#!/bin/sh\nexit 3\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&bad, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    h.app.save_shells(&mut crate::app::ShellsWindow { host: Some("lo".into()), remote: bad.display().to_string().replace('\\', "/"), ..Default::default() });
+    h.app.panes.get_mut(&pane).unwrap().send(b"exit\r");
+    assert!(h.wait_for(30.0, |h| h.app.panes[&pane].exited), "it ended");
+    h.app.actions.push(crate::app::Action::Restart(pane));
+    assert!(h.wait_for(90.0, |h| h.app.shell_choice_off.contains("lo")), "the chosen shell did not start, and that is told");
+    assert!(
+        h.wait_for(90.0, |h| h.app.panes.get(&pane).is_some_and(|p| p.term.integrated && p.started_shell.is_none() && !p.exited)),
+        "its login shell instead"
+    );
+}
+
 /// What weft has in a host's shell is said where it is not everything, and
 /// the shell can be chosen ("Shells…"). Here Git's shells stand for a
 /// remote host: dash (partial: prompts, exit codes and the folder, not
@@ -3691,7 +4445,7 @@ fn shells_say_what_weft_has_for_them_and_can_be_chosen() {
     assert!(h.wait_for(90.0, |h| h.shows("dash has part of weft's shell integration")), "said, and shown");
     assert!(h.wait_for(90.0, |h| h.app.panes[&pane].term.integrated && h.app.panes[&pane].seen.1), "dash, its prompts marked");
     assert_eq!(h.app.panes[&pane].started_shell.as_deref(), Some("dash"));
-    assert!(log(&h).contains("[lo] dash has part of weft's shell integration. Not there: the command's own text"), "said: {}", log(&h));
+    assert!(log(&h).contains("[lo] dash has part of weft's shell integration. Not there: the text of a command you type"), "said: {}", log(&h));
     let at_prompt = |h: &Harness, id: usize| h.app.panes[&id].term.blocks.last().is_some_and(|b| b.state() == crate::term::BlockState::Prompt);
     assert!(h.wait_for(30.0, |h| at_prompt(h, pane)));
     h.app.panes.get_mut(&pane).unwrap().send(b"echo hi-$((40 + 2))\r");
@@ -3724,13 +4478,14 @@ fn shells_say_what_weft_has_for_them_and_can_be_chosen() {
     h.app.new_tab("lo", None);
     let third = h.app.active_pane_id().unwrap();
     assert!(h.wait_for(90.0, |h| h.shows("no-such-shell, is not there")), "said, and shown");
+    assert!(h.shows("give its full path"), "a name: said to give its full path (the PATH a command gets is not the login's)");
     assert!(h.wait_for(90.0, |h| h.app.panes[&third].term.integrated && h.app.panes[&third].seen.1), "the login shell instead");
     assert!(log(&h).contains("the chosen shell no-such-shell is not there"), "said: {}", log(&h));
     // Chosen, there, and it does not start: said, and the login shell.
     let unix = |p: &std::path::Path| p.display().to_string().replace('\\', "/");
     let bad = h.dir.join("badsh");
     std::fs::write(&bad, "#!/bin/sh\nexit 3\n").unwrap();
-    h.app.save_shells(&crate::app::ShellsWindow { host: Some("lo".into()), remote: unix(&bad), ..Default::default() });
+    h.app.save_shells(&mut crate::app::ShellsWindow { host: Some("lo".into()), remote: unix(&bad), ..Default::default() });
     h.app.new_tab("lo", None);
     assert!(h.wait_for(90.0, |h| h.app.shell_choice_off.contains("lo")), "it did not start: {}", log(&h));
     assert!(log(&h).contains("badsh ended with 3 before its prompt; its login shell instead"), "said: {}", log(&h));
@@ -3740,7 +4495,7 @@ fn shells_say_what_weft_has_for_them_and_can_be_chosen() {
     // block guessed from its output is shown.
     let odd = h.dir.join("oddsh");
     std::fs::write(&odd, "#!/bin/sh\nPS1='odd> ' exec /bin/sh \"$@\"\n").unwrap();
-    h.app.save_shells(&crate::app::ShellsWindow { host: Some("lo".into()), remote: unix(&odd), ..Default::default() });
+    h.app.save_shells(&mut crate::app::ShellsWindow { host: Some("lo".into()), remote: unix(&odd), ..Default::default() });
     assert!(h.app.shell_choice("lo").is_some(), "a new choice is tried again");
     h.app.new_tab("lo", None);
     let fifth = h.app.active_pane_id().unwrap();

@@ -35,6 +35,10 @@ pub struct Harness {
     /// The modifier keys held down across frames (Alt for an Alt+drag).
     pub held: Modifiers,
     pointer: Pos2,
+    /// The display's own scale (a Mac's Retina is 2): egui's pixels per
+    /// point are this times the app's zoom, which the app sets every frame
+    /// from settings ("ui_scale"), so a zoom set by a test lasted one frame.
+    pub native_scale: f32,
     /// The clock the app is shown: a frame is 1/60 s, and a hand pauses
     /// before each click or drag (else clicks far apart count as double).
     pub now: f64,
@@ -75,7 +79,7 @@ impl Harness {
         let mut app = App::new_in(ctx.clone(), crate::host::DataDir::at(&dir));
         // As main does: the fonts the settings name (not only the default).
         app.apply_fonts();
-        let mut h = Harness { app, ctx, dir, size: vec2(1200.0, 800.0), texts: Vec::new(), icons: Vec::new(), shapes: Vec::new(), scale: 1.0, textures: Default::default(), copied: None, window: Vec::new(), window_log: Vec::new(), close_window: false, held: Modifiers::NONE, now: 0.0, pointer: pos2(600.0, 400.0) };
+        let mut h = Harness { app, ctx, dir, size: vec2(1200.0, 800.0), texts: Vec::new(), icons: Vec::new(), shapes: Vec::new(), scale: 1.0, textures: Default::default(), copied: None, window: Vec::new(), window_log: Vec::new(), close_window: false, held: Modifiers::NONE, now: 0.0, pointer: pos2(600.0, 400.0), native_scale: 1.0 };
         h.frames(3);
         h
     }
@@ -108,6 +112,7 @@ impl Harness {
             .unwrap_or(self.held);
         self.now += 1.0 / 60.0;
         let mut input = egui::RawInput { events, modifiers, time: Some(self.now), screen_rect: Some(Rect::from_min_size(Pos2::ZERO, self.size)), ..Default::default() };
+        input.viewports.entry(egui::ViewportId::ROOT).or_default().native_pixels_per_point = Some(self.native_scale);
         if std::mem::take(&mut self.close_window) {
             input.viewports.entry(egui::ViewportId::ROOT).or_default().events.push(egui::ViewportEvent::Close);
         }

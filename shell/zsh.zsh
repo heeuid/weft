@@ -27,6 +27,13 @@ __weft_start() { __weft_osc "133;C" }
 precmd_functions=(__weft_done ${precmd_functions:#__weft_*} __weft_marks)
 preexec_functions+=(__weft_start)
 
+# weft's key to empty the line (Ctrl+Alt+Shift+F12), in every keymap: from
+# vi's command mode back into insert.
+__weft_clear() { BUFFER=; CURSOR=0; zle -K main }
+zle -N __weft_clear
+bindkey -M emacs '^[[24;8~' __weft_clear; bindkey -M viins '^[[24;8~' __weft_clear; bindkey -M vicmd '^[[24;8~' __weft_clear
+__weft_osc '7777;{"t":"clear-key"}'
+
 export WEFT=1
 unset WEFT_ZSH
 

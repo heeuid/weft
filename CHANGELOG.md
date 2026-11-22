@@ -5,6 +5,199 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.11.4
+
+Fixed
+- **A host that runs its own command was reconnected as a Windows one when
+  left** (a ForceCommand's tmux, a bastion's menu: weft's command never
+  runs there), and saved as a plain ssh the next time; since 0.11.1, which
+  took a session ending with code 0 for a refusal. A refusal is told by its
+  words (cmd and PowerShell name exec in quotes) or by an end at once,
+  before any prompt: only that is a reason to try another shell now, not
+  a menu left with one line (whatever its code), nor a note that ends
+  with 0. The same for a host with no base64, openssl or python3 (its message
+  is taken as it comes, not from what is left on screen), and for a chosen
+  shell that did not start (where it was not there and the login shell ran,
+  that one's end is not the chosen one's).
+- **Copy mode at the bottom while the pane was made shorter** could make
+  its scroll overflow (a crash in a debug build; "18446744… lines below"
+  otherwise) until the new size was taken (since 0.11.1).
+- **FreeBSD without fdescfs** (/dev/fd/0-2 only): ksh, mksh and sh were
+  given their part of the integration on /dev/fd/3, which is not there, and
+  `ENV` was left pointing at it. The shell starts as it is there now.
+- **A Windows server's refusal after a slow password or a one-time code**
+  was not taken for one. cmd and PowerShell name `exec` in quotes, their language's
+  ("'exec' is not recognized", "'exec'은(는) …", German's "exec", French
+  « exec » with its spaces): that
+  tells a refusal now, whatever was typed before. (And the words a host
+  without base64 says are no longer in weft's command itself: Windows
+  PowerShell prints a refused command back, and they could be taken for
+  weft's command having run.)
+- **A terminal started again** (Enter once it had ended) with a shell
+  chosen for its host that does not start: it just ended, again at each
+  Enter. The login shell is used instead, as for a new terminal (a chosen
+  bash too, which starts before weft says which shell it starts), also
+  after a slow password and a one-time code (judged from when weft's
+  command ran, not from when the terminal opened). One typed into and
+  then ended with an error is left as it is, and so is a connection lost
+  just then (ssh's 255).
+- **ksh, mksh, dash, ash and sh:** Enters typed into a running program (cat,
+  a password) moved the start of its block's output past what it had
+  printed; an Enter on an empty line made a block with the last exit code
+  (after a key a program took, `q` in less, or a line emptied with Ctrl-C
+  or Ctrl-U too). (A command over several lines, `for` … `done`, now has
+  its later lines in its output; a command typed ahead while another ran
+  makes no block: these shells say nothing of either.)
+- **FreeBSD's and NetBSD's sh** showed `` `__weft_p` `` in every prompt:
+  FreeBSD's runs no command in a prompt, NetBSD's only with `promptcmds`
+  (now set). Where none runs the prompt is left as it was, without weft's
+  marks.
+- **bash:** a user's `set -u` made bash before 4.4 (macOS') stop at every
+  command ("unbound variable", no command start told); a PROMPT_COMMAND
+  array (bash 5.1+) whose later element sets PS1 wiped weft's prompt marks.
+  weft's functions now go first and last in the array (from bash 5.1, which
+  runs it element by element; before, into its first element as ever).
+  A PROMPT_COMMAND ending in `;` (`history -a; $PROMPT_COMMAND` with it
+  empty) made a syntax error at every prompt and no marks at all: joined
+  with newlines now.
+- **Rerun, the palette's commands and Files' "cd here"** were always
+  refused ("pane is busy") in a terminal whose shell weft has nothing for
+  (tcsh, a plain ssh): its guessed blocks, out of sight since 0.11, were
+  not counted as its prompt.
+- **Rerun and the palette's commands in a local terminal on macOS and
+  Linux** lost the command's first letter (`ls` ran as `s`): Esc, sent to
+  empty the line as Windows' PowerShell wants, made a Meta key of it in
+  bash and zsh. Ctrl-U there. In Windows' PowerShell and cmd what was
+  on the line was never emptied (Esc and the command in one write: the
+  console took Esc with the next key): Esc goes on its own now; in a
+  Windows host's PowerShell over ssh too (Ctrl-U was sent there, and
+  typed in).
+- **ssh's password or one-time-code question** was guessed a prompt after
+  the pause a person takes to answer it: weft's run or Files' cd could go
+  in as the password; the shell counted as started (a chosen shell that
+  then ended was not fallen back from; the agent's one retry was spent);
+  and in a shell weft has nothing for, the shell's own prompt after it was
+  never taken (Rerun and cd refused all session). A guessed prompt that
+  is a question (it ends in `:` or `?`) does not count for these.
+- **ksh, mksh, dash, ash and sh, while a command ran** (python3, mysql, an
+  ssh to elsewhere): the terminal counted as at its prompt, so Files' cd
+  here and the palette's commands went into what ran; closing asked
+  nothing and the tab showed nothing running.
+- **A host that runs its own command** and prints a quoted `"exec"` in its
+  session (kubectl's JSON in a bastion's menu) was taken for a Windows
+  host that refused weft's command. A refusal is looked for only before a
+  prompt comes, within the lines a first connection takes (the host key's
+  yes, a mistyped password, the password, a code).
+- **A bad option in ~/.ssh/config** (ssh's "Bad configuration option")
+  was taken for a shell that refused weft's command: the host was tried
+  as Windows.
+- **A mistyped password before** (ssh's "Permission denied, please try
+  again" on the screen) stopped both the move to PowerShell on a Windows
+  host and the fallback from a chosen shell that did not start: ssh's
+  words were taken for ssh's own failure.
+- **Files' "cd here" and "Insert path" in a local terminal on macOS and
+  Linux** typed PowerShell (`Set-Location -LiteralPath …`, "command not
+  found") and quoted paths as PowerShell does (a `$`, `*` or `'` in a path
+  went in wrong); in a local cmd or nu on Windows too. They go in the
+  words of the shell the terminal started now (nu or pwsh chosen on a
+  host or on macOS and Linux too: nu has no `cd --`). Also: PowerShell's
+  other single quotes (Bob’s) are doubled; cmd gets C:/… in quotes (a /
+  is a switch to it); "Insert path" on a Windows host gives C:/…, not
+  /C:/…; and the folder tree no longer sends a path to the active
+  terminal when that is another host's.
+- **A host or container with no $SHELL and no bash** (Alpine run by
+  docker or kubectl exec) did not open: sh is used, with its integration.
+- **ksh, mksh, dash, ash and sh blocks** offered copy, rerun and edit of a
+  command whose text these shells do not tell: rerun sent an empty line.
+  Not offered there now.
+- **A password asked with a full-width colon** (密码：) was taken for a
+  shell's prompt, as "password:" was before.
+- **ksh, mksh, dash, ash and sh with a PS1 exported by the user's
+  profile:** the shells started from them (`sh`, vi's `:sh`) said
+  "__weft_p: not found" at each prompt.
+- **A docker, podman or kubectl profile whose container was not running**
+  was saved as a Windows host and then as "Other": their "Error response
+  from daemon" and "Error from server" are the way in failing now.
+- **weft's own runs (Rerun, the palette's commands, cd here) in a local
+  cmd** made blocks without the command's text (read off the screen at
+  the Enter, before cmd echoed it): not in History, no rerun of them. The
+  text weft sends is the block's now; in the sh family too.
+- **Records' folder for a quick command** was the next prompt's (a local
+  `cd /tmp` was recorded as run in /tmp), in every shell: from bash's,
+  zsh's and fish's second command on, and always in ksh, mksh, dash, ash,
+  sh and cmd. It is taken at the Enter now.
+- **Closing a terminal whose shell weft has nothing for** (tcsh, a plain
+  ssh) while a command ran asked nothing, and its tab showed nothing
+  running (since 0.11 hid guessed blocks).
+- **Records** left out the first commands of a terminal started again
+  (as many as it had run before: its blocks are numbered from 1 again).
+- **Linux: the UI font, the Korean one and the symbols for TUIs** were
+  looked for in Debian's folders only (Fedora's and Arch's keep DejaVu
+  elsewhere: Braille showed as boxes). They are found by file name in any
+  folder under the system's font folders now, and where none of the
+  usual ones is there, as fontconfig picks one for the role (a sans, one
+  with Hangul, one with Braille), whatever the distribution or the
+  font.
+- **Nothing told by another program's words or one system's layout**
+  where the system can say it:
+  - a folder opened as a file over the agent showed Windows' Python's
+    PermissionError in an editor tab (it was told by Linux's exception's
+    name): the agent says it is a folder, and Files shows it;
+  - a serial port refused was told by the word "denied" (Windows says it
+    in its own language) and the advice named the dialout group (Arch's
+    is uucp): by the error's kind now, and the port's own group by name,
+    locally and over the agent;
+  - the terminals waiting at a password when it is given in the dialog
+    were told by "password:" (English): by the question's shape, as a
+    PAM's in any language;
+  - a custom profile's way in failing (docker's container not running,
+    kubectl's pod not found) was told by those two tools' words, and any
+    other tool's was tried as Windows and saved as "Other": a custom
+    profile now moves on only where a shell refused weft's command;
+  - the local host name was "localhost" on Linux and macOS (COMPUTERNAME
+    is Windows'), the user's name came from one variable and /etc/passwd
+    was read by hand: the OS's own host name and user database;
+  - downloads went to ~/Downloads (a Korean desktop's is ~/다운로드;
+    Windows' may have been moved): the system's downloads folder (Windows'
+    known folder, the XDG user dir);
+  - serial ports were found by a list of driver names (ttyUSB, ttyAMA, …):
+    every tty with a device behind it, and the call-out ones on macOS and
+    the BSDs;
+  - a remote grep without GNU's or a BSD's options failed the search: it
+    is searched in Python then; ps' numbers are read in the C locale;
+  - a rename that only changes the letters' case was allowed on Windows
+    only (macOS' file system ignores case too): the file system is asked
+    whether the two names are one file;
+  - the local sh, Git for Windows' bash and weft's own file name were
+    fixed paths: sh on PATH, the bash beside git, the system's executable
+    suffix; bash's events no longer need the base64 program.
+- **weft's runs (Rerun, cd here) in vi mode, or PowerShell's Emacs mode**
+  sent Ctrl-U or Esc to empty the line, and the text there, or the
+  command, went wrong (in vi's command mode `echo` was taken as vi
+  commands). bash, zsh, fish and PowerShell bind a key of weft's own now
+  (Ctrl+Alt+Shift+F12) in every editing mode, again at each prompt where
+  a change of mode puts back the mode's own keys only (PowerShell's
+  Enter mark was lost so too); the others keep Ctrl-U or Esc.
+- **fish: a theme's prompt saw status 0** after a failing command (weft's
+  marks ran first), and 4 at the first prompt.
+- **fish in vi mode: its mode prompt ([I])** was drawn before weft's
+  prompt mark and was taken for the last command's output: the prompt
+  starts before it now.
+- **bash's wls and wtable need no Python in the shell** (they ran a Python
+  found at every start, a macOS stub left out by name): wls prints ls'
+  text and weft lists the folder through the host's agent, wtable's text
+  is split into columns by weft. The shell integration is smaller for it
+  (the command that carries it, 6.4 KB from 6.9).
+- **A remote shell chosen by name** is looked up on the PATH a command
+  gets there, not the login's (Homebrew's on macOS and ~/.local/bin are
+  often not on it, and ~ is not expanded): Shells… and the "is not there"
+  note say so and ask for its full path.
+- **Shells…** put back a local shell set elsewhere while it was open, when
+  a remote one was saved; a change back, saved again without closing it,
+  was not saved; after a Save it showed the local shell as it was when it
+  opened, and a second Save put that back; a new local choice was tried again for the profile named
+  "local" only; three of its notes had long runs of spaces.
+
 ## 0.11.3
 
 Fixed
@@ -102,7 +295,8 @@ Changed
 - **Command blocks guessed from the output are no longer shown** where a
   shell has no integration (unknown shells, a plain ssh, serial consoles):
   a guess can be wrong, and a wrong block or history line is worse than
-  none. The folder is still followed through the agent. Settings
+  none. The folder is still followed through the agent where weft's
+  command started the shell (not a plain ssh or a serial console). Settings
   `"guess_blocks": true` shows them as before.
 
 Fixed

@@ -358,13 +358,39 @@ impl Pty {
 /// Linux and macOS the user may not open it (its group, dialout or uucp),
 /// which "in use" sent looking in the wrong place.
 fn serial_open_error(port: &str, e: &serialport::Error) -> String {
-    let denied = matches!(e.kind(), serialport::ErrorKind::Io(std::io::ErrorKind::PermissionDenied)) || e.to_string().to_lowercase().contains("denied");
+    // By its kind, not its words (Windows says it in its own language).
+    let denied = matches!(e.kind(), serialport::ErrorKind::Io(std::io::ErrorKind::PermissionDenied));
     match e.kind() {
         serialport::ErrorKind::NoDevice | serialport::ErrorKind::Io(std::io::ErrorKind::NotFound) => format!("{port}: no such port"),
         _ if denied && cfg!(windows) => format!("{port} is in use by another program (only one can have it open)"),
-        _ if denied => format!("{port}: you may not open it: its group (ls -l {port}) is one your user is not in (Linux: sudo usermod -aG dialout $USER, then log in again)"),
+        _ if denied => match port_group(port) {
+            Some(g) => format!("{port}: you may not open it: it is the group {g}'s, which your user is not in (add your user to {g}, then log in again)"),
+            None => format!("{port}: you may not open it: its group (ls -l {port}) is one your user is not in (add your user to it, then log in again)"),
+        },
         _ => format!("{port}: {e}"),
     }
+}
+
+/// The name of the group a port's device file has (dialout, uucp, …: as
+/// the system calls it).
+#[cfg(unix)]
+fn port_group(port: &str) -> Option<String> {
+    use std::os::unix::fs::MetadataExt;
+    let gid = std::fs::metadata(port).ok()?.gid();
+    // SAFETY: getgrgid returns a pointer into static storage or null; the
+    // name is copied out before anything else calls it.
+    unsafe {
+        let g = libc::getgrgid(gid);
+        if g.is_null() || (*g).gr_name.is_null() {
+            return None;
+        }
+        Some(std::ffi::CStr::from_ptr((*g).gr_name).to_string_lossy().into_owned())
+    }
+}
+
+#[cfg(not(unix))]
+fn port_group(_port: &str) -> Option<String> {
+    None
 }
 
 /// Kill a process and all its descendants.  On Windows, msys/cygwin `exec`
@@ -538,7 +564,10 @@ pub(crate) mod tests {
         if cfg!(windows) {
             assert!(refused.contains("in use by another program"), "{refused}");
         } else {
-            assert!(refused.contains("you may not open it") && refused.contains("dialout") && !refused.contains("in use"), "{refused}");
+            assert!(refused.contains("you may not open it") && refused.contains("add your user to") && !refused.contains("in use"), "{refused}");
+            // A device that is there: its own group by name.
+            let tty = serial_open_error("/dev/null", &io(std::io::ErrorKind::PermissionDenied));
+            assert!(tty.contains("it is the group ") && !tty.contains("dialout") || tty.contains("the group dialout"), "{tty}");
         }
         assert_eq!(serial_open_error("COM3", &Error::new(ErrorKind::InvalidInput, "bad baud")), "COM3: bad baud");
     }

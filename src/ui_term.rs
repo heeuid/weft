@@ -1005,9 +1005,16 @@ impl App {
                 // out first. Fitted from its bottom, the first rows went out
                 // of sight, and stayed so where the height moved every frame
                 // (issue #4).
+                // (Never the row copy mode's cursor is on: it stays in sight,
+                // and its scroll below counts on it.)
+                let copy_row = self.panes[&id].copy.map(|c| c.cur.0);
                 let spare = if t.rows > rows {
                     let cursor = t.cursor_abs();
-                    let blank_below = all.iter().rev().take_while(|v| v.abs(t).is_some_and(|a| a > cursor && t.line(a).is_some_and(|r| r.is_blank()))).count();
+                    let blank_below = all
+                        .iter()
+                        .rev()
+                        .take_while(|v| v.abs(t).is_some_and(|a| a > cursor && copy_row.is_none_or(|c| a > c) && t.line(a).is_some_and(|r| r.is_blank())))
+                        .count();
                     blank_below.min(t.rows - rows)
                 } else {
                     0
@@ -1022,7 +1029,7 @@ impl App {
                         if idx < bottom.saturating_sub(rows) {
                             p.scroll = n - (idx + rows).min(n);
                         } else if idx >= bottom {
-                            p.scroll = n - idx - 1;
+                            p.scroll = n.saturating_sub(idx + 1);
                         }
                     }
                 }
@@ -1461,16 +1468,23 @@ impl App {
                 let text_len = t.line(b.prompt_line).map(|r| r.text().chars().count()).unwrap_or(0) as f32 * cw;
                 if in_block && state != BlockState::Prompt {
                     let bs = ch.max(18.0);
-                    let tools: Vec<(Icon, &str)> = vec![
-                        (Icon::Copy, "copy command"),
-                        (Icon::File, "copy output"),
-                        (Icon::Rerun, "run again"),
-                        (Icon::Terminal, "edit in composer"),
-                        (if b.folded { Icon::Unfold } else { Icon::Fold }, if b.folded { "unfold output" } else { "fold output" }),
-                        (Icon::Open, "open output in editor"),
-                    ];
+                    // A block whose command's text is not known (ksh, dash:
+                    // no start marks) has no copy, rerun or edit of it: a
+                    // rerun sent an empty line.
+                    let known = !b.command.trim().is_empty();
+                    let tools: Vec<(usize, Icon, &str)> = [
+                        (0, Icon::Copy, "copy command"),
+                        (1, Icon::File, "copy output"),
+                        (2, Icon::Rerun, "run again"),
+                        (3, Icon::Terminal, "edit in composer"),
+                        (4, if b.folded { Icon::Unfold } else { Icon::Fold }, if b.folded { "unfold output" } else { "fold output" }),
+                        (5, Icon::Open, "open output in editor"),
+                    ]
+                    .into_iter()
+                    .filter(|(k, _, _)| known || ![0, 2, 3].contains(k))
+                    .collect();
                     let mut x = inner.right() - tools.len() as f32 * (bs + 2.0);
-                    for (k, (icon, tip)) in tools.into_iter().enumerate() {
+                    for (k, icon, tip) in tools {
                         let r = Rect::from_min_size(pos2(x, yp + (ch - bs) / 2.0), vec2(bs, bs));
                         x += bs + 2.0;
                         if icons::overlay_button(ui, r, Id::new(("tool", id, b.id, k)), icon, tip).clicked() {

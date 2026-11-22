@@ -10,6 +10,7 @@ data between them and both see garbage) and asks before going on.
 """
 
 import glob
+import errno
 import os
 import select
 import sys
@@ -79,8 +80,14 @@ def main():
         port = os.open(dev, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
     except OSError as e:
         say("\x1b[31mcannot open %s: %s\x1b[0m\n" % (dev, e.strerror))
-        if e.errno == 13:
-            say("(add yourself to the port's group, often dialout: sudo usermod -aG dialout $USER)\n")
+        if e.errno == errno.EACCES:
+            # The port's own group, as the system has it (dialout, uucp, ...).
+            try:
+                import grp
+                group = grp.getgrgid(os.stat(dev).st_gid).gr_name
+            except (OSError, KeyError, ImportError):
+                group = "the port's group (ls -l %s)" % dev
+            say("(add your user to the group %s, then log in again)\n" % group)
         sys.exit(1)
     tty.setraw(port)
     attrs = termios.tcgetattr(port)

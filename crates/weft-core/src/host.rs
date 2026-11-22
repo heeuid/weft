@@ -39,7 +39,12 @@ pub fn integration_bundle() -> String {
     out
 }
 
-/// Without whole-line comments and blank lines (`#!` lines stay).
+/// Without whole-line comments and blank lines (`#!` lines stay), and an
+/// indent of four spaces made one (the shells do not care, and the Python
+/// in bash.sh keeps its steps: every block there is indented by fours;
+/// lines indented otherwise, continuations inside brackets, stay as they
+/// are). No section has a here document or here-string whose body is
+/// indented.
 fn strip_comments(src: &str) -> String {
     src.lines()
         .filter(|l| {
@@ -48,7 +53,11 @@ fn strip_comments(src: &str) -> String {
             let comment = t.starts_with('#') && !t.starts_with("#!");
             !t.is_empty() && !comment
         })
-        .map(|l| format!("{l}\n"))
+        .map(|l| {
+            let t = l.trim_start_matches(' ');
+            let n = l.len() - t.len();
+            if n % 4 == 0 { format!("{}{t}\n", " ".repeat(n / 4)) } else { format!("{l}\n") }
+        })
         .collect()
 }
 pub const AGENT_PY: &str = include_str!("../../../remote/agent.py");
@@ -62,17 +71,19 @@ pub const AGENT_PY: &str = include_str!("../../../remote/agent.py");
 /// switched on, zsh through WEFT_ZSH typed in by weft (see shell/zsh.zsh),
 /// the POSIX shells with no hooks (ksh, mksh, dash, ash, sh) through ENV on
 /// a descriptor (shell/sh.sh; the two lines after its `exec` are the here
-/// document). Any other shell starts as is, with no integration.
-const SHELL_BOOT: &str = r##"WW=; if [ -n "$WS64" ]; then WW=$(printf %s "$WS64" | $D 2>/dev/null); fi; if [ -n "$WEFT_SHELL" ]; then WW=$WEFT_SHELL; fi; WP=${WW:-$SHELL}; if [ -n "$WW" ] && ! command -v "$WW" >/dev/null 2>&1; then WP=$SHELL; WU=${WP##*/}; WU=${WU%.exe}; printf '\033]7777;{"t":"shell-missing","wanted":"%s","using":"%s"}\007' "$WW" "${WU:-sh}"; fi; unset WS64 WEFT_SHELL; WS=${WP##*/}; WS=${WS%.exe}; export WEFT=1; case "$WS" in bash|'') WY=bash; [ -n "$WS" ] && WY=$WP; if command -v "$WY" >/dev/null 2>&1; then R=$(sect bash); export R D WEFT_CWD; exec "$WY" -c 'if [ "${BASH_VERSINFO[0]}" -ge 4 ]; then exec "$BASH" --rcfile <(printf %s "$R") -i; fi; WEFT_RC3=1 exec "$BASH" --rcfile /dev/fd/3 -i 3<<<"$R"'; fi ;; esac; WEFT_AT=; if [ -n "$WEFT_CWD" ]; then C=$(printf %s "$WEFT_CWD" | $D 2>/dev/null) && [ -d "$C" ] && cd "$C" && WEFT_AT=$C; fi; unset WEFT_CWD; printf '\033]7777;{"t":"shell","name":"%s","pid":%s}\007' "$WS" "$$"; case "$WS" in zsh) WEFT_ZSH=$(sect zsh); export WEFT_ZSH; printf '\033]7777;{"t":"inject","shell":"zsh"}\007'; exec "$WP" -l -i ;; fish) WEFT_FISH=$(sect fish); export WEFT_FISH; exec "$WP" -l -C 'eval $WEFT_FISH' ;; nu) exec "$WP" -l -e 'try { $env.config.shell_integration.osc133 = true; $env.config.shell_integration.osc7 = true } catch { $env.config.shell_integration = true }' ;; pwsh|powershell) WEFT_PS=$(sect pwsh); export WEFT_PS; exec "$WP" -NoLogo -NoExit -Command '. ([ScriptBlock]::Create($env:WEFT_PS))' ;; ksh|ksh93|mksh|dash|ash|sh) if [ -e /dev/fd/2 ]; then R=$(sect sh); WEFT_SH=$WS; ENV=/dev/fd/3; export WEFT_SH WEFT_AT ENV; exec "$WP" -i 3<<WEFT_EOF
+/// document), where /dev/fd/3 can be opened (FreeBSD without fdescfs has
+/// /dev/fd/0-2 only: there, the shell as it is, no ENV left behind). Any
+/// other shell starts as is, with no integration.
+const SHELL_BOOT: &str = r##"WW=; [ -n "$WS64" ] && WW=$(printf %s "$WS64" | $D 2>/dev/null); [ -n "$WEFT_SHELL" ] && WW=$WEFT_SHELL; WP=${WW:-$SHELL}; if [ -n "$WW" ] && ! command -v "$WW" >/dev/null 2>&1; then WP=$SHELL; WU=${WP##*/}; WU=${WU%.exe}; printf '\033]7777;{"t":"shell-missing","wanted":"%s","using":"%s"}\007' "$WW" "${WU:-sh}"; fi; unset WS64 WEFT_SHELL; WS=${WP##*/}; WS=${WS%.exe}; export WEFT=1; case "$WS" in bash|'') WY=bash; [ -n "$WS" ] && WY=$WP; if command -v "$WY" >/dev/null 2>&1; then R=$(sect bash); export R D WEFT_CWD; exec "$WY" -c '[ ${BASH_VERSINFO[0]} -ge 4 ] && exec "$BASH" --rcfile <(printf %s "$R") -i; WEFT_RC3=1 exec "$BASH" --rcfile /dev/fd/3 -i 3<<<"$R"'; fi ;; esac; WS=${WS:-sh}; WP=${WP:-sh}; WEFT_AT=; [ -n "$WEFT_CWD" ] && C=$(printf %s "$WEFT_CWD" | $D 2>/dev/null) && [ -d "$C" ] && cd "$C" && WEFT_AT=$C; unset WEFT_CWD; printf '\033]7777;{"t":"shell","name":"%s","pid":%s}\007' "$WS" "$$"; case "$WS" in zsh) WEFT_ZSH=$(sect zsh); export WEFT_ZSH; printf '\033]7777;{"t":"inject","shell":"zsh"}\007'; exec "$WP" -l -i ;; fish) WEFT_FISH=$(sect fish); export WEFT_FISH; exec "$WP" -l -C 'eval $WEFT_FISH' ;; nu) exec "$WP" -l -e 'try { $env.config.shell_integration.osc133 = true; $env.config.shell_integration.osc7 = true } catch { $env.config.shell_integration = true }' ;; pwsh|powershell) WEFT_PS=$(sect pwsh); export WEFT_PS; exec "$WP" -NoLogo -NoExit -Command '. ([ScriptBlock]::Create($env:WEFT_PS))' ;; ksh|ksh93|mksh|dash|ash|sh) if (exec 3</dev/null; [ -r /dev/fd/3 ]) 2>/dev/null; then R=$(sect sh); WEFT_SH=$WS; ENV=/dev/fd/3; export WEFT_SH WEFT_AT ENV; exec "$WP" -i 3<<WEFT_EOF
 $R
 WEFT_EOF
-fi ;; esac; if [ -n "$WP" ]; then exec "$WP" -i; fi; exec sh -i"##;
+fi ;; esac; exec "$WP" -i"##;
 
 /// On the command line: find a base64 decoder and gunzip among POSIX tools (or
 /// python), unpack the bundle in $W and run its `boot` section. Nothing
 /// unpacked (none of the tools there): said, and the user's shell as it is
 /// (it ended at once with code 0, and the terminal closed without a word).
-const SHELL_UNPACK: &str = r##"printf '\033]7777;{"t":"sh"}\007'; t() { printf QQ== | $D >/dev/null 2>&1; }; D="base64 -d"; t || D="base64 -D"; t || D="openssl base64 -d -A"; t || D="python3 -m base64 -d"; z() { if command -v gzip >/dev/null 2>&1; then gzip -dc; else python3 -c "import sys,gzip;sys.stdout.buffer.write(gzip.decompress(sys.stdin.buffer.read()))"; fi; }; WB=$(printf %s "$W" | $D 2>/dev/null | z 2>/dev/null); sect() { printf %s "$WB" | awk -v s="#@$1" '$0==s{f=1;next} /^#@/{f=0} f'; }; BT=$(sect boot 2>/dev/null); if [ -z "$BT" ]; then echo "weft: cannot unpack its shell integration here: a plain shell, without it"; exec "${SHELL:-sh}" -i; fi; eval "$BT""##;
+const SHELL_UNPACK: &str = r##"printf '\033]7777;{"t":"sh"}\007'; t() { printf QQ== | $D >/dev/null 2>&1; }; D="base64 -d"; t || D="base64 -D"; t || D="openssl base64 -d -A"; t || D="python3 -m base64 -d"; z() { gzip -dc 2>/dev/null || python3 -c "import sys,gzip;sys.stdout.buffer.write(gzip.decompress(sys.stdin.buffer.read()))"; }; WB=$(printf %s "$W" | $D 2>/dev/null | z 2>/dev/null); sect() { printf %s "$WB" | awk -v s="#@$1" '$0==s{f=1;next} /^#@/{f=0} f'; }; BT=$(sect boot 2>/dev/null); if [ -z "$BT" ]; then echo "weft: cannot unpack its shell integration here: a plain shell"; exec "${SHELL:-sh}" -i; fi; eval "$BT""##;
 
 /// Windows ConPTY truncates command lines around 8 KB, so the rc travels gzipped.
 fn gz_b64(s: &str) -> String {
@@ -159,7 +170,7 @@ pub fn windows_path(p: &str) -> String {
 pub fn windows_shell_command(cwd: Option<&str>) -> String {
     let mut s = String::from("[Console]::Write([char]27 + ']7777;{\"t\":\"shell\",\"name\":\"powershell\",\"pid\":' + $PID + '}' + [char]7)\n");
     if let Some(c) = cwd {
-        s.push_str(&format!("Set-Location -LiteralPath '{}' -ErrorAction SilentlyContinue\n", windows_path(c).replace('\'', "''")));
+        s.push_str(&format!("Set-Location -LiteralPath '{}' -ErrorAction SilentlyContinue\n", ps_single(&windows_path(c))));
     }
     s.push_str(PWSH_PS1);
     format!("powershell -NoLogo -NoExit -EncodedCommand {}", ps_encoded(&s))
@@ -226,9 +237,30 @@ pub fn b64(s: &str) -> String {
 /// there (a POSIX sh), it could not unpack (the app does not try another
 /// shell for it).
 pub const NO_DECODER_SAID: &str = "weft: no base64, openssl or python3 here";
-const PLAIN_SHELL: &str = "echo weft: no base64, openssl or python3 here: a plain shell, without its integration; IFS=; exec ${SHELL:-sh} -i";
+
+/// A Windows shell said it does not know `exec` (weft's POSIX command was
+/// run by cmd or PowerShell): the name in quotes, which quotes depending on
+/// the language ('exec' in English and Korean, "exec" in German, „exec“ in
+/// Czech). weft's own command has it after a space (`exec sh -c`).
+pub fn says_exec_unknown(text: &str) -> bool {
+    const QUOTES: &[char] = &['\'', '"', '„', '“', '”', '‘', '’', '‚', '«', '»', '「', '」'];
+    // (One space between the quote and the name is skipped: French puts a
+    // no-break one inside « ».)
+    let quote = |mut cs: std::iter::Peekable<Box<dyn Iterator<Item = char> + '_>>| {
+        if cs.peek().is_some_and(|c| matches!(c, ' ' | '\u{a0}' | '\u{202f}')) {
+            cs.next();
+        }
+        cs.next().is_some_and(|c| QUOTES.contains(&c))
+    };
+    text.match_indices("exec").any(|(i, _)| {
+        let before: Box<dyn Iterator<Item = char>> = Box::new(text[..i].chars().rev());
+        let after: Box<dyn Iterator<Item = char>> = Box::new(text[i + 4..].chars());
+        quote(before.peekable()) && quote(after.peekable())
+    })
+}
+const PLAIN_SHELL: &str = "echo weft: no base64, openssl or python3 h$()ere: a plain shell, without its integration; IFS=; exec ${SHELL:-sh} -i";
 /// And the agent, or the serial bridge: says so and ends.
-const NO_DECODER: &str = "echo weft: no base64, openssl or python3 here: the Files panel, editor and search do not run >&2; exit 127";
+const NO_DECODER: &str = "echo weft: no base64, openssl or python3 h$()ere: the Files panel, editor and search do not run >&2; exit 127";
 
 fn posix_wrap(vars: &[(&str, String)], script: &str, fail: &str) -> String {
     let mut s = String::from("exec sh -c '");
@@ -284,10 +316,13 @@ pub struct ShellInfo {
 }
 
 const NO_CODES: &str = "exit codes (the shell does not tell them)";
-const NO_TEXT: &str = "the command's own text (no command history kept, no rerun)";
+const NO_TEXT: &str = "the text of a command you type (none kept in history, no rerun of it; weft's own runs keep theirs)";
+/// FreeBSD's sh, and NetBSD's without promptcmds, run no command in a
+/// prompt: the integration leaves the prompt as it was there.
+const NO_BSD_SH: &str = "all of it on FreeBSD's sh and NetBSD's without promptcmds (no command runs in their prompt)";
 const NO_HELPERS: &str = "the w* helper commands (wopen, wls, ...; bash only)";
 /// What no integration at all leaves out.
-pub const NOT_INTEGRATED: &[&str] = &["command blocks (where a command and its output start and end)", "exit codes", "command history", "the folder, unless the host has Python for weft's agent", NO_HELPERS];
+pub const NOT_INTEGRATED: &[&str] = &["command blocks (where a command and its output start and end)", "exit codes", "command history", "the folder, unless weft's command started the shell and the host has Python for weft's agent (not a plain ssh)", NO_HELPERS];
 
 /// The shells weft has an integration for. Any other: `ShellSupport::None`.
 pub const SHELLS: &[ShellInfo] = &[
@@ -300,7 +335,7 @@ pub const SHELLS: &[ShellInfo] = &[
     ShellInfo { names: &["ksh", "ksh93"], title: "ksh", support: ShellSupport::Partial, missing: &[NO_TEXT, NO_HELPERS], local_windows: false, local_unix: true, remote: true },
     ShellInfo { names: &["mksh"], title: "mksh", support: ShellSupport::Partial, missing: &[NO_TEXT, NO_HELPERS], local_windows: false, local_unix: true, remote: true },
     ShellInfo { names: &["dash"], title: "dash", support: ShellSupport::Partial, missing: &[NO_TEXT, NO_HELPERS], local_windows: false, local_unix: true, remote: true },
-    ShellInfo { names: &["ash", "sh"], title: "ash, sh (busybox, a plain POSIX sh)", support: ShellSupport::Partial, missing: &[NO_TEXT, NO_HELPERS], local_windows: false, local_unix: true, remote: true },
+    ShellInfo { names: &["ash", "sh"], title: "ash, sh (busybox, a plain POSIX sh)", support: ShellSupport::Partial, missing: &[NO_TEXT, NO_HELPERS, NO_BSD_SH], local_windows: false, local_unix: true, remote: true },
 ];
 
 /// What weft has in the shell of this name (its program's file name, or a
@@ -590,36 +625,118 @@ impl Profile {
         }
     }
 
-    /// PowerShell's quoting and commands: this PC's terminals, and a
-    /// Windows host's.
-    fn speaks_powershell(&self) -> bool {
-        self.is_local() || self.remote_shell() == RemoteShell::Windows
+    /// The language its terminals' shell most likely speaks, where the
+    /// terminal itself does not say (see `ShellLang::of_local`): a Windows
+    /// host's PowerShell, this PC's own (PowerShell on Windows, a POSIX sh
+    /// on macOS and Linux), else a POSIX sh.
+    pub fn shell_lang(&self) -> ShellLang {
+        if self.remote_shell() == RemoteShell::Windows && !self.is_local() {
+            ShellLang::PowerShell { remote_windows: true }
+        } else if self.is_local() && cfg!(windows) {
+            ShellLang::PowerShell { remote_windows: false }
+        } else {
+            ShellLang::Posix
+        }
     }
 
     /// Shell command that changes directory, quoted for this host's shell.
     pub fn cd_command(&self, path: &str) -> String {
-        if self.remote_shell() == RemoteShell::Windows {
-            format!("Set-Location -LiteralPath '{}'", windows_path(path).replace('\'', "''"))
-        } else if self.is_local() {
-            format!("Set-Location -LiteralPath '{}'", path.replace('\'', "''"))
-        } else {
-            format!("cd -- {}", sh_quote(path))
-        }
+        self.shell_lang().cd(path)
     }
 
     pub fn quote_path(&self, path: &str) -> String {
-        if self.speaks_powershell() {
-            if path.contains([' ', '\'', '(', ')', '&', ';']) {
-                format!("'{}'", path.replace('\'', "''"))
-            } else {
-                path.to_string()
-            }
-        } else if path.chars().all(|c| c.is_ascii_alphanumeric() || "/._-+~:@%".contains(c)) {
-            path.to_string()
-        } else {
-            sh_quote(path)
+        self.shell_lang().quote(path)
+    }
+}
+
+/// What a terminal's shell takes a cd and a path in. (This PC's terminals
+/// were all taken for PowerShell: on macOS and Linux "cd here" typed
+/// Set-Location into bash, and a path went in with PowerShell's quotes.)
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ShellLang {
+    #[default]
+    Posix,
+    /// A Windows host's paths come as /C:/…: made C:/… for it.
+    PowerShell { remote_windows: bool },
+    Cmd,
+    Nu,
+}
+
+impl ShellLang {
+    /// A local terminal's, by the program it starts (on Windows: Windows
+    /// PowerShell, pwsh, cmd, nu; macOS and Linux start sh, whatever shell
+    /// it then runs).
+    pub fn of_local(program: &str) -> ShellLang {
+        let name = Path::new(program).file_stem().and_then(|s| s.to_str()).unwrap_or("").to_ascii_lowercase();
+        match name.as_str() {
+            "powershell" | "pwsh" => ShellLang::PowerShell { remote_windows: false },
+            "cmd" => ShellLang::Cmd,
+            "nu" => ShellLang::Nu,
+            _ => ShellLang::Posix,
         }
     }
+
+    /// The shell weft's command started on a POSIX host, or on macOS and
+    /// Linux here, by the name it said: nu and pwsh have their own; the
+    /// rest (bash, zsh, fish, the sh family) take a POSIX sh's.
+    pub fn of_started(name: &str) -> ShellLang {
+        match ShellLang::of_local(name) {
+            ShellLang::Cmd => ShellLang::Posix,
+            lang => lang,
+        }
+    }
+
+    pub fn cd(self, path: &str) -> String {
+        match self {
+            ShellLang::PowerShell { remote_windows } => {
+                let p = if remote_windows { windows_path(path) } else { path.to_string() };
+                format!("Set-Location -LiteralPath '{}'", ps_single(&p))
+            }
+            // (No " can be in a Windows path.)
+            ShellLang::Cmd => format!("cd /d \"{path}\""),
+            ShellLang::Nu => format!("cd {}", nu_quote(path)),
+            ShellLang::Posix => format!("cd -- {}", sh_quote(path)),
+        }
+    }
+
+    pub fn quote(self, path: &str) -> String {
+        match self {
+            ShellLang::PowerShell { remote_windows } => {
+                let p = if remote_windows { windows_path(path) } else { path.to_string() };
+                if p.contains([' ', '(', ')', '&', ';', '$', '`', '{', '}', '@', ',', '#', '|', '<', '>']) || p.contains(PS_QUOTES) || p.contains(['"', '“', '”', '„']) {
+                    format!("'{}'", ps_single(&p))
+                } else {
+                    p
+                }
+            }
+            // A / unquoted is a switch to cmd's own commands (dir C:/Users).
+            ShellLang::Cmd if !path.chars().all(|c| c.is_ascii_alphanumeric() || "\\._-:".contains(c)) => format!("\"{path}\""),
+            ShellLang::Nu if !path.chars().all(|c| c.is_ascii_alphanumeric() || "/\\._-+~:".contains(c)) => nu_quote(path),
+            ShellLang::Posix if !path.chars().all(|c| c.is_ascii_alphanumeric() || "/._-+~:@%".contains(c)) => sh_quote(path),
+            _ => path.to_string(),
+        }
+    }
+}
+
+/// The characters PowerShell takes for a single quote: each is doubled
+/// inside one (not ' alone: C:/Bob’s ended the string at ’).
+const PS_QUOTES: [char; 5] = ['\'', '‘', '’', '‚', '‛'];
+
+/// `s` for inside PowerShell's single quotes.
+fn ps_single(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        out.push(c);
+        if PS_QUOTES.contains(&c) {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// A string in nu: double quotes, \ and " escaped.
+fn nu_quote(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 /// Environment that makes ssh ask weft (`weft --askpass`) instead of a
@@ -696,7 +813,7 @@ fn cmd_prompt() -> String {
 /// argv and extra environment for a local pane's shell.
 pub fn local_shell(choice: LocalShell) -> (Vec<String>, Vec<(String, String)>) {
     if !cfg!(windows) {
-        return (posix_local_argv("/bin/sh"), Vec::new());
+        return (posix_local_argv(&posix_sh()), Vec::new());
     }
     match choice {
         LocalShell::Cmd => (vec!["cmd.exe".into(), "/k".into(), "chcp 65001 >nul".into()], vec![("PROMPT".into(), cmd_prompt())]),
@@ -727,7 +844,7 @@ pub fn posix_local_argv_with(sh: &str, shell: Option<&str>) -> Vec<String> {
 /// (a name or path; empty: the login shell).
 pub fn local_shell_with(choice: LocalShell, unix_shell: &str) -> (Vec<String>, Vec<(String, String)>) {
     if !cfg!(windows) {
-        return (posix_local_argv_with("/bin/sh", Some(unix_shell)), Vec::new());
+        return (posix_local_argv_with(&posix_sh(), Some(unix_shell)), Vec::new());
     }
     local_shell(choice)
 }
@@ -749,9 +866,22 @@ fn local_shell_argv() -> Vec<String> {
             "powershell.exe"
         }
     } else {
-        return vec![std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into()), "-i".into()];
+        return vec![std::env::var("SHELL").unwrap_or_else(|_| posix_sh()), "-i".into()];
     };
     vec![shell.into(), "-NoLogo".into(), "-NoExit".into(), "-EncodedCommand".into(), encoded]
+}
+
+/// The POSIX sh: the one on PATH (POSIX names no path for it: Termux has
+/// none at /bin), /bin/sh where PATH has none.
+pub fn posix_sh() -> String {
+    which("sh").map(|p| p.display().to_string()).unwrap_or_else(|| "/bin/sh".into())
+}
+
+/// Git for Windows' bash, wherever Git is (its bin/ is beside the cmd/ on
+/// PATH), or at its usual place.
+pub fn git_bash() -> Option<PathBuf> {
+    let by_git = which("git.exe").and_then(|g| Some(g.parent()?.parent()?.join("bin").join("bash.exe")));
+    by_git.into_iter().chain([PathBuf::from("C:/Program Files/Git/bin/bash.exe")]).find(|p| p.is_file())
 }
 
 pub fn which(exe: &str) -> Option<PathBuf> {
@@ -1163,10 +1293,115 @@ fn local_hello() -> Value {
         "ok": true,
         "home": home.replace('\\', "/"),
         "cwd": std::env::current_dir().map(|p| p.display().to_string().replace('\\', "/")).unwrap_or_default(),
-        "host": std::env::var("COMPUTERNAME").unwrap_or_else(|_| "localhost".into()),
-        "user": std::env::var("USERNAME").or_else(|_| std::env::var("USER")).unwrap_or_default(),
+        // The OS's own names (not COMPUTERNAME/USERNAME, Windows' only:
+        // Linux showed "localhost").
+        "host": sysinfo::System::host_name().unwrap_or_else(|_| "localhost".into()),
+        "user": user_name(None).unwrap_or_default(),
         "platform": std::env::consts::OS,
     })
+}
+
+/// A user's name as the system has it (the password database, NIS, LDAP,
+/// whatever it uses): the one with this id, or this process's.
+#[cfg(unix)]
+pub fn user_name(uid: Option<u32>) -> Option<String> {
+    // SAFETY: getpwuid_r fills our buffer; the name is copied out of it.
+    unsafe {
+        let uid = uid.unwrap_or_else(|| libc::geteuid());
+        let mut pw: libc::passwd = std::mem::zeroed();
+        let mut buf = vec![0u8; 16384];
+        let mut out: *mut libc::passwd = std::ptr::null_mut();
+        let rc = libc::getpwuid_r(uid, &mut pw, buf.as_mut_ptr().cast(), buf.len(), &mut out);
+        if rc != 0 || out.is_null() || pw.pw_name.is_null() {
+            return None;
+        }
+        Some(std::ffi::CStr::from_ptr(pw.pw_name).to_string_lossy().into_owned())
+    }
+}
+
+#[cfg(not(unix))]
+pub fn user_name(_uid: Option<u32>) -> Option<String> {
+    std::env::var("USERNAME").ok()
+}
+
+/// The user's downloads folder as the system has it: Windows' known folder
+/// (wherever it was moved), the XDG user dir on Linux and the BSDs (named
+/// in the desktop's language: ~/다운로드), ~/Downloads otherwise (macOS).
+pub fn downloads_dir() -> Option<std::path::PathBuf> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Com::CoTaskMemFree;
+        use windows_sys::Win32::UI::Shell::{FOLDERID_Downloads, SHGetKnownFolderPath};
+        // SAFETY: the path is a NUL-ended wide string we free once read.
+        unsafe {
+            let mut p: windows_sys::core::PWSTR = std::ptr::null_mut();
+            let ok = SHGetKnownFolderPath(&FOLDERID_Downloads, 0, std::ptr::null_mut(), &mut p) == 0 && !p.is_null();
+            let path = ok.then(|| {
+                let len = (0..).take_while(|&i| *p.add(i) != 0).count();
+                std::path::PathBuf::from(String::from_utf16_lossy(std::slice::from_raw_parts(p, len)))
+            });
+            CoTaskMemFree(p as _);
+            path
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let home = std::env::var("HOME").ok()?;
+        let xdg = std::env::var("XDG_DOWNLOAD_DIR").ok().or_else(|| {
+            let config = std::env::var("XDG_CONFIG_HOME").unwrap_or_else(|_| format!("{home}/.config"));
+            user_dir(&std::fs::read_to_string(format!("{config}/user-dirs.dirs")).ok()?, "XDG_DOWNLOAD_DIR", &home)
+        });
+        Some(xdg.unwrap_or_else(|| format!("{home}/Downloads")).into())
+    }
+}
+
+/// One entry of user-dirs.dirs (`XDG_DOWNLOAD_DIR="$HOME/다운로드"`), its
+/// $HOME put in.
+#[cfg_attr(windows, allow(dead_code))]
+fn user_dir(file: &str, key: &str, home: &str) -> Option<String> {
+    let line = file.lines().map(str::trim).find(|l| l.strip_prefix(key).is_some_and(|r| r.trim_start().starts_with('=')))?;
+    let v = line.split_once('=')?.1.trim().trim_matches('"');
+    let v = v.replace("$HOME", home);
+    (!v.is_empty() && v.trim_end_matches('/') != home.trim_end_matches('/')).then_some(v)
+}
+
+/// Whether two paths are one file (not a link to it): asked of the file
+/// system, whatever its rules for names are.
+fn same_file(a: &Path, b: &Path) -> bool {
+    let (Ok(ma), Ok(mb)) = (std::fs::symlink_metadata(a), std::fs::symlink_metadata(b)) else { return false };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        ma.dev() == mb.dev() && ma.ino() == mb.ino()
+    }
+    #[cfg(not(unix))]
+    {
+        !ma.file_type().is_symlink() && !mb.file_type().is_symlink() && matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
+    }
+}
+
+/// A file's type and permissions as ls shows them (drwxr-xr-x); on
+/// Windows only its type and whether it may be written.
+pub fn file_mode(md: &std::fs::Metadata) -> String {
+    let t = md.file_type();
+    let kind = if t.is_symlink() { 'l' } else if t.is_dir() { 'd' } else { '-' };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let m = md.permissions().mode();
+        let bit = |b: u32, c: char| if m & b != 0 { c } else { '-' };
+        let mut s = String::from(kind);
+        for (r, w, x) in [(0o400, 0o200, 0o100), (0o040, 0o020, 0o010), (0o004, 0o002, 0o001)] {
+            s.push(bit(r, 'r'));
+            s.push(bit(w, 'w'));
+            s.push(bit(x, 'x'));
+        }
+        s
+    }
+    #[cfg(not(unix))]
+    {
+        format!("{kind}r{}", if md.permissions().readonly() { '-' } else { 'w' })
+    }
 }
 
 pub fn mtime_of(md: &std::fs::Metadata) -> f64 {
@@ -1214,7 +1449,11 @@ fn local_op(req: &Value) -> Value {
                 let d = md.as_ref().map(|m| m.is_dir()).unwrap_or(false);
                 let size = md.as_ref().map(|m| if m.is_dir() { 0 } else { m.len() }).unwrap_or(0);
                 let m = md.as_ref().map(mtime_of).unwrap_or(0.0) as i64;
-                entries.push(json!({"n": name, "d": d, "l": link, "s": size, "m": m}));
+                let mut item = json!({"n": name, "d": d, "l": link, "s": size, "m": m});
+                if req.get("mode").and_then(|v| v.as_bool()).unwrap_or(false) {
+                    item["p"] = json!(std::fs::symlink_metadata(e.path()).map(|m| file_mode(&m)).unwrap_or_default());
+                }
+                entries.push(item);
             }
             if req.get("ignored").and_then(|v| v.as_bool()) == Some(false) {
                 let names: Vec<String> = entries.iter().filter_map(|e| e["n"].as_str().map(String::from)).collect();
@@ -1348,9 +1587,10 @@ fn local_op(req: &Value) -> Value {
         }
         "rename" => {
             let (from, to) = (s("from"), s("to"));
-            // Never onto something else (a rename replaces silently). Only
-            // the letters' case changing is the same file on Windows.
-            let same = cfg!(windows) && from.to_lowercase() == to.to_lowercase();
+            // Never onto something else (a rename replaces silently). The
+            // same file by another name (its letters' case on a file system
+            // that ignores case: Windows', macOS') is not something else.
+            let same = same_file(Path::new(&from), Path::new(&to));
             if !same && std::fs::symlink_metadata(&to).is_ok() {
                 return Err(format!("{} already exists", Path::new(&to).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or(to)));
             }
@@ -1619,6 +1859,41 @@ fn local_grep(root: &str, pattern: &str, icase: bool, regex: bool, hidden: bool)
 mod tests {
     use super::*;
 
+    /// One file by two names is told by the file system: its case on one
+    /// that ignores case; two files are two; a missing one is none.
+    #[test]
+    fn the_same_file_is_asked_of_the_file_system() {
+        let d = std::env::temp_dir().join(format!("weft-same-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("a.txt"), "a").unwrap();
+        std::fs::write(d.join("b.txt"), "b").unwrap();
+        assert!(same_file(&d.join("a.txt"), &d.join("a.txt")));
+        assert!(!same_file(&d.join("a.txt"), &d.join("b.txt")));
+        assert!(!same_file(&d.join("a.txt"), &d.join("none.txt")));
+        let ignores_case = d.join("A.TXT").exists();
+        assert_eq!(same_file(&d.join("a.txt"), &d.join("A.TXT")), ignores_case);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The downloads folder is the system's: an XDG user dir in the
+    /// desktop's language, $HOME put in; Windows' known folder is there.
+    #[test]
+    fn the_downloads_folder_is_the_systems() {
+        let dirs = "# written by xdg-user-dirs-update
+XDG_DESKTOP_DIR=\"$HOME/바탕화면\"
+XDG_DOWNLOAD_DIR=\"$HOME/다운로드\"
+";
+        assert_eq!(user_dir(dirs, "XDG_DOWNLOAD_DIR", "/home/u").as_deref(), Some("/home/u/다운로드"));
+        assert_eq!(user_dir(dirs, "XDG_MUSIC_DIR", "/home/u"), None);
+        // Set to the home itself: none of its own (the default then).
+        assert_eq!(user_dir("XDG_DOWNLOAD_DIR=\"$HOME/\"
+", "XDG_DOWNLOAD_DIR", "/home/u/"), None);
+        let d = downloads_dir().expect("a downloads folder");
+        if cfg!(windows) {
+            assert!(d.is_absolute() && d.is_dir(), "{d:?}");
+        }
+    }
+
     #[test]
     fn local_grep_modes_and_hidden() {
         use crate::editfind::{to_regex, MatchMode};
@@ -1694,7 +1969,13 @@ mod tests {
     /// carries the target and options.
     #[test]
     fn bootstrap_fits_the_command_line() {
-        assert!(PLAIN_SHELL.contains(NO_DECODER_SAID) && NO_DECODER.contains(NO_DECODER_SAID), "what the app knows the no-decoder host by");
+        // What the app knows the no-decoder host by: in what sh prints, not
+        // in the command's own text (Windows PowerShell 5.1 prints that
+        // back when it refuses it, and it was taken for weft's command run).
+        assert!(PLAIN_SHELL.replace("$()", "").contains(NO_DECODER_SAID) && NO_DECODER.replace("$()", "").contains(NO_DECODER_SAID));
+        for cmd in [remote_shell_command(None), remote_shell_command_with(None, Some("fish"))] {
+            assert!(!cmd.contains(NO_DECODER_SAID), "the words are not in the command itself");
+        }
         assert!(SHELL_UNPACK.starts_with(r#"printf '\033]7777;{"t":"sh"}\007'; "#), "it says it runs before anything else");
         // The boot section runs in the unpacker's shell: it must not set the
         // names the unpacker keeps (the bundle in WB once had the bash
@@ -1708,7 +1989,30 @@ mod tests {
         assert!(n < 7000, "{n} bytes");
         // With a shell chosen by its path too.
         let n = remote_shell_command_with(Some("/home/someone/projects/a long directory name"), Some("/opt/homebrew/Cellar/fish/3.7.1/bin/fish")).len();
+        println!("with a chosen shell: {n} bytes");
         assert!(n < 7000, "with a chosen shell: {n} bytes");
+    }
+
+    /// cmd's and PowerShell's refusal of `exec`, in the languages' own
+    /// quotes; not weft's own command or a word that has exec in it.
+    #[test]
+    fn a_refusal_of_exec_is_told_in_any_language() {
+        for said in [
+            "'exec' is not recognized as an internal or external command,",
+            "'exec'은(는) 내부 또는 외부 명령, 실행할 수 있는 프로그램, 또는",
+            "Der Befehl \"exec\" ist entweder falsch geschrieben oder",
+            "Die Benennung \"exec\" wurde nicht als Name eines Cmdlet",
+            "Příkaz „exec“ nebyl nalezen",
+            "exec : The term 'exec' is not recognized as the name of a cmdlet",
+            // French: a no-break space inside « ».
+            "Le terme «\u{a0}exec\u{a0}» n'est pas reconnu comme nom d'applet de commande",
+            "« exec » n'est pas reconnu",
+        ] {
+            assert!(says_exec_unknown(said), "{said}");
+        }
+        for said in ["exec sh -c 'printf hi'", "executable not found", "sh: exec: line 1: no such file", "\"execute\""] {
+            assert!(!says_exec_unknown(said), "{said}");
+        }
     }
 
     /// Each shell's integration is cut out of the bundle intact.
@@ -1739,6 +2043,11 @@ mod tests {
         }
         assert!(ZSH_ZSH.contains("precmd_functions") && ZSH_ZSH.contains("preexec_functions"));
         assert!(FISH_FISH.contains("fish_preexec") && FISH_FISH.contains("fish_prompt"));
+        // bash's helpers need no Python on the host (wls is listed by the
+        // agent, wtable split by weft), nor base64 for their events.
+        let bash = strip_comments(BASH_SH);
+        assert!(!bash.contains("python") && !bash.contains("__weft_py"), "no shell-side Python");
+        assert!(!bash.lines().any(|l| l.contains("__weft_ev") && l.contains("base64")), "events as plain JSON");
     }
 
     /// A Windows host's terminal and agent commands: PowerShell, from cmd
@@ -1773,6 +2082,32 @@ mod tests {
         assert!(old.agent_argv(false).unwrap().last().unwrap().starts_with("powershell "), "and its agent");
         assert!(old.serial_argv("COM3", 9600, false).is_empty(), "no serial bridge (termios)");
         assert_eq!(old.cd_command("/C:/x y"), "Set-Location -LiteralPath 'C:/x y'");
+        // Each shell's cd and quotes; this PC's by its program.
+        assert_eq!(ShellLang::Posix.cd("/a b/it's"), r"cd -- '/a b/it'\''s'");
+        assert_eq!(ShellLang::Posix.quote("/tmp/$x*"), "'/tmp/$x*'");
+        assert_eq!(ShellLang::Posix.quote("/usr/lib"), "/usr/lib");
+        assert_eq!(ShellLang::PowerShell { remote_windows: false }.quote("C:/$x"), "'C:/$x'");
+        assert_eq!(ShellLang::Cmd.cd("C:/a b"), "cd /d \"C:/a b\"");
+        assert_eq!(ShellLang::Cmd.quote("C:/a&b"), "\"C:/a&b\"");
+        assert_eq!(ShellLang::Nu.cd(r#"C:\a "b""#), r#"cd "C:\\a \"b\"""#);
+        assert_eq!(ShellLang::of_local("C:/Windows/System32/cmd.exe"), ShellLang::Cmd);
+        assert_eq!(ShellLang::of_local("nu"), ShellLang::Nu);
+        assert_eq!(ShellLang::of_local("pwsh.exe"), ShellLang::PowerShell { remote_windows: false });
+        assert_eq!(ShellLang::of_local("/bin/sh"), ShellLang::Posix);
+        // PowerShell's other single quotes are doubled too (C:/Bob’s ended
+        // the string at ’); a Windows host's /C:/… is C:/… in a path too.
+        let ps = ShellLang::PowerShell { remote_windows: false };
+        assert_eq!(ps.quote("C:/Bob’s"), "'C:/Bob’’s'");
+        assert_eq!(ps.cd("C:/it's"), "Set-Location -LiteralPath 'C:/it''s'");
+        assert_eq!(ShellLang::PowerShell { remote_windows: true }.quote("/C:/Users/x"), "C:/Users/x");
+        // cmd: a / unquoted is a switch (dir C:/Users).
+        assert_eq!(ShellLang::Cmd.quote("C:/Users"), "\"C:/Users\"");
+        assert_eq!(ShellLang::Cmd.quote("notes.txt"), "notes.txt");
+        // By the name the boot says: nu and pwsh have their own.
+        assert_eq!(ShellLang::of_started("nu"), ShellLang::Nu);
+        assert_eq!(ShellLang::of_started("/usr/bin/pwsh"), ShellLang::PowerShell { remote_windows: false });
+        assert_eq!(ShellLang::of_started("fish"), ShellLang::Posix);
+        assert_eq!(ShellLang::Nu.cd("/home/u/it's"), "cd \"/home/u/it's\"", "no --: nu has no such flag");
         let saved = serde_json::to_string(&{
             let mut p = old.clone();
             p.set_remote_shell(RemoteShell::Windows);
@@ -2436,6 +2771,7 @@ mod loopback {
         assert!(!t.integrated);
         pty.write(b"echo hi");
         wait(&mut pty, &mut t, &|t| t.screen[t.cy].text().contains("echo hi"), 5);
+        t.user_typed();
         t.user_enter();
         pty.write(b"\r");
         assert!(wait(&mut pty, &mut t, &|t| t.blocks.first().map(|b| b.state() == BlockState::Done).unwrap_or(false), 10), "end guessed: {:?}", screen(&t));
@@ -2491,6 +2827,7 @@ mod loopback {
         pty.write(cmd.as_bytes());
         wait(&mut pty, &mut t, &|t| t.screen[t.cy].text().contains(cmd), 5);
         // As the app does: Enter goes through user_enter.
+        t.user_typed();
         t.user_enter();
         pty.write(b"\r");
         let done = wait(&mut pty, &mut t, &|t| t.blocks.iter().any(|b| b.command.contains(cmd) && b.state() == BlockState::Done), 20);
@@ -2537,6 +2874,7 @@ mod loopback {
         pump(&mut pty, &mut t, &mut p, |_| false, 1);
         pty.write(cmd.as_bytes());
         pump(&mut pty, &mut t, &mut p, |t| t.screen[t.cy].text().contains(cmd), 5);
+        t.user_typed();
         t.user_enter();
         pty.write(b"\r");
         // A shell with part of the integration (the login shell is busybox
@@ -2557,6 +2895,111 @@ mod loopback {
             let name = root.file_name().unwrap().to_string_lossy().to_string();
             assert!(t.cwd.as_deref().map(|c| c.trim_end_matches('/').ends_with(&name)).unwrap_or(false), "{choice:?}: cwd {:?}", t.cwd);
         }
+    }
+
+    /// No $SHELL and no bash (a container run by docker or kubectl exec,
+    /// Alpine's): sh, with its integration. It went past the sh family's
+    /// branch (an empty name) to a plain sh. Here busybox alone on PATH.
+    #[test]
+    #[cfg(unix)]
+    fn no_shell_variable_and_no_bash_gets_sh_with_its_integration() {
+        let Some(busybox) = which("busybox").or_else(|| ["/usr/local/bin/ash", "/bin/busybox"].iter().map(PathBuf::from).find(|p| p.is_file())) else { return };
+        let list = Command::new(&busybox).arg("--list").output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
+        if !list.lines().any(|l| l == "base64") || !list.lines().any(|l| l == "gzip") {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("weft-bb-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for applet in list.lines().filter(|l| !l.is_empty()) {
+            let _ = std::os::unix::fs::symlink(&busybox, dir.join(applet));
+        }
+        let path = dir.display().to_string();
+        let argv = vec![format!("{path}/sh"), "-c".to_string(), remote_shell_command(None)];
+        let env = [("PATH".to_string(), path.clone()), ("SHELL".to_string(), String::new()), ("HOME".to_string(), path.clone())];
+        let _turn = crate::pty::tests::TURN.lock().unwrap_or_else(|e| e.into_inner());
+        let mut pty = Pty::spawn(&argv, None, &env, 100, 30, || {}).unwrap();
+        let mut t = Term::new(100, 30);
+        let mut p = vte::Parser::new();
+        let named = |t: &Term| t.events.iter().any(|e| matches!(e, TermEvent::Weft { value, .. } if value["t"] == "shell" && value["name"] == "sh"));
+        assert!(pump(&mut pty, &mut t, &mut p, |t| t.integrated && named(t), 30), "sh, integrated: {:?}", screen(&t));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A PS1 the user's profile exports goes, with weft's call in it, to
+    /// the shells started from this one (`sh`, vi's :sh), where the
+    /// function is not: their prompts say nothing of it (they said
+    /// "__weft_p: not found" at each).
+    #[test]
+    #[cfg(unix)]
+    fn an_exported_ps1_leaves_the_shells_started_from_it_quiet() {
+        let Some(dash) = which("dash") else { return };
+        let dir = std::env::temp_dir().join(format!("weft-ps1-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("sh.sh"), SH_SH).unwrap();
+        std::fs::write(dir.join(".profile"), "PS1='mine$ '; export PS1\n").unwrap();
+        let mut c = Command::new(&dash)
+            .arg("-i")
+            .env("HOME", &dir)
+            .env("WEFT_SH", "dash")
+            .env("ENV", dir.join("sh.sh"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        use std::io::Write;
+        c.stdin.take().unwrap().write_all(format!("env -u ENV {} -i\necho child-ran\nexit\nexit\n", dash.display()).as_bytes()).unwrap();
+        let o = c.wait_with_output().unwrap();
+        let all = format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+        assert!(all.contains("child-ran") && all.contains("mine$"), "{all}");
+        assert!(!all.contains("not found"), "the child's prompt: {all}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// FreeBSD's sh runs no command in its prompt, NetBSD's only with
+    /// promptcmds: there the prompt is left as it was (no `__weft_p` shown),
+    /// and the rest of the integration still runs (a failed `set` once ended
+    /// its reading in dash). Here dash, as `sh`, with uname saying so.
+    #[test]
+    #[cfg(unix)]
+    fn a_bsd_sh_keeps_its_prompt() {
+        let Some(dash) = which("dash") else { return };
+        let dir = std::env::temp_dir().join(format!("weft-bsd-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::write(dir.join("sh.sh"), SH_SH).unwrap();
+        for (os, prompt) in [("Linux", "`__weft_p`"), ("FreeBSD", ""), ("NetBSD", "")] {
+            let uname = dir.join("bin/uname");
+            std::fs::write(&uname, format!("#!/bin/sh\necho {os}\n")).unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&uname, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let path = format!("{}:{}", dir.join("bin").display(), std::env::var("PATH").unwrap_or_default());
+            // The integration reads /etc/profile first: Debian's and
+            // Alpine's set PATH anew, and this uname is not the one it runs.
+            let seen = Command::new(&dash).args(["-c", ". /etc/profile >/dev/null 2>&1; uname -s"]).env("PATH", &path).stderr(Stdio::null()).output().unwrap();
+            if String::from_utf8_lossy(&seen.stdout).trim() != os {
+                eprintln!("skipped: /etc/profile sets PATH here");
+                break;
+            }
+            let mut c = Command::new(&dash)
+                .arg("-i")
+                .env("PATH", path)
+                .env("HOME", &dir)
+                .env("WEFT_SH", "sh")
+                .env("ENV", dir.join("sh.sh"))
+                .env("PS1", "$ ")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            use std::io::Write;
+            c.stdin.take().unwrap().write_all(b"echo \"PS1=[$PS1] WEFT=$WEFT\"\nexit\n").unwrap();
+            let out = String::from_utf8_lossy(&c.wait_with_output().unwrap().stdout).to_string();
+            // (root's /etc/profile may have made it `# `.)
+            let line = out.lines().find(|l| l.starts_with("PS1=[")).unwrap_or_else(|| panic!("{os}: {out}"));
+            assert!(line.ends_with("] WEFT=1") && line.contains("__weft_p") != prompt.is_empty(), "{os}: {line}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Every shell weft has an integration for, of those installed here
@@ -2603,6 +3046,17 @@ mod loopback {
                     let path = Command::new(sh).args(["-c", &format!("command -v {name}")]).output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
                     let login = vec![sh.to_string(), "-c".to_string(), remote_shell_command(None)];
                     argv_check(&format!("login {name}"), &login, &with(&[("SHELL", &path)]), "echo weft-ok", Some(0), true);
+                    // fish with vi bindings: its mode prompt ([I]) is drawn
+                    // before the prompt, and was taken for the command's
+                    // output.
+                    if name == "fish" {
+                        let cfg = std::env::temp_dir().join(format!("weft-fishvi-{}", std::process::id()));
+                        std::fs::create_dir_all(cfg.join("fish")).unwrap();
+                        std::fs::write(cfg.join("fish").join("config.fish"), "set -g fish_key_bindings fish_vi_key_bindings\n").unwrap();
+                        let xdg = cfg.display().to_string().replace('\\', "/");
+                        argv_check("fish in vi mode", &argv(name), &with(&[("XDG_CONFIG_HOME", &xdg)]), "echo weft-ok", Some(0), true);
+                        let _ = std::fs::remove_dir_all(&cfg);
+                    }
                 }
                 Some(ShellSupport::Partial) => {
                     let _turn = crate::pty::tests::TURN.lock().unwrap_or_else(|e| e.into_inner());
@@ -2616,6 +3070,7 @@ mod loopback {
                         let before = t.blocks.iter().filter(|b| b.state() == BlockState::Done).count();
                         pty.write(cmd.as_bytes());
                         pump(pty, t, p, |t| t.screen[t.cy].text().contains(cmd), 5);
+                        t.user_typed();
                         t.user_enter();
                         pty.write(b"\r");
                         let done = pump(pty, t, p, |t| t.blocks.iter().filter(|b| b.state() == BlockState::Done).count() > before && t.blocks.last().is_some_and(|b| b.state() == BlockState::Prompt), 15);
@@ -2694,6 +3149,31 @@ mod loopback {
         assert!(first.contains("\"ready\""), "the agent said it is ready over ssh: {first:?}");
     }
 
+    /// bash with a user's ~/.bash_profile that has `set -u` and a
+    /// PROMPT_COMMAND array (bash 5.1+ runs each element) whose second
+    /// element sets PS1 anew: weft's marks are still on every prompt (only
+    /// the array's first element was weft's: the later one wiped them), and
+    /// nothing is unbound. (bash < 4.4's `set -u` case: CI's old bash.)
+    /// A PROMPT_COMMAND string ending in `;` too.
+    #[test]
+    fn bash_keeps_its_marks_with_a_users_prompt_command_array_and_set_u() {
+        let sh = if cfg!(windows) { "C:/Program Files/Git/bin/sh.exe" } else { "/bin/sh" };
+        if !Path::new(sh).is_file() || which("bash").is_none() && !cfg!(windows) {
+            return;
+        }
+        // An array; a string that ends in `;` (`history -a; $PROMPT_COMMAND`
+        // with it empty: joined with `;`, an error at every prompt).
+        for (what, profile) in [("a PROMPT_COMMAND array", "PROMPT_COMMAND=(true 'PS1=\"arr> \"')"), ("a PROMPT_COMMAND ending in ;", "PROMPT_COMMAND='history -a; '")] {
+            let home = std::env::temp_dir().join(format!("weft-bashprof-{}", std::process::id()));
+            std::fs::create_dir_all(&home).unwrap();
+            std::fs::write(home.join(".bash_profile"), format!("set -u\n{profile}\n")).unwrap();
+            let home = home.display().to_string().replace('\\', "/");
+            let argv = vec![sh.to_string(), "-c".to_string(), remote_shell_command_with(None, Some("bash"))];
+            argv_check(&format!("bash with {what}"), &argv, &[("HOME".to_string(), home.clone())], "echo weft-ok", Some(0), true);
+            let _ = std::fs::remove_dir_all(&home);
+        }
+    }
+
     /// A local terminal on macOS and Linux has weft's integration (the
     /// remote bootstrap run by the local sh): tried here with Git's sh, its
     /// bash.
@@ -2704,7 +3184,7 @@ mod loopback {
             return;
         }
         #[cfg(not(windows))]
-        assert_eq!(local_shell(LocalShell::Auto).0, posix_local_argv("/bin/sh"), "macOS and Linux start it so");
+        assert_eq!(local_shell(LocalShell::Auto).0, posix_local_argv(&posix_sh()), "macOS and Linux start it so");
         argv_check("posix local", &posix_local_argv(sh), &[], "echo weft-ok", Some(0), true);
     }
 
@@ -2844,7 +3324,17 @@ mod loopback {
         let mut child = Command::new(b).args(["-c", "exit 255"]).stdin(Stdio::piped()).spawn().unwrap();
         let mut stdin = child.stdin.take().unwrap();
         let _ = child.wait();
-        let raw = stdin.write_all(AGENT_PY.as_bytes()).and_then(|_| stdin.flush());
+        // Nobody at the other end. (A process another test forks in that
+        // moment holds the pipe's far end until it execs: a write can still
+        // go in then. Again until it is gone.)
+        let mut raw = Ok(());
+        for _ in 0..100 {
+            raw = stdin.write_all(AGENT_PY.as_bytes()).and_then(|_| stdin.flush());
+            if raw.is_err() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
         assert_eq!(raw.map_err(|e| e.kind()), Err(std::io::ErrorKind::BrokenPipe), "nobody at the other end");
         assert_eq!(ship_agent(&mut stdin), Ok(()));
         struct Failing;

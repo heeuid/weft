@@ -23,11 +23,28 @@ function global:prompt {
     # End the block now: the user's own prompt (starship, oh-my-posh) can take
     # 50-150 ms and must not count as the command's duration.
     [Console]::Write("$e]133;D;$code$b$osc7")
+    $null = __weft_keys
     "$e]133;A$b" + (& $global:__weft_prompt) + "$e]133;B$b"
 }
-if (Get-Module PSReadLine) {
-    Set-PSReadLineKeyHandler -Key Enter -ScriptBlock {
-        [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()
-        [Console]::Write("$([char]27)]133;C$([char]7)")
-    }
+# weft's keys in PSReadLine: Enter says a command starts (133;C), and
+# Ctrl+Alt+Shift+F12 empties the line in any edit mode (Windows', Emacs',
+# Vi's insert and command: back into insert). Bound again at each prompt: a
+# change of edit mode (Set-PSReadLineOption -EditMode) puts back the mode's
+# own keys only.
+function global:__weft_keys {
+    if (-not (Get-Module PSReadLine)) { return $false }
+    try {
+        Set-PSReadLineKeyHandler -Key Enter -ScriptBlock {
+            [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()
+            [Console]::Write("$([char]27)]133;C$([char]7)")
+        }
+        $clear = {
+            [Microsoft.PowerShell.PSConsoleReadLine]::RevertLine()
+            if ((Get-PSReadLineOption).EditMode -eq 'Vi') { [Microsoft.PowerShell.PSConsoleReadLine]::ViInsertMode() }
+        }
+        Set-PSReadLineKeyHandler -Chord 'Ctrl+Alt+Shift+F12' -ScriptBlock $clear
+        if ((Get-PSReadLineOption).EditMode -eq 'Vi') { Set-PSReadLineKeyHandler -Chord 'Ctrl+Alt+Shift+F12' -ViMode Command -ScriptBlock $clear }
+        return $true
+    } catch { return $false }
 }
+if (__weft_keys) { [Console]::Write("$([char]27)]7777;{`"t`":`"clear-key`"}$([char]7)") }

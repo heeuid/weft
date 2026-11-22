@@ -886,7 +886,7 @@ impl App {
                             continue;
                         };
                         let title = p.title();
-                        let running = p.term.blocks.last().map(|b| b.state() == BlockState::Running).unwrap_or(false);
+                        let running = p.term.running();
                         let active = ti == self.active_tab;
                         let w = natural[ti].min(cap);
                         let (rect, resp) = ui.allocate_exact_size(vec2(w, 28.0), Sense::click_and_drag());
@@ -1338,7 +1338,6 @@ impl App {
         // The active terminal can be sent to the browsed folder when it is on
         // this host and waiting at a prompt.
         let cd_target = self.active_pane_id().filter(|id| self.panes.get(id).map(|p| p.host == host && p.term.at_prompt()).unwrap_or(false));
-        let cd_prof = self.profile(&host);
         let mut cd_to: Option<String> = None;
         // Header: host + breadcrumbs.
         ui.horizontal(|ui| {
@@ -1469,7 +1468,7 @@ impl App {
             }
         });
         if let (Some(dir), Some(id)) = (cd_to, cd_target) {
-            self.actions.push(Action::Run(id, cd_prof.cd_command(&dir)));
+            self.actions.push(Action::Run(id, self.cd_in(id, &dir)));
         }
         // Filter over everything under the root: fuzzy / glob / regex.
         let mut open_first = false;
@@ -1538,9 +1537,8 @@ impl App {
         }
         let loading = self.inflight.contains(&(host.clone(), root.clone())) && !self.dir_cache.contains_key(&(host.clone(), root.clone()));
         let root_error = self.dir_cache.get(&(host.clone(), root.clone())).and_then(|l| l.error.clone());
-        let pane = self.active_pane_id();
+        let pane = self.pane_of(&host);
         let at_prompt = pane.and_then(|id| self.panes.get(&id)).map(|p| p.term.at_prompt()).unwrap_or(false);
-        let prof = self.profile(&host);
         ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             if loading {
                 ui.horizontal(|ui| {
@@ -1605,7 +1603,7 @@ impl App {
                 if resp.double_clicked() {
                     if r.dir {
                         match pane {
-                            Some(id) if at_prompt => self.actions.push(Action::Run(id, prof.cd_command(&r.path))),
+                            Some(id) if at_prompt => self.actions.push(Action::Run(id, self.cd_in(id, &r.path))),
                             _ => self.actions.push(Action::SetRoot(host.clone(), r.path.clone())),
                         }
                     } else {
@@ -1613,15 +1611,22 @@ impl App {
                     }
                 }
                 let (path, isdir) = (r.path.clone(), r.dir);
-                resp.on_hover_text(if isdir { "click: expand · double-click: cd" } else { "double-click: open in editor" }).context_menu(|ui| {
+                // What a double-click does here: a cd only in a terminal of
+                // this host at its prompt; else the folder becomes the root.
+                let hover = match (isdir, pane.is_some() && at_prompt) {
+                    (true, true) => "click: expand · double-click: cd in the terminal",
+                    (true, false) => "click: expand · double-click: make it the root (no terminal of this host at its prompt to cd in)",
+                    _ => "double-click: open in editor",
+                };
+                resp.on_hover_text(hover).context_menu(|ui| {
                     if !isdir && ui.button("Open in editor").clicked() {
                         self.actions.push(Action::OpenFile(host.clone(), path.clone(), 1));
                         ui.close_menu();
                     }
                     if isdir {
-                        if ui.add_enabled(at_prompt, egui::Button::new("cd in terminal")).clicked() {
+                        if ui.add_enabled(at_prompt, egui::Button::new("cd in terminal")).on_disabled_hover_text("no terminal of this host at its prompt").clicked() {
                             if let Some(id) = pane {
-                                self.actions.push(Action::Run(id, prof.cd_command(&path)));
+                                self.actions.push(Action::Run(id, self.cd_in(id, &path)));
                             }
                             ui.close_menu();
                         }
@@ -1634,9 +1639,9 @@ impl App {
                             ui.close_menu();
                         }
                     }
-                    if ui.button("Insert path at prompt").clicked() {
+                    if ui.add_enabled(pane.is_some(), egui::Button::new("Insert path at prompt")).on_disabled_hover_text("no terminal of this host is the active one").clicked() {
                         if let Some(id) = pane {
-                            self.actions.push(Action::Send(id, format!("{} ", prof.quote_path(&path)).into_bytes()));
+                            self.actions.push(Action::Send(id, format!("{} ", self.quote_in(id, &path)).into_bytes()));
                         }
                         ui.close_menu();
                     }
@@ -1794,7 +1799,8 @@ impl App {
                     open = Some(r);
                 }
                 resp.context_menu(|ui| {
-                    if ui.button("Copy command").clicked() {
+                    // (A record of a ksh's or dash's has no command text.)
+                    if !r.cmd.is_empty() && ui.button("Copy command").clicked() {
                         self.actions.push(Action::Copy(r.cmd.clone()));
                         ui.close_menu();
                     }
@@ -2138,14 +2144,30 @@ impl App {
     pub fn open_shells_window(&mut self) {
         let host = self.active_pane_id().and_then(|id| self.panes.get(&id)).map(|p| p.host.clone()).filter(|h| matches!(self.profile(h).kind, HostKind::Ssh { .. } | HostKind::Custom { .. }));
         let remote = host.as_ref().and_then(|h| self.settings.remote_shells.get(h)).cloned().unwrap_or_default();
-        self.shells_window = Some(ShellsWindow { host, remote, unix: self.settings.unix_shell.clone(), local: self.settings.local_shell });
+        let (unix, local) = (self.settings.unix_shell.clone(), self.settings.local_shell);
+        self.shells_window = Some(ShellsWindow { host, remote, was: Some((local, unix.clone())), unix, local });
     }
 
     /// The choices of "Shells…" are kept: used from the next terminal.
-    pub fn save_shells(&mut self, w: &ShellsWindow) {
-        self.settings.local_shell = w.local;
-        self.settings.unix_shell = w.unix.trim().to_string();
-        self.shell_choice_off.remove("local");
+    pub fn save_shells(&mut self, w: &mut ShellsWindow) {
+        let (was_local, was_unix) = w.was.clone().unwrap_or((self.settings.local_shell, self.settings.unix_shell.clone()));
+        let mut local_changed = false;
+        if w.local != was_local {
+            self.settings.local_shell = w.local;
+            local_changed = true;
+        }
+        if w.unix.trim() != was_unix.trim() || w.was.is_none() {
+            local_changed |= self.settings.unix_shell != w.unix.trim();
+            self.settings.unix_shell = w.unix.trim().to_string();
+        }
+        // Every local profile's choice is tried again (not only "local"'s).
+        if local_changed || w.host.is_none() {
+            let locals: Vec<String> = self.settings.profiles.iter().filter(|p| p.is_local()).map(|p| p.name.clone()).collect();
+            self.shell_choice_off.remove("local");
+            for name in locals {
+                self.shell_choice_off.remove(&name);
+            }
+        }
         if let Some(h) = &w.host {
             let chosen = w.remote.trim();
             if chosen.is_empty() {
@@ -2158,6 +2180,14 @@ impl App {
             self.shell_notes.retain(|n| !n.starts_with(&format!("{h}\n")));
         }
         self.save_settings();
+        // What is saved now is what a next Save in the same window is
+        // weighed against (it was the values when it opened: a change back
+        // was not saved, and one made elsewhere since was put back).
+        w.was = Some((self.settings.local_shell, self.settings.unix_shell.clone()));
+        // And what it shows: a local shell set elsewhere since it opened was
+        // still shown as before, and a second Save put that back.
+        w.local = self.settings.local_shell;
+        w.unix = self.settings.unix_shell.clone();
         self.toast("saved: used from the next terminal opened (Restart terminal: this one)", crate::app::ToastKind::Info);
     }
 
@@ -2196,13 +2226,16 @@ impl App {
                     });
                 } else {
                     pick(ui, "shells_unix", &mut w.unix);
+                    // (weft started from the Dock or a menu has launchd's
+                    // PATH: no Homebrew, no ~/.local/bin.)
+                    ui.label(dim("A full path (/opt/homebrew/bin/fish), or a name on the PATH weft was started with (from the Dock or a menu it has no Homebrew or ~/.local/bin; ~ is not expanded)."));
                 }
                 ui.add_space(4.0);
                 match &w.host {
                     Some(h) => {
                         ui.label(RichText::new(format!("On {h}")).strong());
                         pick(ui, "shells_remote", &mut w.remote);
-                        ui.label(dim("A name on the host's PATH, or a path. A Windows host runs Windows PowerShell, whatever is chosen."));
+                        ui.label(dim("A full path (/opt/homebrew/bin/fish), or a name on the PATH a command gets there (ssh host command -v fish: not your login's, so Homebrew's on macOS and ~/.local/bin are often not on it; ~ is not expanded). A Windows host runs Windows PowerShell, whatever is chosen."));
                     }
                     None => {
                         ui.label(dim("A remote host's shell is chosen from one of its terminals: open Shells… there."));
@@ -2210,14 +2243,14 @@ impl App {
                 }
                 ui.add_space(4.0);
                 ui.label(dim(
-                    "A chosen shell that is not there, or does not start: the login shell is used instead, and weft says so.                      Used from the next terminal opened.",
+                    "A chosen shell that is not there, or does not start: the login shell is used instead, and weft says so. Used from the next terminal opened.",
                 ));
                 if ui.button("Save").clicked() {
                     save = true;
                 }
                 ui.separator();
                 ui.label(dim(
-                    "weft's shell integration tells it where each prompt and command starts and ends, a command's exit code and the folder.                      It is whole in some shells, partial in others, and there is none for the rest: there a terminal works as any other, without what is listed.",
+                    "weft's shell integration tells it where each prompt and command starts and ends, a command's exit code and the folder. It is whole in some shells, partial in others, and there is none for the rest: there a terminal works as any other, without what is listed.",
                 ));
                 ui.add_space(4.0);
                 egui::Grid::new("shells_table").num_columns(4).striped(true).spacing(vec2(12.0, 4.0)).show(ui, |ui| {
@@ -2250,12 +2283,12 @@ impl App {
                 });
                 ui.add_space(4.0);
                 ui.label(dim(
-                    "A remote host whose shell is neither a POSIX sh nor Windows' cmd or PowerShell opens as a plain ssh.                      The Files panel, editor and search need Python 3.6+ on a remote host, whatever its shell (Python on remote hosts…).",
+                    "A remote host whose shell is neither a POSIX sh nor Windows' cmd or PowerShell opens as a plain ssh. The Files panel, editor and search need Python 3.6+ on a remote host, whatever its shell (Python on remote hosts…).",
                 ));
             });
         });
         if save {
-            self.save_shells(&w);
+            self.save_shells(&mut w);
         }
         if open {
             self.shells_window = Some(w);
@@ -2523,7 +2556,9 @@ impl App {
                     let cmd = b.command.clone();
                     let out = || p.term.block_output(b);
                     resp.context_menu(|ui| {
-                        if ui.button("Copy command").clicked() {
+                        // (No text of it: ksh, dash. Nothing to copy or rerun.)
+                        let known = !cmd.trim().is_empty();
+                        if known && ui.button("Copy command").clicked() {
                             self.actions.push(Action::Copy(cmd.clone()));
                             ui.close_menu();
                         }
@@ -2531,7 +2566,7 @@ impl App {
                             self.actions.push(Action::Copy(out()));
                             ui.close_menu();
                         }
-                        if ui.button("Run again").clicked() {
+                        if known && ui.button("Run again").clicked() {
                             self.actions.push(Action::Run(id, cmd.clone()));
                             ui.close_menu();
                         }
@@ -2640,7 +2675,7 @@ impl App {
             Some(HitAction::Open(path, line)) => self.actions.push(Action::OpenFile(host.clone(), path, line)),
             Some(HitAction::Cd(dir)) => {
                 if let Some(id) = cd_target {
-                    let cmd = self.profile(&host).cd_command(&dir);
+                    let cmd = self.cd_in(id, &dir);
                     self.actions.push(Action::Run(id, cmd));
                     self.actions.push(Action::Focus(id));
                 }
@@ -2806,6 +2841,7 @@ impl App {
                 open = Some((join(root, rel), *dir));
             }
         }
+        let can_insert = self.pane_of(host).is_some();
         ScrollArea::vertical().id_salt("find-results").auto_shrink([false, false]).show_rows(ui, 22.0, res.hits.len(), |ui, range| {
             for (i, pos) in &res.hits[range] {
                 let (rel, dir) = &index.entries[*i];
@@ -2845,7 +2881,9 @@ impl App {
                 let (abs_m, dir_m) = (abs.clone(), *dir);
                 resp.on_hover_text(if *dir { "double-click: show in the tree" } else { "double-click: open in editor" }).context_menu(|ui| {
                     for (label, act) in [("Open in editor", "open"), ("Show in the tree", "reveal"), ("Insert path at prompt", "insert"), ("Copy path", "copy")] {
-                        if (act != "open" || !dir_m) && ui.button(label).clicked() {
+                        // (Insert: into a terminal of this host only.)
+                        let on = act != "insert" || can_insert;
+                        if (act != "open" || !dir_m) && ui.add_enabled(on, egui::Button::new(label)).on_disabled_hover_text("no terminal of this host is the active one").clicked() {
                             menu = Some((abs_m.clone(), dir_m, act));
                             ui.close_menu();
                         }
@@ -2866,8 +2904,8 @@ impl App {
                 "open" => self.actions.push(Action::OpenFile(host.to_string(), path, 1)),
                 "reveal" => self.reveal(host, root, &path),
                 "insert" => {
-                    if let Some(id) = self.active_pane_id() {
-                        let q = self.profile(host).quote_path(&path);
+                    if let Some(id) = self.pane_of(host) {
+                        let q = self.quote_in(id, &path);
                         self.actions.push(Action::Send(id, format!("{q} ").into_bytes()));
                     }
                 }

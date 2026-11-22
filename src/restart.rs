@@ -17,7 +17,7 @@ pub fn update_source() -> Option<PathBuf> {
         return Some(p);
     }
     let exe = std::env::current_exe().ok()?;
-    Some(exe.parent()?.join(if cfg!(windows) { "weft.exe" } else { "weft" })).filter(|p| p.is_file())
+    Some(exe.parent()?.join(format!("weft{}", std::env::consts::EXE_SUFFIX))).filter(|p| p.is_file())
 }
 
 fn modified(p: &std::path::Path) -> Option<SystemTime> {

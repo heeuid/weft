@@ -178,7 +178,10 @@ impl App {
             ui.separator();
             ui.horizontal(|ui| {
                 ui.label("Port");
-                ui.add(TextEdit::singleline(&mut d.port).hint_text(if d.host == "local" { "COM3" } else { "/dev/ttyUSB0" }).desired_width(170.0));
+                // The first port listed as the example (each system names its
+                // own: COM3, /dev/ttyUSB0, /dev/cu.usbserial-…).
+                let hint = d.ports.as_ref().and_then(|r| r.as_ref().ok()).and_then(|v| v.first()).map(|p| p.port.clone()).unwrap_or_default();
+                ui.add(TextEdit::singleline(&mut d.port).hint_text(hint).desired_width(170.0));
                 ui.label("Speed");
                 egui::ComboBox::from_id_salt("serial-baud").selected_text(d.baud.to_string()).show_ui(ui, |ui| {
                     for b in BAUDS {

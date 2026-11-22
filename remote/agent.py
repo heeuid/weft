@@ -51,7 +51,7 @@ def op_hello(req):
         "home": os.path.expanduser("~"),
         "cwd": os.getcwd(),
         "host": socket.gethostname(),
-        "user": os.environ.get("USER") or os.environ.get("USERNAME") or "",
+        "user": _user(),
         "platform": sys.platform,
         "python": sys.version.split()[0],
         "pid": os.getpid(),
@@ -72,7 +72,13 @@ def op_list(req):
                 size, mtime = st.st_size, int(st.st_mtime)
             except OSError:
                 isdir, size, mtime = False, 0, 0
-            out.append({"n": e.name, "d": isdir, "l": e.is_symlink(), "s": 0 if isdir else size, "m": mtime})
+            item = {"n": e.name, "d": isdir, "l": e.is_symlink(), "s": 0 if isdir else size, "m": mtime}
+            if req.get("mode"):
+                try:
+                    item["p"] = stat.filemode(e.stat(follow_symlinks=False).st_mode)
+                except OSError:
+                    item["p"] = ""
+            out.append(item)
     if req.get("ignored") is False:
         drop = _git_ignored(d, [x["n"] for x in out])
         out = [x for x in out if x["n"] not in drop]
@@ -104,8 +110,22 @@ def op_stat(req):
     return {"path": p, "exists": True, "dir": stat.S_ISDIR(st.st_mode), "size": st.st_size, "mtime": st.st_mtime}
 
 
+def _user():
+    # The OS's word for it (USER, LOGNAME, USERNAME or the password
+    # database), not one environment variable's.
+    try:
+        import getpass
+        return getpass.getuser()
+    except Exception:
+        return ""
+
+
 def op_read(req):
     p = _path(req.get("path"))
+    # A folder, told as one (not by an exception's name: Windows' Python
+    # raises PermissionError for it, and it was opened as a file).
+    if os.path.isdir(p):
+        return {"path": p, "is_dir": True}
     st = os.stat(p)
     if st.st_size > int(req.get("max", MAX_READ)):
         raise ValueError("file too large (%d bytes)" % st.st_size)
@@ -279,21 +299,29 @@ def op_serial_ports(req):
     for link in glob.glob("/dev/serial/by-id/*"):
         by_id[os.path.realpath(link)] = os.path.basename(link)
     ports = []
-    for pattern in ("/dev/ttyUSB*", "/dev/ttyACM*", "/dev/ttyAMA*", "/dev/ttyTHS*", "/dev/ttymxc*", "/dev/rfcomm*", "/dev/ttyS*"):
-        for dev in sorted(glob.glob(pattern)):
-            name = os.path.basename(dev)
-            if name.startswith("ttyS"):
-                # Most PCs list ttyS0-31 with no UART behind them.
-                try:
-                    with open("/sys/class/tty/%s/port" % name) as f:
-                        if int(f.read().strip(), 16) == 0:
-                            continue
-                    with open("/sys/class/tty/%s/type" % name) as f:
-                        if f.read().strip() == "0":
-                            continue
-                except (OSError, ValueError):
+    # Every tty with a device behind it, whatever its driver names it
+    # (Linux: /sys/class/tty/<name>/device), those with a stable name, and
+    # the call-out side on macOS and the BSDs (cu.*, cua*: they open
+    # without waiting for a carrier).
+    devs = set()
+    for d in glob.glob("/sys/class/tty/*/device"):
+        devs.add("/dev/" + os.path.basename(os.path.dirname(d)))
+    devs.update(os.path.realpath(link) for link in glob.glob("/dev/serial/by-id/*"))
+    for pattern in ("/dev/cu.*", "/dev/cua[!.]*"):
+        devs.update(glob.glob(pattern))
+    for dev in sorted(d for d in devs if os.path.exists(d)):
+        name = os.path.basename(dev)
+        if name in ("cu.Bluetooth-Incoming-Port", "cu.debug-console"):
+            continue
+        # A serial-core port with no UART behind it (most PCs list 32 of
+        # them): its type is 0. Told by the kernel, not by a driver's name.
+        try:
+            with open("/sys/class/tty/%s/type" % name) as f:
+                if f.read().strip() == "0":
                     continue
-            ports.append({"port": dev, "desc": by_id.get(os.path.realpath(dev), ""), "holders": _port_holders(dev)})
+        except OSError:
+            pass
+        ports.append({"port": dev, "desc": by_id.get(os.path.realpath(dev), ""), "holders": _port_holders(dev)})
     return {"ports": ports}
 
 
@@ -343,9 +371,11 @@ def op_procs(req):
     if os.name == "nt":
         return {"procs": _procs_windows()}
     # POSIX ps; the column set is supported by procps and BSD ps alike.
+    # In the C locale: numbers with a dot (de_DE's 0,5 was dropped).
     out = subprocess.run(
         ["ps", "-A", "-o", "pid=,ppid=,user=,pcpu=,pmem=,etime=,args="],
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False,
+        env=dict(os.environ, LC_ALL="C"),
     ).stdout.decode("utf-8", "replace")
     rows = []
     for line in out.splitlines():
@@ -497,6 +527,11 @@ def op_grep(req):
     # 0 found, 1 none; 2 is trouble such as a bad pattern (unreadable files
     # also give 2, alongside hits); anything else, grep itself failed.
     if proc.returncode not in (0, 1) and not hits and len(hits) < limit:
+        # A grep without these options (not GNU's or a BSD's): text as typed
+        # is searched here instead.
+        if not req.get("regex"):
+            hits = _grep_python(root, literal, bool(req.get("icase")), bool(req.get("hidden")), limit)
+            return {"root": root, "pattern": literal, "hits": hits, "truncated": len(hits) >= limit}
         raise ValueError(err.splitlines()[0] if err else "grep failed")
     return {"root": root, "pattern": pattern, "hits": hits, "truncated": len(hits) >= limit}
 

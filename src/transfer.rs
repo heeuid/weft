@@ -128,10 +128,9 @@ pub fn candidate(name: &str, dir: bool, k: u32) -> String {
     }
 }
 
-/// The local folder downloads go to.
+/// The local folder downloads go to: the system's downloads folder.
 pub fn downloads_dir() -> String {
-    let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or_else(|_| ".".into());
-    format!("{}/Downloads", home.replace('\\', "/"))
+    weft_core::host::downloads_dir().map(|p| p.display().to_string().replace('\\', "/")).unwrap_or_else(|| ".".into())
 }
 
 impl App {
