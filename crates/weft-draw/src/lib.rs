@@ -2,6 +2,7 @@
 //! icons, syntax colours, markdown layout, and key names. Built on egui;
 //! knows nothing of the app's state.
 
+pub mod fallback;
 pub mod fontfix;
 pub mod highlight;
 pub mod icons;

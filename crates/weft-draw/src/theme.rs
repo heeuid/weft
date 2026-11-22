@@ -528,7 +528,8 @@ pub fn install_fonts(ctx: &egui::Context, term: &str, icons: &str) -> Vec<String
     }
     fonts.families.insert(FontFamily::Name(crate::md::BOLD_FONT.into()), bold);
     fonts.families.insert(FontFamily::Proportional, prop_chain);
-    ctx.set_fonts(fonts);
+    // With the faces found for characters these lack (crate::fallback).
+    crate::fallback::installed(ctx, &fonts);
     problems
 }
 

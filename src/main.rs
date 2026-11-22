@@ -229,23 +229,12 @@ fn askpass(prompt: &str) -> i32 {
             0
         }
         host::AskpassAnswer::ConfirmHostKey => {
-            println!("{}", if confirm_host_key(prompt) { "yes" } else { "no" });
+            // Asked in weft's window (on every system); no weft to ask: no.
+            println!("{}", if secret::ask_host_key(prompt).unwrap_or(false) { "yes" } else { "no" });
             0
         }
         host::AskpassAnswer::Refuse => 1,
     }
-}
-
-#[cfg(windows)]
-fn confirm_host_key(text: &str) -> bool {
-    #[link(name = "user32")]
-    extern "system" {
-        fn MessageBoxW(hwnd: *mut std::ffi::c_void, text: *const u16, caption: *const u16, flags: u32) -> i32;
-    }
-    let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
-    let (t, c) = (wide(text), wide("weft — ssh host key"));
-    // MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND | MB_TOPMOST; IDYES = 6
-    unsafe { MessageBoxW(std::ptr::null_mut(), t.as_ptr(), c.as_ptr(), 0x4 | 0x20 | 0x10000 | 0x40000) == 6 }
 }
 
 /// Started from a terminal (`cargo run --release`, `weft.exe` in a shell),
@@ -277,11 +266,6 @@ fn release_console() {
         }
         FreeConsole();
     }
-}
-
-#[cfg(not(windows))]
-fn confirm_host_key(_text: &str) -> bool {
-    false
 }
 
 /// The window and taskbar icon (assets/weft.png, 256 px; made by

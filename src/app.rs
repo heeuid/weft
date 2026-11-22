@@ -576,6 +576,9 @@ pub struct Settings {
     /// integration. Off: a guess can be wrong, so none is shown or kept.
     #[serde(default)]
     pub guess_blocks: bool,
+    /// The help's language: "ko", "en", or "" for the system's.
+    #[serde(default)]
+    pub help_language: String,
 }
 
 fn d_pythons() -> Vec<String> {
@@ -652,7 +655,7 @@ impl Default for Settings {
                 },
             });
         }
-        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, layout: Layout::default(), show_hidden: false, show_ignored: true, find_mode: Default::default(), palette_mode: d_palette_mode(), cursor_style: Default::default(), local_shell: Default::default(), mermaid: Default::default(), follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, term_font: d_font_file(), icon_font: d_icon_font(), records: Default::default(), passwords: Default::default(), keys: Default::default(), session: Vec::new(), side_tabs: Default::default(), open: Default::default(), confirm_unsaved: true, confirm_running: true, console_host: String::new(), renderer: String::new(), search: Default::default(), remote_python: d_pythons(), remote_shells: Default::default(), unix_shell: String::new(), guess_blocks: false }
+        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, layout: Layout::default(), show_hidden: false, show_ignored: true, find_mode: Default::default(), palette_mode: d_palette_mode(), cursor_style: Default::default(), local_shell: Default::default(), mermaid: Default::default(), follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, term_font: d_font_file(), icon_font: d_icon_font(), records: Default::default(), passwords: Default::default(), keys: Default::default(), session: Vec::new(), side_tabs: Default::default(), open: Default::default(), confirm_unsaved: true, confirm_running: true, console_host: String::new(), renderer: String::new(), search: Default::default(), remote_python: d_pythons(), remote_shells: Default::default(), unix_shell: String::new(), guess_blocks: false, help_language: String::new() }
     }
 }
 
@@ -1810,6 +1813,12 @@ pub struct App {
     /// what goes on once the files it saves are saved; and weft may close
     /// (it was answered).
     pub confirm: Option<crate::confirm::Confirm>,
+    /// ssh's questions about a host key it has not seen, from the askpass
+    /// of a connection weft gave a password to: asked here, one at a time.
+    pub host_keys: Vec<weft_core::secret::HostKeyQuestion>,
+    /// This window takes them (a process has one window; tests make many,
+    /// and only the one asked of takes them there).
+    pub answers_host_keys: bool,
     pub after_save: Option<crate::confirm::AfterSave>,
     pub quit_confirmed: bool,
     /// A file or folder (host, path) being dragged from a Files panel.
@@ -1915,6 +1924,11 @@ impl App {
         data.log(&format!("start: {}, data dir {}", crate::version::line(), data.root.display()));
         data.log(&format!("console host: {}", crate::pty::choose_console_host("").what));
         let searched = settings.search;
+        {
+            // A host key question wakes the window to show it.
+            let c = ctx.clone();
+            weft_core::secret::on_host_key_question(move || c.request_repaint());
+        }
         let mut app = App {
             ctx,
             data,
@@ -1985,6 +1999,8 @@ impl App {
             newer_weft_at: None,
             file_op: None,
             confirm: None,
+            host_keys: Vec::new(),
+            answers_host_keys: !cfg!(test),
             after_save: None,
             quit_confirmed: false,
             file_drag: None,

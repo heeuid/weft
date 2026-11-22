@@ -1659,6 +1659,28 @@ fn copy_selection(h: &mut Harness, at: egui::Pos2) -> String {
     h.copied.clone().unwrap_or_default()
 }
 
+/// A character weft's own fonts lack (kana, hanzi, Thai, …) printed in a
+/// terminal, and in a file name: drawn with a font the system has
+/// installed, found for it, not a box.
+#[test]
+fn a_character_weft_lacks_is_drawn_with_an_installed_font() {
+    let ctx = egui::Context::default();
+    crate::theme::install_fonts(&ctx, crate::theme::DEFAULT_FONT, crate::theme::DEFAULT_ICON_FONT);
+    let _ = ctx.run(Default::default(), |_| {});
+    let font = crate::theme::term_font(14.0);
+    // One weft lacks and an installed font has (none such here: nothing to
+    // find).
+    let lacking: Vec<char> = ctx.fonts(|f| ['あ', '中', 'ก', 'ע', 'ب', 'ሀ', 'ᚠ'].into_iter().filter(|c| !f.has_glyph(&font, *c)).collect());
+    let Some(c) = lacking.into_iter().find(|c| weft_draw::fallback::system_has(*c)) else { return };
+    let body = format!("print('shown: {c}{c}', flush=True)\n");
+    let (mut h, _file) = script_harness(&body, json!({}));
+    let lacks = |h: &Harness| !h.ctx.fonts(|f| f.has_glyph(&crate::theme::term_font(h.app.settings.font_size), c));
+    assert!(h.wait_for(30.0, |h| h.shows("shown:")), "printed");
+    // Drawn after a few frames (looked for on a thread of its own).
+    assert!(h.wait_for(60.0, |h| !lacks(h)), "{c:?} drawn with an installed font");
+    assert!(h.ctx.fonts(|f| f.has_glyph(&egui::FontId::proportional(13.0), c)), "the UI's text has it too (a file name)");
+}
+
 /// The mouse in a terminal: the wheel scrolls back, a drag selects
 /// characters, a double click a word, a triple click a line, Alt+drag a
 /// block of columns; a click drops the selection; Ctrl+click opens a path.
@@ -3259,6 +3281,52 @@ fn enter_in_the_password_dialog_connects() {
     h.frames(2);
     assert!(h.app.auth_prompt.is_none(), "the dialog closed");
     assert_eq!(h.app.secrets.get("t").as_deref().map(|s| s.as_str()), Some("s3cret"), "the password is the host's");
+}
+
+/// The help in Korean or English: switched in its window, the choice kept
+/// in the settings (the system's language before any is made).
+#[test]
+fn the_help_switches_between_korean_and_english() {
+    let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}], "sidebar": false}));
+    h.app.help = Some(crate::app::HelpState { features: true, query: String::new() });
+    h.frames(3);
+    h.click_text("English");
+    h.frames(3);
+    assert!(h.has("Command blocks") && !h.has("명령 블록"), "in English");
+    assert_eq!(h.app.settings.help_language, "en");
+    assert!(std::fs::read_to_string(h.app.data.path("settings.json")).unwrap().contains("\"help_language\": \"en\""), "kept");
+    h.click_text("한국어");
+    h.frames(3);
+    assert!(h.has("명령 블록") && !h.has("Command blocks"), "in Korean");
+    assert_eq!(h.app.settings.help_language, "ko");
+}
+
+/// ssh's host key question, asked of weft's askpass (a connection weft gave
+/// a password to): shown in weft's window on every system (it was Windows'
+/// message box, and a no elsewhere: the host could not be reached), its
+/// answer ssh's. Not for a ticket weft did not give.
+#[test]
+fn a_host_key_question_is_asked_in_weft_s_window() {
+    let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}], "sidebar": false}));
+    h.app.answers_host_keys = true;
+    let env: std::collections::HashMap<String, String> = weft_core::secret::ticket_env("pw").into_iter().collect();
+    let port: u16 = env[weft_core::secret::PORT_VAR].parse().unwrap();
+    let ticket = env[weft_core::secret::TICKET_VAR].clone();
+    let prompt = "The authenticity of host 'box (10.0.0.9)' can't be established.\nED25519 key fingerprint is SHA256:abcDEF.\nAre you sure you want to continue connecting (yes/no/[fingerprint])?";
+    for (button, want) in [("Trust and connect", true), ("Don't connect", false)] {
+        let (t, p) = (ticket.clone(), prompt.to_string());
+        let asked = std::thread::spawn(move || weft_core::secret::ask_host_key_at(port, &t, &p));
+        assert!(h.wait_for(10.0, |h| h.shows("SHA256:abcDEF")), "the question in the window");
+        h.click_text(button);
+        h.frames(2);
+        assert_eq!(asked.join().unwrap(), Some(want), "{button}: ssh's answer");
+        assert!(!h.shows("SHA256:abcDEF"), "the dialog closed");
+    }
+    // A ticket weft did not give: no, and nothing asked.
+    let asked = std::thread::spawn(move || weft_core::secret::ask_host_key_at(port, "not-a-ticket", "Are you sure (yes/no)?"));
+    assert_eq!(asked.join().unwrap(), Some(false));
+    h.frames(3);
+    assert!(!h.shows("Trust this host"), "nothing shown for it");
 }
 
 /// After a start, a session's terminals of a host that wants a password

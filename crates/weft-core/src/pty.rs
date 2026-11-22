@@ -4,7 +4,7 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize}
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -115,6 +115,8 @@ pub struct Pty {
     rx: Receiver<Vec<u8>>,
     /// The process behind the terminal (None: a serial port, read in-process).
     child: Option<Box<dyn Child + Send + Sync>>,
+    /// It and all it starts, ended together.
+    tree: Option<Tree>,
     exited: Arc<AtomicBool>,
     /// Set when dropped: a serial port's reader stops and lets the port go.
     closed: Arc<AtomicBool>,
@@ -204,6 +206,9 @@ impl Pty {
             cmd.env(k, v);
         }
         let child = pair.slave.spawn_command(cmd).map_err(|e| format!("spawn {}: {e}", argv[0]))?;
+        // In its job before it starts much (the shell reads its startup
+        // files first).
+        let tree = child.process_id().map(Tree::of);
         drop(pair.slave);
         let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
         let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
@@ -242,7 +247,7 @@ impl Pty {
                 wake();
             }
         });
-        Ok(Pty { master: Some(pair.master), writer, rx, child: Some(child), exited, closed: Arc::new(AtomicBool::new(false)), reported: false, opened: (cols, rows), code: None })
+        Ok(Pty { master: Some(pair.master), writer, rx, child: Some(child), tree, exited, closed: Arc::new(AtomicBool::new(false)), reported: false, opened: (cols, rows), code: None })
     }
 
     /// A serial port (COM3, /dev/ttyUSB0) as the terminal's other end, opened
@@ -287,7 +292,7 @@ impl Pty {
             exited2.store(true, Ordering::SeqCst);
             wake();
         });
-        Ok(Pty { master: None, writer: dev, rx, child: None, exited, closed, reported: true, opened: (0, 0), code: None })
+        Ok(Pty { master: None, writer: dev, rx, child: None, tree: None, exited, closed, reported: true, opened: (0, 0), code: None })
     }
 
     pub fn write(&mut self, bytes: &[u8]) {
@@ -393,24 +398,116 @@ fn port_group(_port: &str) -> Option<String> {
     None
 }
 
-/// Kill a process and all its descendants.  On Windows, msys/cygwin `exec`
-/// is emulated with child processes, so killing only the top process would
-/// leave shells (and inherited pipe handles) behind.
+/// A process and every one it starts, to be ended together. On Windows a
+/// job object it is put in as it starts (all it starts are in it too, its
+/// parent gone or not: msys and cygwin emulate exec with children, and
+/// ending only the top one left shells and their pipes behind); elsewhere
+/// the process group it leads.
+pub struct Tree {
+    pid: u32,
+    /// The job's handle (0: none, the process not put in one).
+    #[cfg(windows)]
+    job: isize,
+}
+
+impl Tree {
+    /// `pid`'s tree, from now on: put in a job of its own on Windows.
+    pub fn of(pid: u32) -> Tree {
+        #[cfg(windows)]
+        {
+            Tree { pid, job: windows_job(pid) }
+        }
+        #[cfg(not(windows))]
+        {
+            Tree { pid }
+        }
+    }
+
+    /// End it all. False: nothing was asked to end (no job and no tree
+    /// found, or no group of its own), and the process itself is the
+    /// caller's to end.
+    pub fn kill(&self) -> bool {
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::System::JobObjects::TerminateJobObject;
+            // SAFETY: the job's handle is ours, open until Drop.
+            if self.job != 0 && unsafe { TerminateJobObject(self.job as _, 1) } != 0 {
+                return true;
+            }
+            kill_tree(self.pid)
+        }
+        #[cfg(not(windows))]
+        {
+            kill_tree(self.pid)
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for Tree {
+    fn drop(&mut self) {
+        if self.job != 0 {
+            // SAFETY: closed once; the processes in it go on (no kill on
+            // close: they are ended by `kill` only).
+            unsafe { windows_sys::Win32::Foundation::CloseHandle(self.job as _) };
+        }
+    }
+}
+
+/// A new job with `pid` in it; 0 where it could not be put in one.
+#[cfg(windows)]
+fn windows_job(pid: u32) -> isize {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::JobObjects::{AssignProcessToJobObject, CreateJobObjectW};
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE};
+    // SAFETY: plain handles, each closed here or kept in the Tree.
+    unsafe {
+        let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+        if job.is_null() {
+            return 0;
+        }
+        let p = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid);
+        let ok = !p.is_null() && AssignProcessToJobObject(job, p) != 0;
+        if !p.is_null() {
+            CloseHandle(p);
+        }
+        if !ok {
+            CloseHandle(job);
+            return 0;
+        }
+        job as isize
+    }
+}
+
+/// Kill a process and all its descendants, found by the system's process
+/// list (where no job has them: see `Tree`).
 pub fn kill_tree(pid: u32) -> bool {
-    // Fire and forget: taskkill takes ~0.5 s to walk the process tree, and
+    // On a thread: the system's process list takes a moment to read, and
     // waiting for it froze the UI on every pane close (and longer on exit).
-    // It runs on its own, so it finishes even if weft exits first.
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
-        std::process::Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .creation_flags(0x0800_0000)
-            .spawn()
-            .is_ok()
+        use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+        if pid == 0 {
+            return false;
+        }
+        std::thread::spawn(move || {
+            let Ok(mut sys) = System::new() else { return };
+            sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
+            // The tree, the root last: its children are found by it.
+            let mut tree = vec![Pid::from_u32(pid)];
+            let mut i = 0;
+            while i < tree.len() {
+                let parent = tree[i];
+                tree.extend(sys.processes().iter().filter(|(_, p)| p.parent() == Some(parent)).map(|(id, _)| *id));
+                i += 1;
+            }
+            for id in tree.iter().rev() {
+                if let Some(p) = sys.process(*id) {
+                    p.kill();
+                }
+            }
+        });
+        true
     }
     // The process group the terminal's shell leads (a session of its own),
     // by the system call. It was `kill -TERM -<pid>`, and procps-ng 4.0.4
@@ -430,11 +527,11 @@ pub fn kill_tree(pid: u32) -> bool {
 
 impl Drop for Pty {
     fn drop(&mut self) {
-        // taskkill /T needs the root alive to find its descendants, so it is
-        // left to end the root too; kill it directly only if that failed.
+        // The whole tree (the job ends the root too); the root by itself
+        // only where nothing was asked to end.
         self.closed.store(true, Ordering::SeqCst);
+        let delegated = self.tree.as_ref().is_some_and(|t| t.kill());
         if let Some(child) = self.child.as_mut() {
-            let delegated = child.process_id().map(kill_tree).unwrap_or(false);
             if !delegated {
                 let _ = child.kill();
             }
@@ -487,16 +584,10 @@ pub fn utf8_locale(get: impl Fn(&str) -> Option<String>, macos: bool, apple_loca
     Some(format!("{}.UTF-8", region.as_deref().unwrap_or("en_US")))
 }
 
-/// The Mac's language and region (`defaults read -g AppleLocale`), asked
-/// once.
+/// The system's language and region as a locale's name ("ko-KR" becomes
+/// ko_KR), asked of the system (macOS' settings, not a program run for it).
 fn mac_locale() -> Option<String> {
-    static LOCALE: OnceLock<Option<String>> = OnceLock::new();
-    LOCALE
-        .get_or_init(|| {
-            let out = std::process::Command::new("defaults").args(["read", "-g", "AppleLocale"]).output().ok()?;
-            out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
-        })
-        .clone()
+    sys_locale::get_locale().map(|l| l.replace('-', "_"))
 }
 
 #[cfg(test)]
@@ -512,6 +603,40 @@ pub(crate) mod tests {
     /// "python3", which macOS and most Linuxes have (and often no "python").
     pub(crate) fn python() -> &'static str {
         if cfg!(windows) { "python" } else { "python3" }
+    }
+
+    /// Ending a process's tree on Windows ends what it started too, one
+    /// whose parent has gone included (an orphan: no tree walk finds it,
+    /// its job does), and nothing else.
+    #[test]
+    #[cfg(windows)]
+    fn ending_a_tree_ends_its_orphans_too() {
+        use std::io::BufRead;
+        // Starts a sleeper, says its pid, and ends: the sleeper an orphan.
+        let parent = "import subprocess, sys\np = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\nprint(p.pid, flush=True)\n";
+        let mut c = std::process::Command::new(python()).args(["-c", parent]).stdout(std::process::Stdio::piped()).spawn().unwrap();
+        let tree = Tree::of(c.id());
+        assert!(tree.job != 0, "in a job of its own");
+        let mut line = String::new();
+        std::io::BufReader::new(c.stdout.take().unwrap()).read_line(&mut line).unwrap();
+        let orphan: u32 = line.trim().parse().unwrap();
+        c.wait().unwrap();
+        let mut other = std::process::Command::new(python()).args(["-c", "import time; time.sleep(60)"]).spawn().unwrap();
+        let alive = |pid: u32| {
+            use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+            let mut s = System::new().unwrap();
+            s.refresh_processes_specifics(ProcessesToUpdate::Some(&[Pid::from_u32(pid)]), true, ProcessRefreshKind::nothing());
+            s.process(Pid::from_u32(pid)).is_some()
+        };
+        assert!(alive(orphan), "the orphan runs");
+        assert!(tree.kill(), "its job ended");
+        let gone = (0..100).any(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            !alive(orphan)
+        });
+        assert!(gone, "the orphan ended with it");
+        assert!(other.try_wait().unwrap().is_none(), "another process is untouched");
+        let _ = other.kill();
     }
 
     /// Ending a terminal ends its process group and nothing else: two

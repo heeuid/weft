@@ -249,7 +249,9 @@ fn handoff() -> Option<&'static Handoff> {
         let t = tickets.clone();
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
-                serve_ticket(stream, &t);
+                // Each on its own: a host key question waits for the user.
+                let t = t.clone();
+                std::thread::spawn(move || serve_ticket(stream, &t));
             }
         });
         Some(Handoff { port, tickets })
@@ -260,20 +262,30 @@ fn handoff() -> Option<&'static Handoff> {
 fn serve_ticket(mut stream: std::net::TcpStream, tickets: &Tickets) {
     use std::io::{Read, Write};
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-    let mut buf = [0u8; 80];
-    let mut n = 0;
-    while n < buf.len() {
-        match stream.read(&mut buf[n..]) {
+    // A ticket and a newline; a host key question is "?" first, ssh's
+    // question after the newline, to the end.
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        match stream.read(&mut chunk) {
             Ok(0) | Err(_) => break,
-            Ok(k) => {
-                n += k;
-                if buf[..n].contains(&b'\n') {
-                    break;
-                }
-            }
+            Ok(k) => buf.extend_from_slice(&chunk[..k]),
+        }
+        let asks = buf.first() == Some(&b'?');
+        if (!asks && buf.contains(&b'\n')) || buf.len() > 16 * 1024 {
+            break;
         }
     }
-    let ticket = String::from_utf8_lossy(&buf[..n]).trim().to_string();
+    let text = String::from_utf8_lossy(&buf).into_owned();
+    if let Some(rest) = text.strip_prefix('?') {
+        let (ticket, prompt) = rest.split_once('\n').unwrap_or((rest, ""));
+        // Only a live ticket's (one weft gave its ssh), not spent by it.
+        let live = tickets.lock().unwrap().get(ticket.trim()).is_some_and(|v| v.1.elapsed() < TICKET_LIFE && v.2 > 0);
+        let yes = live && ask_user(prompt.trim());
+        let _ = stream.write_all(if yes { b"yes" } else { b"no" });
+        return;
+    }
+    let ticket = text.trim().to_string();
     let mut map = tickets.lock().unwrap();
     map.retain(|_, v| v.1.elapsed() < TICKET_LIFE && v.2 > 0);
     if let Some(v) = map.get_mut(&ticket) {
@@ -293,6 +305,75 @@ pub fn ticket_env(password: &str) -> Vec<(String, String)> {
     map.retain(|_, v| v.1.elapsed() < TICKET_LIFE && v.2 > 0);
     map.insert(ticket.clone(), (Zeroizing::new(password.to_string()), Instant::now(), TICKET_USES));
     vec![(PORT_VAR.into(), h.port.to_string()), (TICKET_VAR.into(), ticket)]
+}
+
+/// ssh asking whether to trust a host's key it has not seen (asked of
+/// `weft --askpass`, which has no window of its own): shown in weft's
+/// window, the same on every system, and answered there.
+pub struct HostKeyQuestion {
+    pub prompt: String,
+    answer: std::sync::mpsc::Sender<bool>,
+}
+
+impl HostKeyQuestion {
+    pub fn answer(self, yes: bool) {
+        let _ = self.answer.send(yes);
+    }
+}
+
+/// How long a question waits for its answer: then no (ssh gives up).
+const QUESTION_LIFE: Duration = Duration::from_secs(600);
+
+struct Questions {
+    waiting: Vec<HostKeyQuestion>,
+    wake: Option<Box<dyn Fn() + Send>>,
+}
+
+fn questions() -> &'static std::sync::Mutex<Questions> {
+    static Q: std::sync::OnceLock<std::sync::Mutex<Questions>> = std::sync::OnceLock::new();
+    Q.get_or_init(|| std::sync::Mutex::new(Questions { waiting: Vec::new(), wake: None }))
+}
+
+/// What weft's window calls when a question comes (it draws nothing until
+/// something happens).
+pub fn on_host_key_question(wake: impl Fn() + Send + 'static) {
+    questions().lock().unwrap().wake = Some(Box::new(wake));
+}
+
+/// The questions come since the last call, for the window to show.
+pub fn host_key_questions() -> Vec<HostKeyQuestion> {
+    std::mem::take(&mut questions().lock().unwrap().waiting)
+}
+
+fn ask_user(prompt: &str) -> bool {
+    let (tx, rx) = std::sync::mpsc::channel();
+    {
+        let mut q = questions().lock().unwrap();
+        q.waiting.push(HostKeyQuestion { prompt: prompt.to_string(), answer: tx });
+        if let Some(w) = &q.wake {
+            w();
+        }
+    }
+    rx.recv_timeout(QUESTION_LIFE).unwrap_or(false)
+}
+
+/// In `weft --askpass`: ssh's host key question, asked of the weft that
+/// started it (through its ticket). None: no weft to ask.
+pub fn ask_host_key(prompt: &str) -> Option<bool> {
+    let port: u16 = std::env::var(PORT_VAR).ok()?.parse().ok()?;
+    ask_host_key_at(port, &std::env::var(TICKET_VAR).ok()?, prompt)
+}
+
+/// `ask_host_key` of the weft at `port`, with `ticket`.
+pub fn ask_host_key_at(port: u16, ticket: &str, prompt: &str) -> Option<bool> {
+    use std::io::{Read, Write};
+    let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).ok()?;
+    s.write_all(format!("?{ticket}\n{prompt}").as_bytes()).ok()?;
+    s.shutdown(std::net::Shutdown::Write).ok()?;
+    let _ = s.set_read_timeout(Some(QUESTION_LIFE + Duration::from_secs(5)));
+    let mut out = String::new();
+    s.read_to_string(&mut out).ok()?;
+    Some(out.trim() == "yes")
 }
 
 /// In `weft --askpass`: trade the ticket from the environment for the password.

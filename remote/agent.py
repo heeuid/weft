@@ -250,12 +250,89 @@ def op_delete(req):
     p = _path(req.get("path"))
     if os.path.dirname(p) == p:
         raise OSError("refusing to delete a root")
+    if req.get("trash"):
+        _trash(p, os.path.expanduser("~"), sys.platform == "darwin")
+        return {"path": p, "trashed": True}
     if os.path.isdir(p) and not os.path.islink(p):
         import shutil
         shutil.rmtree(p)  # links inside are removed, not followed
     else:
         os.remove(p)
     return {"path": p, "trashed": False}
+
+
+def _trash(p, home, mac):
+    """Move p to the trash, as weft does on this PC (host.rs, to_trash):
+    macOS' ~/.Trash (or the disk's .Trashes/<uid>); elsewhere the
+    freedesktop.org trash, which file managers show and put back from:
+    $XDG_DATA_HOME/Trash on the home's disk, else the disk's own
+    .Trash/<uid> (a sticky folder made for it) or .Trash-<uid>. Not on
+    Windows: over ssh there is no one to ask about what the Recycle Bin
+    will not take, and it would go for good, unasked."""
+    if os.name == "nt":
+        raise OSError("no Recycle Bin over ssh: delete it for good instead")
+    import stat as st, time
+    from urllib.parse import quote
+    dev = os.lstat(p).st_dev
+    uid = os.getuid()
+
+    def same_disk(d):
+        try:
+            return os.stat(d).st_dev == dev
+        except OSError:
+            return False
+
+    def top():
+        t = p
+        while os.path.dirname(t) != t and same_disk(os.path.dirname(t)):
+            t = os.path.dirname(t)
+        return t
+
+    name = os.path.basename(p)
+
+    def names():
+        yield name
+        k = 2
+        while True:
+            yield "%s.%d" % (name, k)
+            k += 1
+
+    if mac:
+        trash = os.path.join(home, ".Trash") if same_disk(home) else os.path.join(top(), ".Trashes", str(uid))
+        os.makedirs(trash, exist_ok=True)
+        for n in names():
+            to = os.path.join(trash, n)
+            if not os.path.lexists(to):
+                os.rename(p, to)
+                return
+    data = os.environ.get("XDG_DATA_HOME") or ""
+    if not data.startswith("/"):
+        data = os.path.join(home, ".local", "share")
+    if same_disk(data) or (not os.path.exists(data) and same_disk(home)):
+        trash, rel = os.path.join(data, "Trash"), None
+    else:
+        rel = top()
+        shared = os.path.join(rel, ".Trash")
+        sticky = os.path.isdir(shared) and not os.path.islink(shared) and os.lstat(shared).st_mode & st.S_ISVTX
+        trash = os.path.join(shared, str(uid)) if sticky else os.path.join(rel, ".Trash-%d" % uid)
+    for d in ("files", "info"):
+        os.makedirs(os.path.join(trash, d), exist_ok=True)
+    shown = os.path.relpath(p, rel) if rel else p
+    info = "[Trash Info]\nPath=%s\nDeletionDate=%s\n" % (quote(shown, safe="/-_.~"), time.strftime("%Y-%m-%dT%H:%M:%S"))
+    for n in names():
+        info_file = os.path.join(trash, "info", n + ".trashinfo")
+        try:
+            fd = os.open(info_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            continue
+        with os.fdopen(fd, "w") as f:
+            f.write(info)
+        try:
+            os.rename(p, os.path.join(trash, "files", n))
+        except OSError:
+            os.remove(info_file)
+            raise
+        return
 
 
 def _port_holders(dev):

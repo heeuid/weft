@@ -1030,7 +1030,7 @@ enum Backend {
     /// Served by a thread of ours: listing a big folder, a search or a slow
     /// disk never holds up a frame.
     Local { tx: Sender<Value>, rx: Receiver<Value> },
-    Remote { stdin: Option<ChildStdin>, rx: Receiver<AgentMsg>, child: Child },
+    Remote { stdin: Option<ChildStdin>, rx: Receiver<AgentMsg>, child: Child, tree: crate::pty::Tree },
     Dead,
 }
 
@@ -1220,9 +1220,9 @@ impl Conn {
 
 impl Drop for Conn {
     fn drop(&mut self) {
-        if let Backend::Remote { child, stdin, .. } = &mut self.backend {
+        if let Backend::Remote { child, stdin, tree, .. } = &mut self.backend {
             stdin.take();
-            if !crate::pty::kill_tree(child.id()) {
+            if !tree.kill() {
                 let _ = child.kill();
             }
         }
@@ -1253,6 +1253,8 @@ fn spawn_agent(argv: &[String], env: &[(String, String)], wake: impl Fn() + Send
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
     let mut child = cmd.spawn().map_err(|e| format!("{}: {e}", argv[0]))?;
+    // It and what it starts (ssh, a ProxyCommand), ended together.
+    let tree = crate::pty::Tree::of(child.id());
     let mut stdin = child.stdin.take().ok_or("no stdin")?;
     let stdout = child.stdout.take().ok_or("no stdout")?;
     let stderr = child.stderr.take().ok_or("no stderr")?;
@@ -1280,7 +1282,7 @@ fn spawn_agent(argv: &[String], env: &[(String, String)], wake: impl Fn() + Send
             }
         }
     });
-    Ok(Backend::Remote { stdin: Some(stdin), rx, child })
+    Ok(Backend::Remote { stdin: Some(stdin), rx, child, tree })
 }
 
 // ---------------------------------------------------------------------------
@@ -1685,8 +1687,7 @@ fn local_kill(pid: u32, sig: &str) -> Result<(), String> {
     }
 }
 
-/// Move a file or folder to the Recycle Bin (Windows; elsewhere there is
-/// none to ask for, and the caller doesn't).
+/// Move a file or folder to the Recycle Bin.
 #[cfg(windows)]
 fn to_trash(path: &str) -> Result<(), String> {
     use windows_sys::Win32::UI::Shell::{SHFileOperationW, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT, FOF_WANTNUKEWARNING, FO_DELETE, SHFILEOPSTRUCTW};
@@ -1709,9 +1710,93 @@ fn to_trash(path: &str) -> Result<(), String> {
     }
 }
 
+/// Move a file or folder to the trash: on macOS its ~/.Trash (or the
+/// disk's .Trashes/<uid>); elsewhere the freedesktop.org trash, the one
+/// file managers show and put back from: $XDG_DATA_HOME/Trash on the home's
+/// disk, else the disk's own .Trash/<uid> (a sticky folder made for it)
+/// or .Trash-<uid>.
 #[cfg(not(windows))]
-fn to_trash(_path: &str) -> Result<(), String> {
-    Err("there is no Recycle Bin here".into())
+fn to_trash(path: &str) -> Result<(), String> {
+    let home = PathBuf::from(std::env::var("HOME").map_err(|_| "no home folder to have a trash in".to_string())?);
+    let data = std::env::var("XDG_DATA_HOME").ok().filter(|d| d.starts_with('/')).map(PathBuf::from).unwrap_or_else(|| home.join(".local/share"));
+    trash_into(path, &home, &data, cfg!(target_os = "macos"))
+}
+
+/// `to_trash` with the home and XDG_DATA_HOME given, macOS' way or the
+/// freedesktop.org one.
+#[cfg(not(windows))]
+fn trash_into(path: &str, home: &Path, data: &Path, mac: bool) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    let p = std::path::absolute(path).map_err(|e| e.to_string())?;
+    let dev = std::fs::symlink_metadata(&p).map_err(|e| e.to_string())?.dev();
+    let home = home.to_path_buf();
+    // SAFETY: getuid never fails.
+    let uid = unsafe { libc::getuid() };
+    let same_disk = |d: &Path| std::fs::metadata(d).is_ok_and(|m| m.dev() == dev);
+    // The top of the disk the file is on: its last parent on that disk.
+    let top = || {
+        let mut t = p.clone();
+        while let Some(up) = t.parent().filter(|u| same_disk(u)) {
+            t = up.to_path_buf();
+        }
+        t
+    };
+    let name = p.file_name().ok_or("refusing to trash a root")?.to_string_lossy().into_owned();
+    if mac {
+        let trash = if same_disk(&home) { home.join(".Trash") } else { top().join(".Trashes").join(uid.to_string()) };
+        std::fs::create_dir_all(&trash).map_err(|e| format!("{}: {e}", trash.display()))?;
+        let to = (1..).map(|k| trash.join(trash_name(&name, k))).find(|t| std::fs::symlink_metadata(t).is_err()).expect("a free name");
+        return std::fs::rename(&p, &to).map_err(|e| e.to_string());
+    }
+    let (trash, relative) = if same_disk(data) || (!data.exists() && same_disk(&home)) {
+        (data.join("Trash"), None)
+    } else {
+        let top = top();
+        let shared = top.join(".Trash");
+        let sticky = std::fs::symlink_metadata(&shared).is_ok_and(|m| m.is_dir() && m.mode() & 0o1000 != 0);
+        (if sticky { shared.join(uid.to_string()) } else { top.join(format!(".Trash-{uid}")) }, Some(top))
+    };
+    for d in [trash.join("files"), trash.join("info")] {
+        std::fs::create_dir_all(&d).map_err(|e| format!("{}: {e}", d.display()))?;
+    }
+    // The name taken by making its .trashinfo (made new: two trashing at
+    // once never take one name), then the file moved in.
+    let shown = match &relative {
+        Some(top) => p.strip_prefix(top).map(Path::to_path_buf).unwrap_or_else(|_| p.clone()),
+        None => p.clone(),
+    };
+    let info = format!("[Trash Info]\nPath={}\nDeletionDate={}\n", trash_path_url(&shown.to_string_lossy()), chrono::Local::now().format("%Y-%m-%dT%H:%M:%S"));
+    for k in 1.. {
+        let n = trash_name(&name, k);
+        let info_file = trash.join("info").join(format!("{n}.trashinfo"));
+        match OpenOptions::new().write(true).create_new(true).open(&info_file) {
+            Ok(mut f) => {
+                f.write_all(info.as_bytes()).map_err(|e| e.to_string())?;
+                return std::fs::rename(&p, trash.join("files").join(&n)).map_err(|e| {
+                    let _ = std::fs::remove_file(&info_file);
+                    e.to_string()
+                });
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(format!("{}: {e}", info_file.display())),
+        }
+    }
+    unreachable!()
+}
+
+/// A name in the trash: as it was, then "name.2", "name.3"…
+#[cfg_attr(windows, allow(dead_code))]
+fn trash_name(name: &str, k: u32) -> String {
+    if k == 1 { name.to_string() } else { format!("{name}.{k}") }
+}
+
+/// A path as .trashinfo writes it: percent-encoded but for its slashes and
+/// the characters URLs leave as they are.
+#[cfg_attr(windows, allow(dead_code))]
+fn trash_path_url(p: &str) -> String {
+    p.bytes()
+        .map(|b| if b.is_ascii_alphanumeric() || b"/-_.~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
+        .collect()
 }
 
 /// The names in folder `dir` that git ignores (.gitignore and friends), as
@@ -1872,6 +1957,37 @@ mod tests {
         assert!(!same_file(&d.join("a.txt"), &d.join("none.txt")));
         let ignores_case = d.join("A.TXT").exists();
         assert_eq!(same_file(&d.join("a.txt"), &d.join("A.TXT")), ignores_case);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The trash, freedesktop.org's: the file in files/, its .trashinfo
+    /// saying where it was (percent-encoded) and when; a second of the same
+    /// name as name.2. macOS': into ~/.Trash.
+    #[test]
+    #[cfg(unix)]
+    fn deleting_to_the_trash_keeps_where_it_was() {
+        let d = std::env::temp_dir().join(format!("weft-trash-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let (home, data) = (d.join("home"), d.join("home/.local/share"));
+        std::fs::create_dir_all(home.join("work")).unwrap();
+        for _ in 0..2 {
+            std::fs::write(home.join("work/a b%.txt"), "x").unwrap();
+            trash_into(&home.join("work/a b%.txt").display().to_string(), &home, &data, false).unwrap();
+        }
+        assert!(!home.join("work/a b%.txt").exists(), "moved out");
+        assert!(data.join("Trash/files/a b%.txt").is_file() && data.join("Trash/files/a b%.txt.2").is_file(), "both in, two names");
+        let info = std::fs::read_to_string(data.join("Trash/info/a b%.txt.trashinfo")).unwrap();
+        assert!(info.starts_with("[Trash Info]\nPath=") && info.contains("/work/a%20b%25.txt\n") && info.contains("DeletionDate=20"), "{info}");
+        // A folder, macOS' way.
+        std::fs::create_dir_all(home.join("work/dir/in")).unwrap();
+        trash_into(&home.join("work/dir").display().to_string(), &home, &data, true).unwrap();
+        assert!(home.join(".Trash/dir/in").is_dir(), "a folder whole in ~/.Trash");
+        // The agent's, for a remote Linux or Mac: the same.
+        let agent_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../remote");
+        std::fs::write(home.join("work/b.txt"), "x").unwrap();
+        let code = format!("import sys; sys.dont_write_bytecode = True; sys.path.insert(0, {agent_dir:?}); import agent; agent._trash({:?}, {:?}, False)", home.join("work/b.txt").display().to_string(), home.display().to_string());
+        let out = Command::new(crate::pty::tests::python()).args(["-c", &code]).env("XDG_DATA_HOME", &data).stdin(Stdio::null()).output().unwrap();
+        assert!(data.join("Trash/files/b.txt").is_file() && std::fs::read_to_string(data.join("Trash/info/b.txt.trashinfo")).unwrap().contains("/work/b.txt"), "the agent's trash: {}", String::from_utf8_lossy(&out.stderr));
         let _ = std::fs::remove_dir_all(&d);
     }
 

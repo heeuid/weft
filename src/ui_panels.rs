@@ -260,6 +260,11 @@ impl KeptGalley {
     fn lay_out_with(ui: &Ui, id: Id, key: u64, job: LayoutJob, how: impl FnOnce(&Ui, LayoutJob) -> Arc<egui::Galley>) -> Arc<egui::Galley> {
         #[cfg(test)]
         EDITOR_LAYOUTS.with(|n| n.set(n.get() + 1));
+        // Characters the fonts lack: looked for in the system's (the new
+        // fonts are a new atlas: laid out again then).
+        if let Some(s) = job.sections.first() {
+            weft_draw::fallback::want(ui.ctx(), &s.format.font_id, &job.text);
+        }
         let galley = how(ui, job);
         let atlas = ui.fonts(|f| f.texture_atlas());
         let mut all = Self::all(ui);
@@ -929,6 +934,7 @@ impl App {
                             }
                             let color = if active { theme::text() } else { theme::text_dim() };
                             let text_w = rect.width() - 52.0;
+                            weft_draw::fallback::want(ui.ctx(), &font, &title);
                             let mut g = ui.painter().layout_no_wrap(title.clone(), font.clone(), color);
                             if g.size().x > text_w {
                                 // Drop characters until it fits, then add the ellipsis.
@@ -1837,6 +1843,8 @@ impl App {
         let key_labels: Vec<String> = COMMANDS.iter().map(|c| self.keys_label(c.0)).collect();
         let mut open = true;
         let mut run: Option<Cmd> = None;
+        let ko = crate::help::korean(&self.settings.help_language);
+        let mut lang: Option<&str> = None;
         crate::widgets::dialog(ctx, "Help", vec2(600.0, 620.0)).open(&mut open).resizable(true).show(ctx, |ui| {
             ui.horizontal(|ui| {
                 if ui.selectable_label(!h.features, "Commands and keys").clicked() {
@@ -1844,6 +1852,14 @@ impl App {
                 }
                 if ui.selectable_label(h.features, "Features").clicked() {
                     h.features = true;
+                }
+                // Its language: the system's at first.
+                for (code, name, on) in [("ko", "한국어", ko), ("en", "English", !ko)] {
+                    // Kept as chosen, the one shown too (the system's
+                    // language may change).
+                    if ui.selectable_label(on, name).clicked() {
+                        lang = Some(code);
+                    }
                 }
                 ui.add(TextEdit::singleline(&mut h.query).hint_text("search help…").desired_width(f32::INFINITY));
             });
@@ -1860,7 +1876,7 @@ impl App {
             let hit = |texts: &[&str]| q.is_empty() || texts.iter().any(|t| t.to_lowercase().contains(&q));
             ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 if h.features {
-                    for (title, text) in crate::help::FEATURES {
+                    for (title, text) in crate::help::features(ko) {
                         if hit(&[title, text]) {
                             egui::CollapsingHeader::new(RichText::new(*title).strong()).default_open(true).show(ui, |ui| {
                                 ui.label(*text);
@@ -1883,7 +1899,7 @@ impl App {
                         }
                     }
                 }
-                let keys: Vec<_> = crate::help::KEYS.iter().filter(|k| hit(&[k.0, k.1])).collect();
+                let keys: Vec<_> = crate::help::keys(ko).iter().filter(|k| hit(&[k.0, k.1])).collect();
                 if !keys.is_empty() {
                     ui.add_space(4.0);
                     ui.label(RichText::new("Keys and mouse").strong().color(theme::text_dim()));
@@ -1901,6 +1917,10 @@ impl App {
                 }
             });
         });
+        if let Some(code) = lang {
+            self.settings.help_language = code.into();
+            self.save_settings();
+        }
         if let Some(c) = run {
             open = false;
             self.run_cmd(c);

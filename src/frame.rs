@@ -8,6 +8,8 @@ use std::time::Duration;
 
 impl App {
     pub fn frame(&mut self, ctx: &egui::Context) {
+        // Fonts found for characters weft's lack, put in for this frame.
+        weft_draw::fallback::poll(ctx);
         let wanted = theme::resolve(&self.settings.theme, &self.settings.theme_dark, &self.settings.theme_light, ctx);
         if wanted != theme::active() {
             theme::apply(ctx, wanted);
@@ -47,6 +49,7 @@ impl App {
         self.ui_serial_dialog(ctx);
         self.ui_file_op(ctx);
         self.ui_confirm(ctx);
+        self.ui_host_key(ctx);
         self.ui_display_test(ctx);
         self.ui_toasts(ctx);
         self.ui_dock_drop(ctx);

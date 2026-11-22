@@ -5,6 +5,35 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.11.5
+
+What weft did on one system only, on every one, and characters it could
+not draw:
+
+- **A character weft's fonts lack** (kana, hanzi, Thai, Arabic, …: in a
+  terminal, a file, a name) was a box. It is looked for in the fonts the
+  system has installed (Windows' and macOS' font folders, fontconfig's
+  on Linux), on a thread of its own, and drawn with the face that has
+  it from the next frame; one no installed font has stays a box.
+- **Deleting a file goes to the trash on macOS and Linux too**, here and
+  on remote hosts: macOS' ~/.Trash, the freedesktop.org trash that file
+  managers show and put back from (a file on another disk to that
+  disk's own). The dialog offers the trash or for good. A remote Windows
+  deletes for good, said so (over ssh no one would be asked about what
+  its Recycle Bin will not take).
+- **A host's key not seen before**, for a connection weft gave a
+  password to, is asked in weft's window with ssh's own words and the
+  fingerprint, on every system (it was Windows' message box, and on
+  macOS and Linux a no: the host could not be reached).
+- **Ending a terminal on Windows** ends all it started by a job object it
+  is put in as it starts, an orphan whose parent has gone too, at once
+  (it ran taskkill, which took half a second and found no orphans).
+- **The help in English or Korean**: the system's language at first,
+  switched in the help window and kept. Its Korean said the Recycle Bin
+  was Windows' only and Downloads a fixed folder.
+- On a Mac, a terminal's LANG comes from the system's language and
+  region asked of the system, not from a program run for it.
+
 ## 0.11.4
 
 Fixed

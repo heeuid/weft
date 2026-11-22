@@ -10,7 +10,7 @@ members = ["crates/weft-core", "crates/weft-draw"]
 
 # One version for weft and its crates: raised here, with CHANGELOG.md.
 [workspace.package]
-version = "0.11.4"
+version = "0.11.5"
 license = "MIT"
 
 [dependencies]
@@ -21,6 +21,7 @@ eframe = { version = "0.31", features = ["wgpu"] }
 # Metal (macOS) here; Vulkan (Linux) wgpu has by itself.
 wgpu = { version = "24", default-features = false, features = ["wgsl", "dx12", "metal"] }
 egui = "0.31"
+sys-locale = "0.3"
 vte = "0.15"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

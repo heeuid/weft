@@ -20,9 +20,10 @@ getrandom = "0.2"
 serialport = { version = "4", default-features = false }
 sysinfo = { version = "0.40.3", default-features = false, features = ["system", "user"] }
 unicode-normalization = "0.1"
+sys-locale = "0.3"
 
 [target."cfg(windows)".dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Security_Cryptography", "Win32_System_Memory", "Win32_Foundation", "Win32_UI_Shell", "Win32_System_LibraryLoader", "Win32_System_Com"] }
+windows-sys = { version = "0.59", features = ["Win32_Security_Cryptography", "Win32_System_Memory", "Win32_Foundation", "Win32_UI_Shell", "Win32_System_LibraryLoader", "Win32_System_Com", "Win32_System_JobObjects", "Win32_System_Threading"] }
 
 [target."cfg(unix)".dependencies]
 libc = "0.2"

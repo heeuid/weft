@@ -28,6 +28,8 @@ pub struct FileOp {
     pub name: String,
     /// Put the keyboard in the name field next frame.
     pub focus: bool,
+    /// Delete: for good, not to the trash (asked for in the dialog).
+    pub for_good: bool,
 }
 
 /// "/a/b" → "/a", "/a" → "/", "C:/x" → "C:/".
@@ -65,17 +67,25 @@ pub fn name_problem(name: &str, windows: bool) -> Option<&'static str> {
 }
 
 impl App {
-    /// Deleting here goes to the Recycle Bin (this PC, on Windows); anywhere
-    /// else it is for good. (Tests delete for good: the Recycle Bin is the
-    /// user's.) (Tests delete for good: the Recycle Bin is the
-    /// user's.)
-    fn deletes_to_trash(&self, host: &str) -> bool {
-        cfg!(windows) && !cfg!(test) && self.profile(host).is_local()
+    /// The trash a delete there goes to, by its name: this PC's (Windows'
+    /// Recycle Bin, macOS' and the desktops' Trash), a remote Linux's or
+    /// Mac's; none on a remote Windows (over ssh no one is asked about
+    /// what its Recycle Bin will not take: it would go for good, unasked).
+    /// (Tests delete for good: the trash is the user's.)
+    fn trash_of(&self, host: &str) -> Option<&'static str> {
+        if cfg!(test) {
+            return None;
+        }
+        if self.profile(host).is_local() {
+            return Some(if cfg!(windows) { "Recycle Bin" } else { "Trash" });
+        }
+        let platform = self.conns.get(host).and_then(|c| c.info.get("platform")).and_then(|p| p.as_str()).unwrap_or("");
+        (!platform.starts_with("win")).then_some("Trash")
     }
 
     pub fn ask_file_op(&mut self, kind: FileOpKind, host: &str, path: &str, dir: bool) {
         let name = if kind == FileOpKind::Rename { base_name(path) } else { String::new() };
-        self.file_op = Some(FileOp { kind, host: host.into(), path: path.into(), dir, name, focus: true });
+        self.file_op = Some(FileOp { kind, host: host.into(), path: path.into(), dir, name, focus: true, for_good: false });
         // The dialog has the keyboard, not the shell.
         self.focus_term = false;
     }
@@ -103,10 +113,13 @@ impl App {
                 );
             }
             FileOpKind::Delete => {
-                let trash = self.deletes_to_trash(&op.host);
+                let trash = self.trash_of(&op.host).filter(|_| !op.for_good);
                 let name = base_name(&op.path);
-                let done = if trash { format!("{name} moved to the Recycle Bin") } else { format!("deleted {name}") };
-                self.request(&op.host, json!({"op": "delete", "path": op.path, "trash": trash}), Pending::FileOp { done, refresh: vec![parent_of(&op.path)], renamed: None });
+                let done = match trash {
+                    Some(bin) => format!("{name} moved to the {bin}"),
+                    None => format!("deleted {name}"),
+                };
+                self.request(&op.host, json!({"op": "delete", "path": op.path, "trash": trash.is_some()}), Pending::FileOp { done, refresh: vec![parent_of(&op.path)], renamed: None });
             }
         }
     }
@@ -157,7 +170,7 @@ impl App {
             FileOpKind::Rename => "Rename",
             FileOpKind::Delete => "Delete",
         };
-        let trash = self.deletes_to_trash(&op.host);
+        let trash = self.trash_of(&op.host);
         let on_windows = cfg!(windows) && self.profile(&op.host).is_local();
         crate::widgets::dialog(ctx, title, vec2(400.0, 130.0)).open(&mut open).resizable(false).show(ctx, |ui| {
             let small = |s: String| RichText::new(s).size(11.5).color(theme::text_faint());
@@ -165,15 +178,21 @@ impl App {
                 ui.label(format!("{}{}", weft_core::shown(&base_name(&op.path)), if op.dir { " and everything in it" } else { "" }));
                 ui.label(small(format!("{}:{}", op.host, weft_core::shown(&op.path))));
                 ui.add_space(4.0);
-                if trash {
-                    ui.label(RichText::new("It goes to the Recycle Bin.").color(theme::text_dim()));
-                } else {
-                    ui.label(RichText::new("This cannot be undone.").color(theme::warn()));
-                }
+                match trash {
+                    Some(bin) if self.profile(&op.host).is_local() => ui.label(RichText::new(format!("It goes to the {bin}.")).color(theme::text_dim())),
+                    Some(bin) => ui.label(RichText::new(format!("It goes to the host's {bin}, which keeps its room on that disk until emptied.")).color(theme::text_dim())),
+                    None => ui.label(RichText::new("This cannot be undone.").color(theme::warn())),
+                };
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    if ui.button(if trash { "Move to Recycle Bin" } else { "Delete for good" }).clicked() {
+                    if let Some(bin) = trash {
+                        if ui.button(format!("Move to {bin}")).clicked() {
+                            go = true;
+                        }
+                    }
+                    if ui.button("Delete for good").clicked() {
                         go = true;
+                        op.for_good = trash.is_some();
                     }
                     if ui.button("Cancel").clicked() {
                         cancel = true;

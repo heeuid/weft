@@ -105,6 +105,12 @@ fn cell_colors(a: term::Attr) -> (Color32, Option<Color32>) {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn paint_row(p: &Painter, row: &Row, x0: f32, y: f32, cw: f32, ch: f32, font: &FontId, cols: usize) {
     let n = row.cells.len().min(cols);
+    // Characters weft's fonts lack: looked for in the system's (drawn from
+    // the next frame on).
+    if row.cells[..n].iter().any(|c| !c.ch.is_ascii()) {
+        let s: String = row.cells[..n].iter().map(|c| c.ch).filter(|c| !c.is_ascii()).collect();
+        weft_draw::fallback::want(p.ctx(), font, &s);
+    }
     // Backgrounds, merged into runs.
     let mut x = 0;
     while x < n {

@@ -212,6 +212,43 @@ impl App {
         }
     }
 
+    /// ssh's question about a host's key it has not seen (its own words:
+    /// the host, the key's fingerprint), for a connection weft gave a
+    /// password to: "Trust and connect" trusts the key (ssh keeps it in
+    /// known_hosts); "Don't connect" or closing it does not.
+    pub fn ui_host_key(&mut self, ctx: &egui::Context) {
+        if self.answers_host_keys {
+            self.host_keys.extend(weft_core::secret::host_key_questions());
+        }
+        let Some(q) = self.host_keys.first() else { return };
+        let mut answer = None;
+        let mut open = true;
+        crate::widgets::dialog(ctx, "Trust this host's key?", vec2(520.0, 220.0)).open(&mut open).resizable(true).show(ctx, |ui| {
+            egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
+                ui.label(RichText::new(q.prompt.trim()).monospace().size(12.0));
+            });
+            ui.add_space(6.0);
+            ui.label(RichText::new("Check the fingerprint with the host's owner. Trusting it, ssh keeps the key and trusts it from now on.").size(11.5).color(theme::text_faint()));
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if ui.button("Trust and connect").clicked() {
+                    answer = Some(true);
+                }
+                if ui.button("Don't connect").clicked() {
+                    answer = Some(false);
+                }
+            });
+        });
+        if !open {
+            answer = Some(false);
+        }
+        if let Some(yes) = answer {
+            let q = self.host_keys.remove(0);
+            self.data.log(&format!("host key question answered {}", if yes { "yes" } else { "no" }));
+            q.answer(yes);
+        }
+    }
+
     pub fn ui_confirm(&mut self, ctx: &egui::Context) {
         self.after_save();
         let Some(c) = self.confirm.take() else { return };

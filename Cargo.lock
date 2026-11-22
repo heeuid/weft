@@ -3828,6 +3828,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sys-locale"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8eab9a99a024a169fe8a903cf9d4a3b3601109bcc13bd9e3c6fff259138626c4"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "sysinfo"
 version = "0.40.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4589,7 +4598,7 @@ checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
 
 [[package]]
 name = "weft"
-version = "0.11.4"
+version = "0.11.5"
 dependencies = [
  "base64 0.22.1",
  "eframe",
@@ -4603,6 +4612,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serialport",
+ "sys-locale",
  "unicode-normalization",
  "vte",
  "weft-core",
@@ -4614,7 +4624,7 @@ dependencies = [
 
 [[package]]
 name = "weft-core"
-version = "0.11.4"
+version = "0.11.5"
 dependencies = [
  "base64 0.22.1",
  "chacha20",
@@ -4627,6 +4637,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serialport",
+ "sys-locale",
  "sysinfo",
  "unicode-normalization",
  "vte",
@@ -4636,9 +4647,10 @@ dependencies = [
 
 [[package]]
 name = "weft-draw"
-version = "0.11.4"
+version = "0.11.5"
 dependencies = [
  "egui",
+ "fontdb",
  "syntect",
  "ttf-parser",
  "two-face",
