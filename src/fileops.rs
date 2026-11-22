@@ -30,6 +30,8 @@ pub struct FileOp {
     pub focus: bool,
     /// Delete: for good, not to the trash (asked for in the dialog).
     pub for_good: bool,
+    /// Delete: the others picked with it (Files' rows picked together).
+    pub more: Vec<String>,
 }
 
 /// "/a/b" → "/a", "/a" → "/", "C:/x" → "C:/".
@@ -83,9 +85,21 @@ impl App {
         (!platform.starts_with("win")).then_some("Trash")
     }
 
+    /// Delete several rows picked together: asked once for them all.
+    pub fn ask_delete_many(&mut self, host: &str, paths: &[String]) {
+        let Some((first, rest)) = paths.split_first() else { return };
+        // Whether any of them is a folder (said in the question).
+        let is_dir = |p: &String| self.dir_cache.iter().any(|((h, d), l)| h == host && *d == parent_of(p) && l.entries.iter().any(|e| e.dir && join(d, &e.name) == *p));
+        let dir = paths.iter().any(is_dir);
+        self.ask_file_op(FileOpKind::Delete, host, first, dir);
+        if let Some(op) = self.file_op.as_mut() {
+            op.more = rest.to_vec();
+        }
+    }
+
     pub fn ask_file_op(&mut self, kind: FileOpKind, host: &str, path: &str, dir: bool) {
         let name = if kind == FileOpKind::Rename { base_name(path) } else { String::new() };
-        self.file_op = Some(FileOp { kind, host: host.into(), path: path.into(), dir, name, focus: true, for_good: false });
+        self.file_op = Some(FileOp { kind, host: host.into(), path: path.into(), dir, name, focus: true, for_good: false, more: Vec::new() });
         // The dialog has the keyboard, not the shell.
         self.focus_term = false;
     }
@@ -114,12 +128,16 @@ impl App {
             }
             FileOpKind::Delete => {
                 let trash = self.trash_of(&op.host).filter(|_| !op.for_good);
-                let name = base_name(&op.path);
-                let done = match trash {
-                    Some(bin) => format!("{name} moved to the {bin}"),
-                    None => format!("deleted {name}"),
-                };
-                self.request(&op.host, json!({"op": "delete", "path": op.path, "trash": trash.is_some()}), Pending::FileOp { done, refresh: vec![parent_of(&op.path)], renamed: None });
+                // It and the others picked with it, each its own request.
+                for path in std::iter::once(&op.path).chain(&op.more) {
+                    let name = base_name(path);
+                    let done = match trash {
+                        Some(bin) => format!("{name} moved to the {bin}"),
+                        None => format!("deleted {name}"),
+                    };
+                    self.request(&op.host, json!({"op": "delete", "path": path, "trash": trash.is_some()}), Pending::FileOp { done, refresh: vec![parent_of(path)], renamed: None });
+                }
+                self.side.picked.retain(|p| *p != op.path && !op.more.contains(p));
             }
         }
     }
@@ -175,8 +193,20 @@ impl App {
         crate::widgets::dialog(ctx, title, vec2(400.0, 130.0)).open(&mut open).resizable(false).show(ctx, |ui| {
             let small = |s: String| RichText::new(s).size(11.5).color(theme::text_faint());
             if op.kind == FileOpKind::Delete {
-                ui.label(format!("{}{}", weft_core::shown(&base_name(&op.path)), if op.dir { " and everything in it" } else { "" }));
-                ui.label(small(format!("{}:{}", op.host, weft_core::shown(&op.path))));
+                if op.more.is_empty() {
+                    ui.label(format!("{}{}", weft_core::shown(&base_name(&op.path)), if op.dir { " and everything in it" } else { "" }));
+                    ui.label(small(format!("{}:{}", op.host, weft_core::shown(&op.path))));
+                } else {
+                    // Several: their names (folders with all in them).
+                    ui.label(format!("{} items{}:", op.more.len() + 1, if op.dir { ", folders with everything in them" } else { "" }));
+                    for p in std::iter::once(&op.path).chain(&op.more).take(8) {
+                        ui.label(small(format!("  {}", weft_core::shown(&base_name(p)))));
+                    }
+                    if op.more.len() + 1 > 8 {
+                        ui.label(small(format!("  and {} more", op.more.len() + 1 - 8)));
+                    }
+                    ui.label(small(format!("on {}", op.host)));
+                }
                 ui.add_space(4.0);
                 match trash {
                     Some(bin) if self.profile(&op.host).is_local() => ui.label(RichText::new(format!("It goes to the {bin}.")).color(theme::text_dim())),

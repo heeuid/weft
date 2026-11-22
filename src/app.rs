@@ -1371,6 +1371,9 @@ pub struct SideView {
     pub root: Option<(String, String)>,
     pub follow: bool,
     pub selected: Option<String>,
+    pub picked: Vec<String>,
+    pub picked_in: (String, String),
+    pub band: Option<(egui::Pos2, bool, Vec<String>)>,
 }
 
 pub struct SideState {
@@ -1394,7 +1397,17 @@ pub struct SideState {
     pub procs_sort: (usize, bool),
     pub procs_host: String,
     /// Path selected in the file tree (single click); opening needs a double-click.
+    /// With Shift, the range's other end.
     pub selected: Option<String>,
+    /// The paths picked together (Ctrl+click, Shift+click, a box dragged
+    /// in the space below the rows): what a drag, Download, Send to,
+    /// Copy paths and Delete take. Empty: the selected one alone.
+    pub picked: Vec<String>,
+    /// The panel they were picked in (host, root): another shows none.
+    pub picked_in: (String, String),
+    /// A box being dragged to pick rows: where it started (and whether
+    /// Ctrl added to what was picked).
+    pub band: Option<(egui::Pos2, bool, Vec<String>)>,
 }
 
 pub struct EditorFile {
@@ -1821,8 +1834,27 @@ pub struct App {
     pub answers_host_keys: bool,
     pub after_save: Option<crate::confirm::AfterSave>,
     pub quit_confirmed: bool,
-    /// A file or folder (host, path) being dragged from a Files panel.
-    pub file_drag: Option<(String, String)>,
+    /// Files being dragged from a Files panel: their host and paths.
+    pub file_drag: Option<(String, Vec<String>)>,
+    /// Files on this PC to hand to the system's drag (they left the
+    /// window): main starts it, having the window.
+    pub drag_out: Option<Vec<std::path::PathBuf>>,
+    /// Remote files being fetched to this PC to be dragged out.
+    pub drag_fetch: Option<crate::dragout::Fetch>,
+    /// Fetched ones, ready to be dragged out again at once: (host, the
+    /// paths there, the copies here, when).
+    pub drag_ready: Option<crate::dragout::Copies>,
+    /// The system's drag can be started from this window (not under
+    /// Wayland): else a row leaving the window stays weft's own drag.
+    pub drag_out_ok: bool,
+    /// What is being dragged out: its host and paths there.
+    pub drag_src: Option<(String, Vec<String>)>,
+    /// The files last handed to the system's drag, and where they are
+    /// from: dropped back on weft itself, the originals are copied (as
+    /// weft's own drag would have), not the copies fetched here.
+    pub dragged_out: Option<crate::dragout::Copies>,
+    /// The system's drag took the button's release: egui is told it.
+    pub release_pointer: bool,
     /// Folder rows drawn this frame (rect, host, path): drop targets.
     pub drop_dirs: Vec<(egui::Rect, String, String)>,
     /// Where each panel was drawn this frame (drop targets).
@@ -1960,6 +1992,9 @@ impl App {
                 procs_sort: (3, false),
                 procs_host: String::new(),
                 selected: None,
+                picked: Vec::new(),
+                picked_in: Default::default(),
+                band: None,
             },
             editor: EditorState { files: Vec::new(), active: 0, visible: false, find: None, select: None },
             sys: HashMap::new(),
@@ -2004,6 +2039,13 @@ impl App {
             after_save: None,
             quit_confirmed: false,
             file_drag: None,
+            drag_out: None,
+            drag_fetch: None,
+            drag_ready: None,
+            drag_out_ok: true,
+            dragged_out: None,
+            drag_src: None,
+            release_pointer: false,
             drop_dirs: Vec::new(),
             side_focus: 0,
             editor_focus: 0,
@@ -2091,7 +2133,7 @@ impl App {
         self.editor_shows = saved.editor_shows.into_iter().collect();
         self.side.expanded = saved.expanded.into_iter().collect();
         for (n, v) in saved.side_views {
-            self.side_views.insert(n, SideView { root: v.root, follow: v.follow, selected: None });
+            self.side_views.insert(n, SideView { root: v.root, follow: v.follow, ..Default::default() });
         }
     }
 

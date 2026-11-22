@@ -1558,23 +1558,49 @@ impl App {
                 ui.label(RichText::new("empty").color(theme::text_faint()));
             }
             let send_to = self.send_targets(&host);
+            // The rows in order, for a Shift+click's range and a box's rows.
+            let order: Vec<String> = rows.iter().map(|r| r.path.clone()).collect();
+            let mods = ui.input(|i| i.modifiers);
+            let mut row_rects: Vec<(egui::Rect, String)> = Vec::new();
+            // Picked together (in this panel, of the rows it shows: folded
+            // away, renamed or deleted ones drop out): what a drag,
+            // Download, Send to, Copy paths, Delete take. None: the one
+            // selected.
+            let here = (host.clone(), root.clone());
+            let settled = filter.is_empty() && !rows.is_empty() && !self.inflight.iter().any(|(h, _)| *h == host);
+            if self.side.picked_in == here && settled && !self.side.picked.is_empty() {
+                let shown: std::collections::HashSet<&str> = order.iter().map(|s| s.as_str()).collect();
+                self.side.picked.retain(|p| shown.contains(p.as_str()));
+            }
+            let picked: Vec<String> = match self.side.picked_in == here && !self.side.picked.is_empty() {
+                true => self.side.picked.clone(),
+                false => self.side.selected.clone().into_iter().collect(),
+            };
             for r in &rows {
                 let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click_and_drag());
+                row_rects.push((rect, r.path.clone()));
                 if !ui.is_rect_visible(rect) {
                     continue;
                 }
-                // Dragged onto another Files panel, a folder or a terminal: copied there.
+                // Dragged onto another Files panel, a folder or a terminal:
+                // copied there; a row of those picked takes them all.
                 if resp.drag_started() {
-                    self.file_drag = Some((host.clone(), r.path.clone()));
+                    // A folder with something in it picked too: the folder once.
+                    let paths = if picked.contains(&r.path) { crate::dragout::outermost(&picked) } else { vec![r.path.clone()] };
+                    if !picked.contains(&r.path) {
+                        self.side.selected = Some(r.path.clone());
+                        self.side.picked.clear();
+                    }
+                    self.file_drag = Some((host.clone(), paths));
                 }
                 if r.dir {
                     self.drop_dirs.push((rect.intersect(ui.clip_rect()), host.clone(), r.path.clone()));
                 }
-                if self.file_drag.as_ref().is_some_and(|d| d.0 == host && d.1 == r.path) {
+                if self.file_drag.as_ref().is_some_and(|d| d.0 == host && d.1.contains(&r.path)) {
                     ui.painter().rect_stroke(rect, CornerRadius::same(4), Stroke::new(1.0_f32, theme::accent()), egui::StrokeKind::Inside);
                 }
                 let p = ui.painter();
-                let selected = self.side.selected.as_deref() == Some(r.path.as_str());
+                let selected = picked.contains(&r.path);
                 if selected {
                     p.rect_filled(rect, CornerRadius::same(4), theme::tint(theme::accent(), 45));
                 } else if resp.hovered() {
@@ -1595,11 +1621,36 @@ impl App {
                 }
                 text_fit(p, pos2(x + 34.0, rect.center().y), &label, FontId::proportional(13.0), name_col, name_end - (x + 34.0));
                 // One click selects (and expands folders); opening a file takes a
-                // double-click or the context menu.
-                if resp.clicked() || resp.secondary_clicked() {
+                // double-click or the context menu. Ctrl+click picks one more
+                // (or one less), Shift+click the rows from the selected one.
+                let (ctrl, shift) = (mods.command || mods.ctrl, mods.shift);
+                // The range's other end: the one selected, if shown here.
+                let anchor = self.side.selected.as_ref().and_then(|s| order.iter().position(|p| p == s));
+                if resp.clicked() && shift && anchor.is_some() {
+                    let (a, b) = (anchor.unwrap_or(0), order.iter().position(|p| *p == r.path).unwrap_or(0));
+                    self.side.picked = order[a.min(b)..=a.max(b)].to_vec();
+                    self.side.picked_in = here.clone();
+                } else if resp.clicked() && ctrl {
+                    if self.side.picked_in != here || self.side.picked.is_empty() {
+                        self.side.picked = picked.clone();
+                        self.side.picked_in = here.clone();
+                    }
+                    match self.side.picked.iter().position(|p| *p == r.path) {
+                        Some(i) => {
+                            self.side.picked.remove(i);
+                            // The one selected: one still picked.
+                            self.side.selected = self.side.picked.last().cloned();
+                        }
+                        None => {
+                            self.side.picked.push(r.path.clone());
+                            self.side.selected = Some(r.path.clone());
+                        }
+                    }
+                } else if resp.clicked() || (resp.secondary_clicked() && !picked.contains(&r.path)) {
                     self.side.selected = Some(r.path.clone());
+                    self.side.picked.clear();
                 }
-                if resp.clicked() && r.dir {
+                if resp.clicked() && r.dir && !ctrl && !shift {
                     let key = (host.clone(), r.path.clone());
                     if !self.side.expanded.remove(&key) {
                         self.side.expanded.insert(key);
@@ -1620,11 +1671,17 @@ impl App {
                 // What a double-click does here: a cd only in a terminal of
                 // this host at its prompt; else the folder becomes the root.
                 let hover = match (isdir, pane.is_some() && at_prompt) {
-                    (true, true) => "click: expand · double-click: cd in the terminal",
-                    (true, false) => "click: expand · double-click: make it the root (no terminal of this host at its prompt to cd in)",
-                    _ => "double-click: open in editor",
+                    (true, true) => "click: expand · double-click: cd in the terminal · Ctrl/Shift+click: pick several · drag out of the window: to another app",
+                    (true, false) => "click: expand · double-click: make it the root (no terminal of this host at its prompt to cd in) · Ctrl/Shift+click: pick several",
+                    _ => "double-click: open in editor · Ctrl/Shift+click: pick several · drag out of the window: to another app",
                 };
+                let many = picked.len() > 1 && picked.contains(&path);
                 resp.on_hover_text(hover).context_menu(|ui| {
+                    // Several picked: what is done to them all.
+                    if many {
+                        self.picked_menu(ui, &host, &picked, pane, &send_to);
+                        return;
+                    }
                     if !isdir && ui.button("Open in editor").clicked() {
                         self.actions.push(Action::OpenFile(host.clone(), path.clone(), 1));
                         ui.close_menu();
@@ -1696,6 +1753,101 @@ impl App {
                         }
                     });
                 });
+            }
+            // The space below the rows: a box dragged there picks the rows it
+            // crosses (with Ctrl, more of them); a click there picks none.
+            let rest = ui.available_size().max(vec2(0.0, 24.0));
+            let (blank, bresp) = ui.allocate_exact_size(vec2(ui.available_width(), rest.y.max(24.0)), Sense::click_and_drag());
+            if bresp.clicked() {
+                self.side.picked.clear();
+            }
+            // (Where the box started is kept from the rows' top, so that it
+            // stays on its rows as they scroll.)
+            let origin = ui.min_rect().min;
+            if bresp.drag_started() {
+                if let Some(at) = bresp.interact_pointer_pos() {
+                    let before = if mods.command || mods.ctrl { picked.clone() } else { Vec::new() };
+                    self.side.band = Some((egui::Pos2::ZERO + (at - origin), mods.command || mods.ctrl, before));
+                    self.side.picked_in = here.clone();
+                }
+            }
+            // The box ends with the button (wherever it is let go), and with
+            // the panel showing another folder.
+            let held = ui.input(|i| i.pointer.primary_down());
+            if self.side.picked_in != here {
+                self.side.band = None;
+            }
+            if let (Some((start, _, before)), Some(now)) = (self.side.band.clone(), ui.input(|i| i.pointer.latest_pos())) {
+                let band = egui::Rect::from_two_pos(origin + start.to_vec2(), now);
+                ui.painter().rect(band, CornerRadius::same(2), theme::tint(theme::accent(), 30), Stroke::new(1.0_f32, theme::accent()), egui::StrokeKind::Inside);
+                let mut now_picked = before.clone();
+                let mut seen: std::collections::HashSet<String> = before.iter().cloned().collect();
+                for (r, p) in &row_rects {
+                    if r.intersects(band) && seen.insert(p.clone()) {
+                        now_picked.push(p.clone());
+                    }
+                }
+                if let Some(last) = now_picked.last() {
+                    self.side.selected = Some(last.clone());
+                }
+                self.side.picked = now_picked;
+            }
+            if !held {
+                self.side.band = None;
+            }
+            let _ = blank;
+            // Ctrl+A over the panel: every row shown; Esc: none.
+            if ui.ui_contains_pointer() && !ui.ctx().wants_keyboard_input() {
+                if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::A)) {
+                    self.side.picked = order.clone();
+                    self.side.picked_in = here.clone();
+                }
+                if !self.side.picked.is_empty() && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+                    self.side.picked.clear();
+                }
+            }
+        });
+    }
+
+    /// The menu for several rows picked together.
+    fn picked_menu(&mut self, ui: &mut Ui, host: &str, picked: &[String], pane: Option<usize>, send_to: &[(String, String, String)]) {
+        ui.label(RichText::new(format!("{} picked", picked.len())).size(11.5).color(theme::text_faint()));
+        if ui.add_enabled(pane.is_some(), egui::Button::new("Insert paths at prompt")).on_disabled_hover_text("no terminal of this host is the active one").clicked() {
+            if let Some(id) = pane {
+                let line: String = picked.iter().map(|p| format!("{} ", self.quote_in(id, p))).collect();
+                self.actions.push(Action::Send(id, line.into_bytes()));
+            }
+            ui.close_menu();
+        }
+        if ui.button("Copy paths").on_hover_text("one a line").clicked() {
+            self.actions.push(Action::Copy(picked.join("\n")));
+            ui.close_menu();
+        }
+        ui.separator();
+        // A folder with something in it picked too: the folder once.
+        let outer = crate::dragout::outermost(picked);
+        if ui.button(format!("Delete {}…", outer.len())).clicked() {
+            self.ask_delete_many(host, &outer);
+            ui.close_menu();
+        }
+        ui.separator();
+        if host != "local" && ui.button(format!("Download {}", outer.len())).on_hover_text(format!("to {}", crate::transfer::downloads_dir())).clicked() {
+            for p in &outer {
+                self.start_transfer(host, p, "local", &crate::transfer::downloads_dir());
+            }
+            ui.close_menu();
+        }
+        ui.menu_button(format!("Send {} to", outer.len()), |ui| {
+            if send_to.is_empty() {
+                ui.label(RichText::new("open another host's Files panel or terminal first").size(12.0).color(theme::text_faint()));
+            }
+            for (h, dir, why) in send_to {
+                if ui.button(format!("{h}:{dir}")).on_hover_text(why).clicked() {
+                    for p in &outer {
+                        self.start_transfer(host, p, h, dir);
+                    }
+                    ui.close_menu();
+                }
             }
         });
     }
@@ -3117,13 +3269,23 @@ impl App {
     }
 
     fn side_view(&self) -> SideView {
-        SideView { root: self.side.root.clone(), follow: self.side.follow, selected: self.side.selected.clone() }
+        SideView {
+            root: self.side.root.clone(),
+            follow: self.side.follow,
+            selected: self.side.selected.clone(),
+            picked: self.side.picked.clone(),
+            picked_in: self.side.picked_in.clone(),
+            band: self.side.band.clone(),
+        }
     }
 
     fn set_side_view(&mut self, v: SideView) {
         self.side.root = v.root;
         self.side.follow = v.follow;
         self.side.selected = v.selected;
+        self.side.picked = v.picked;
+        self.side.picked_in = v.picked_in;
+        self.side.band = v.band;
     }
 
     /// Editor `n`: the open files (shared), showing its own one. The find

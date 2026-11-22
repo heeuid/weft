@@ -11,6 +11,7 @@ mod copymode;
 mod display_test;
 #[cfg(test)]
 mod doccheck;
+mod dragout;
 mod help;
 mod fileops;
 mod frame;
@@ -32,6 +33,8 @@ mod ui_term;
 mod version;
 mod widgets;
 mod x11;
+#[cfg(not(any(windows, target_os = "macos")))]
+mod xdnd;
 
 // The parts that live in their own crates, under the names they always had.
 use weft_core::{editfind, find, host, pty, records, secret, term};
@@ -132,6 +135,14 @@ impl eframe::App for WeftApp {
     /// Past half full, rebuild as the next pass starts: egui does so when
     /// max_texture_side changes, so it is flipped by one.
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        // The system's drag kept the button's release from the window: said
+        // here, else egui would take the button as still held.
+        if std::mem::take(&mut self.app.release_pointer) {
+            let pos = ctx.input(|i| i.pointer.latest_pos()).unwrap_or_default();
+            // First, before a press of this frame.
+            raw.events.insert(0, egui::Event::PointerGone);
+            raw.events.insert(0, egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: raw.modifiers });
+        }
         // The glyph atlas: 4096 px at 100 % scale, following the scale up
         // and down (5120 at 125 %, 6144 at 150 %, 8192 from 200 %), since
         // glyphs grow with it: about 40 000 different Hangul glyphs before a
@@ -152,7 +163,7 @@ impl eframe::App for WeftApp {
         raw.max_texture_side = Some(side - self.atlas_flip as usize);
     }
 
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         if let Some((since, frames, causes)) = self.repaint_debug.as_mut() {
             *frames += 1;
             for c in ctx.repaint_causes() {
@@ -204,6 +215,27 @@ impl eframe::App for WeftApp {
         }
         let app = &mut self.app;
         app.frame(ctx);
+        // Files dragged out of the window: the system's drag takes them.
+        if self.first_frame {
+            app.drag_out_ok = dragout::possible(frame);
+        }
+        if let Some(paths) = app.drag_out.take() {
+            app.data.log(&format!("drag out: {} items", paths.len()));
+            let (host, src) = app.drag_src.take().unwrap_or_default();
+            match dragout::start(frame, paths.clone()) {
+                Ok(()) => {
+                    app.dragged_out = Some(dragout::Copies::new(host, src, paths));
+                    // The system's drag took the release (Windows: it is over
+                    // now; elsewhere it goes on without weft).
+                    app.release_pointer = true;
+                    ctx.request_repaint();
+                }
+                Err(e) => {
+                    app.data.log(&format!("drag out: {e}"));
+                    app.toast(&e, app::ToastKind::Error);
+                }
+            }
+        }
         let title = app.active_pane().map(|p| format!("weft — {}", p.title())).unwrap_or_else(|| "weft".into());
         // Only on change: every viewport command asks for another frame, so
         // sending it each frame kept weft redrawing ~100 times a second.

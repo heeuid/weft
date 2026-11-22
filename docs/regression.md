@@ -221,6 +221,12 @@ What the numbers don't show:
 | OSC 133 marks told twice (fish 4's own and weft's script's): one command is one block with its exit code, a failing one that prints nothing too | `term::guess_tests::marks_told_twice_are_one_block` |
 | Guessed blocks kept out of sight: no block, yet the prompt and a command's probable end are told; what is kept stays small; the shell's own marks show; a question guessed a prompt (ssh's password, a code, yes/no) is not one to send to nor the shell's, the shell's prompt after it is (oh-my-zsh's `~` too), a program's "45%" then is not | `term::guess_tests::guesses_can_be_kept_out_of_sight` |
 | A font is found by its file name in any folder, any depth, the first folder's first | `theme::tests::a_font_is_found_by_its_name_in_any_folder` |
+| Several rows picked in Files: Shift+click a range, Ctrl+click one more or less, a box dragged from the space below the rows, Ctrl+A, Esc; their menu copies their paths and deletes them all after one question; dragging one drags them all | `regress::several_files_are_picked_together` |
+| Rows dragged out of the window go to the system's drag (to a browser's upload, a file manager): files on this PC as they are | `regress::files_dragged_out_of_the_window` |
+| X11: the drag out speaks XDND to an app taking drops (Xvfb): entered, positions answered, dropped, the files given as text/uri-list, finished | `xdnd::tests::files_dropped_on_an_x11_app` |
+| Files as text/uri-list: file URIs, percent-encoded, CRLF | `xdnd::tests::files_as_a_uri_list` |
+| A folder picked with what is in it is taken once (deleted, copied, dragged) | `dragout::tests::a_folder_once_with_what_is_in_it` |
+| Files of the same name copied to one folder at once each get a name of their own | `transfer::tests::same_names_copied_together_both_arrive` |
 | A tooltip waits for the pointer to rest (0.8 s), on each thing anew: passing over Files' rows shows none | `regress::a_tooltip_waits_for_the_pointer_to_rest` |
 | A character weft's fonts lack (kana, Thai, …) is found in a font the system has installed and drawn with it; one no font has stays a box, asked for once | `fallback::tests::a_character_the_fonts_lack_is_found_in_the_systems`, `regress::a_character_weft_lacks_is_drawn_with_an_installed_font` |
 | Deleting to the trash: freedesktop.org's (files/, a .trashinfo with the path percent-encoded and the date, name.2 for a second), macOS' ~/.Trash, the agent's the same | `host::tests::deleting_to_the_trash_keeps_where_it_was` |

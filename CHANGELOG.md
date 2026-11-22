@@ -5,6 +5,23 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.12.0
+
+Added
+- **Several rows picked in Files**: Ctrl+click (Cmd on macOS) adds or
+  takes one, Shift+click picks a range from the one selected, a box
+  dragged in the space below the rows picks those it crosses (with Ctrl,
+  more), Ctrl+A over the panel all shown, Esc none. Their menu: insert
+  their paths at the prompt, copy them (one a line), delete them all
+  after one question, Download, Send to; dragging one of them drags all.
+- **Files dragged out to other apps** (a browser's upload, a file
+  manager, a mail): rows leaving the window go to the system's own drag,
+  on Windows (OLE), macOS (a dragging session) and X11 on Linux and the
+  BSDs (XDND). A remote host's are fetched to this PC first (into
+  `drag-out` under weft's data, cleared after a day): still held, the
+  drag goes on once they are here; let go, the next drag of them goes at
+  once (for ten minutes). Not yet from a Wayland window (said so).
+
 ## 0.11.6
 
 - **Tooltips came up too soon** (half a second, while passing over the

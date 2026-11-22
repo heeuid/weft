@@ -62,6 +62,9 @@ pub struct Transfer {
     pub state: State,
     /// A request is in flight.
     pub busy: bool,
+    /// Its name at the destination is settled (others to the same folder
+    /// take another).
+    pub named: bool,
     pub started: Instant,
     pub ended: Option<Instant>,
 }
@@ -154,6 +157,7 @@ impl App {
             done: 0,
             state: State::Running,
             busy: false,
+            named: false,
             started: Instant::now(),
             ended: None,
         });
@@ -253,7 +257,12 @@ impl App {
                 self.xfer_request(id, false, json!({"op": "stat", "path": first}), Step::Name(0));
             }
             Step::Name(k) => {
-                if r["exists"].as_bool().unwrap_or(false) {
+                // Taken there, or by another copy to the same folder.
+                let cand = candidate(&base_name(&t.src_path), t.is_dir, k);
+                let (dh, dd) = (t.dst_host.clone(), t.dst_dir.clone());
+                let claimed = self.transfers.iter().any(|o| o.id != id && o.named && o.state == State::Running && o.dst_host == dh && o.dst_dir == dd && o.name.to_lowercase() == cand.to_lowercase());
+                let Some(t) = self.transfers.iter_mut().find(|t| t.id == id) else { return };
+                if claimed || r["exists"].as_bool().unwrap_or(false) {
                     if k >= 999 {
                         self.fail_transfer(id, "no free name at the destination".into());
                         return;
@@ -262,7 +271,8 @@ impl App {
                     self.xfer_request(id, false, json!({"op": "stat", "path": next}), Step::Name(k + 1));
                     return;
                 }
-                t.name = candidate(&base_name(&t.src_path), t.is_dir, k);
+                t.name = cand;
+                t.named = true;
                 if t.is_dir {
                     let dirs: Vec<String> = t.items.iter().filter(|i| i.dir).map(|i| i.rel.clone()).collect();
                     let root = t.dest();
@@ -379,6 +389,7 @@ impl App {
     /// Files dragged: a row from a Files panel, or files from the system's
     /// file manager. Shows where they would go and starts the copies on drop.
     pub fn ui_file_drop(&mut self, ctx: &egui::Context) {
+        self.poll_drag_fetch(ctx);
         let (hovered, dropped) = ctx.input(|i| (!i.raw.hovered_files.is_empty(), i.raw.dropped_files.clone()));
         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, Id::new("file-drop")));
         // From outside weft the system reports no position: ask for the cursor.
@@ -395,6 +406,28 @@ impl App {
                     drop_hint(&painter, p, self.drop_row(p), &text, target.is_some());
                 }
             }
+            // What weft itself just dragged out, dropped back on it: nothing.
+            // What weft itself dragged out, dropped back on it: the originals
+            // go (as weft's own drag would have), not the copies fetched here.
+            // (Soon after, and the copies as they were: one changed since is
+            // its own file.)
+            if self.dragged_out.as_ref().is_some_and(|c| !c.fresh(crate::dragout::BACK)) {
+                self.dragged_out = None;
+            }
+            let ours = |p: &std::path::Path| self.dragged_out.as_ref().is_some_and(|c| c.here.iter().any(|o| o == p));
+            let back = !dropped.is_empty() && dropped.iter().all(|f| f.path.as_deref().is_some_and(ours));
+            if back {
+                if let (Some((h, d)), Some(crate::dragout::Copies { host: src_host, paths: src, .. })) = (target.clone(), self.dragged_out.take()) {
+                    for s in &src {
+                        let parent = s.trim_end_matches('/').rsplit_once('/').map(|(p, _)| if p.is_empty() { "/" } else { p }).unwrap_or("");
+                        // Not into itself, nor where it already is.
+                        if !(h == src_host && (d == parent || d == *s || d.starts_with(&format!("{s}/")))) {
+                            self.start_transfer(&src_host, s, &h, &d);
+                        }
+                    }
+                }
+                return;
+            }
             if let Some((h, d)) = target.filter(|_| !dropped.is_empty()) {
                 for f in &dropped {
                     if let Some(path) = &f.path {
@@ -406,24 +439,39 @@ impl App {
             }
             return;
         }
-        let Some((src_host, src_path)) = self.file_drag.clone() else { return };
+        let Some((src_host, src_paths)) = self.file_drag.clone() else { return };
+        let Some(first) = src_paths.first().cloned() else {
+            self.file_drag = None;
+            return;
+        };
         let (pos, released) = ctx.input(|i| (i.pointer.latest_pos(), i.pointer.any_released() || !i.pointer.primary_down()));
+        // Out of the window, still held: on to another app (a browser's
+        // upload, a file manager), the system's drag.
+        if self.drag_out_ok && !released && pos.is_none_or(|p| !ctx.screen_rect().contains(p)) {
+            self.file_drag = None;
+            self.drag_out_of(&src_host, &src_paths);
+            return;
+        }
         ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
-        let parent = src_path.trim_end_matches('/').rsplit_once('/').map(|(p, _)| if p.is_empty() { "/".to_string() } else { p.to_string() }).unwrap_or_default();
-        // Not into itself, nor where it already is.
-        let target = pos.and_then(|p| self.drop_target(p)).filter(|(h, d)| !(h == &src_host && (d == &parent || d == &src_path || d.starts_with(&format!("{src_path}/")))));
+        let parent_of = |p: &str| p.trim_end_matches('/').rsplit_once('/').map(|(p, _)| if p.is_empty() { "/".to_string() } else { p.to_string() }).unwrap_or_default();
+        // Not into any of them, nor where they already are.
+        let target = pos.and_then(|p| self.drop_target(p)).filter(|(h, d)| {
+            !(h == &src_host && src_paths.iter().any(|s| *d == parent_of(s) || d == s || d.starts_with(&format!("{s}/"))))
+        });
         if let Some(p) = pos {
-            let name = base_name(&src_path);
+            let what = if src_paths.len() == 1 { base_name(&first) } else { format!("{} items", src_paths.len()) };
             let text = match &target {
-                Some((h, d)) => format!("copy {name} to {h}:{d}"),
-                None => format!("{name}: drop on another Files panel, a folder or a terminal"),
+                Some((h, d)) => format!("copy {what} to {h}:{d}"),
+                None => format!("{what}: drop on another Files panel, a folder or a terminal"),
             };
             drop_hint(&painter, p, self.drop_row(p), &text, target.is_some());
         }
         if released {
             self.file_drag = None;
             if let Some((h, d)) = target {
-                self.start_transfer(&src_host, &src_path, &h, &d);
+                for s in &src_paths {
+                    self.start_transfer(&src_host, s, &h, &d);
+                }
             }
         }
     }
@@ -638,6 +686,35 @@ mod tests {
         run(&mut app, "local", &p("src/folder/sub/메모.txt"), "local", &p("back/folder/sub"));
         assert!(dir.join("back/folder/sub/메모 (1).txt").is_file());
         assert!(!std::fs::read_dir(dir.join("back/folder")).unwrap().flatten().any(|e| e.file_name().to_string_lossy().ends_with(".weft-part")));
+        drop(app);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Files of the same name copied to one folder at once (picked in two
+    /// folders): each its own name there, none written over another.
+    #[test]
+    fn same_names_copied_together_both_arrive() {
+        let dir = std::env::temp_dir().join(format!("weft-xfer-same-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for d in ["data", "a", "b", "to"] {
+            std::fs::create_dir_all(dir.join(d)).unwrap();
+        }
+        std::fs::write(dir.join("a/README.md"), "from a").unwrap();
+        std::fs::write(dir.join("b/README.md"), "from b").unwrap();
+        let ctx = egui::Context::default();
+        let mut app = App::new_in(ctx.clone(), crate::host::DataDir::at(dir.join("data")));
+        let p = |s: &str| dir.join(s).display().to_string().replace('\\', "/");
+        app.start_transfer("local", &p("a/README.md"), "local", &p("to"));
+        app.start_transfer("local", &p("b/README.md"), "local", &p("to"));
+        let end = Instant::now() + std::time::Duration::from_secs(30);
+        while app.transfers_running() && Instant::now() < end {
+            app.poll();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(app.transfers.iter().all(|t| t.state == State::Done));
+        let mut got: Vec<String> = ["README.md", "README (1).md"].iter().map(|n| std::fs::read_to_string(dir.join("to").join(n)).unwrap()).collect();
+        got.sort();
+        assert_eq!(got, ["from a", "from b"]);
         drop(app);
         let _ = std::fs::remove_dir_all(&dir);
     }

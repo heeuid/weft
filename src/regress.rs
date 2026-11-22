@@ -1681,6 +1681,137 @@ fn a_character_weft_lacks_is_drawn_with_an_installed_font() {
     assert!(h.ctx.fonts(|f| f.has_glyph(&egui::FontId::proportional(13.0), c)), "the UI's text has it too (a file name)");
 }
 
+/// Several rows picked in Files: Shift+click a range, Ctrl+click one more
+/// or one less, a box dragged up from the space below the rows, Ctrl+A,
+/// Esc; their menu copies their paths and deletes them all after one
+/// question; a drag of one of them takes them all.
+#[test]
+fn several_files_are_picked_together() {
+    let dir = std::env::temp_dir().join(format!("weft-pick-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    for n in ["a.txt", "b.txt", "c.txt", "d.txt"] {
+        std::fs::write(dir.join(n), "x").unwrap();
+    }
+    let root = dir.display().to_string().replace('\\', "/");
+    let p = |n: &str| format!("{root}/{n}");
+    let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}], "sidebar": true, "follow_cwd": false}));
+    h.app.side.tab = crate::app::SideTab::Files;
+    h.app.set_root("local", &root);
+    assert!(h.wait_for(10.0, |h| h.has("d.txt")), "listed");
+    let ctrl = Modifiers { ctrl: true, command: true, ..Modifiers::NONE };
+    let shift = Modifiers { shift: true, ..Modifiers::NONE };
+    // A, then Shift+click C: A to C.
+    h.click(h.at_exact("a.txt"));
+    h.click_with(h.at_exact("c.txt"), shift);
+    assert_eq!(h.app.side.picked, [p("a.txt"), p("b.txt"), p("c.txt")]);
+    // Ctrl+click B: one less; D: one more.
+    h.click_with(h.at_exact("b.txt"), ctrl);
+    h.click_with(h.at_exact("d.txt"), ctrl);
+    assert_eq!(h.app.side.picked, [p("a.txt"), p("c.txt"), p("d.txt")]);
+    // Their menu: their paths, one a line.
+    h.right_click(h.at_exact("a.txt"));
+    assert!(h.shows("3 picked"), "the menu for them all");
+    h.copied = None;
+    h.click_text("Copy paths");
+    h.frames(2);
+    assert_eq!(h.copied.as_deref(), Some([p("a.txt"), p("c.txt"), p("d.txt")].join("\n").as_str()));
+    // A plain click: one again; Esc: none; Ctrl+A over the panel: all.
+    h.click(h.at_exact("b.txt"));
+    assert!(h.app.side.picked.is_empty() && h.app.side.selected.as_deref() == Some(p("b.txt").as_str()));
+    h.hover(h.at_exact("b.txt"));
+    h.key(Key::A, ctrl);
+    assert_eq!(h.app.side.picked.len(), 4, "Ctrl+A: every row");
+    h.key(Key::Escape, Modifiers::NONE);
+    assert!(h.app.side.picked.is_empty(), "Esc: none");
+    // A box from the space below the rows up over C and D.
+    let d = h.at_exact("d.txt");
+    let c = h.at_exact("c.txt");
+    h.drag(egui::pos2(d.x + 40.0, d.y + 60.0), egui::pos2(c.x + 40.0, c.y));
+    assert_eq!(h.app.side.picked, [p("c.txt"), p("d.txt")], "the rows the box crossed, in their order");
+    assert!(h.app.side.band.is_none(), "the box ended");
+    // A box let go out of the window ends too (nothing picked later by it).
+    let below = egui::pos2(d.x + 40.0, d.y + 60.0);
+    h.frame(vec![egui::Event::PointerMoved(below)]);
+    h.held = ctrl;
+    h.frame(vec![egui::Event::PointerButton { pos: below, button: egui::PointerButton::Primary, pressed: true, modifiers: ctrl }]);
+    for k in 1..4 {
+        h.frame(vec![egui::Event::PointerMoved(egui::pos2(below.x, below.y + 10.0 * k as f32))]);
+    }
+    h.frame(vec![egui::Event::PointerGone]);
+    h.frame(vec![egui::Event::PointerButton { pos: below, button: egui::PointerButton::Primary, pressed: false, modifiers: ctrl }]);
+    h.held = Modifiers::NONE;
+    h.frames(2);
+    assert!(h.app.side.band.is_none(), "let go outside: the box ended");
+    h.hover(h.at_exact("a.txt"));
+    h.frames(2);
+    assert_eq!(h.app.side.picked, [p("c.txt"), p("d.txt")], "and picked nothing more");
+    // A drag of one of them takes them both.
+    let c = h.at_exact("c.txt");
+    h.frame(vec![egui::Event::PointerMoved(c)]);
+    h.frame(vec![egui::Event::PointerButton { pos: c, button: egui::PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE }]);
+    for k in 1..6 {
+        h.frame(vec![egui::Event::PointerMoved(egui::pos2(c.x + 8.0 * k as f32, c.y + 3.0 * k as f32))]);
+    }
+    assert_eq!(h.app.file_drag.as_ref().map(|d| d.1.clone()), Some(vec![p("c.txt"), p("d.txt")]), "both dragged");
+    let at = egui::pos2(c.x + 40.0, c.y + 15.0);
+    h.frame(vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE }]);
+    h.frames(2);
+    assert!(h.app.file_drag.is_none(), "let go");
+    // Delete them both: asked once, both go.
+    h.right_click(h.at_exact("c.txt"));
+    h.click_text("Delete 2…");
+    h.frames(2);
+    assert!(h.shows("2 items"), "asked once for both");
+    h.click_text("Delete for good");
+    assert!(h.wait_for(10.0, |_| !dir.join("c.txt").exists() && !dir.join("d.txt").exists()), "both gone");
+    assert!(dir.join("a.txt").exists() && dir.join("b.txt").exists(), "the others stay");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Rows dragged out of the window (the pointer past its edge, the button
+/// still held) go to the system's drag: a browser's upload, a file
+/// manager. Files on this PC go as they are.
+#[test]
+fn files_dragged_out_of_the_window() {
+    let dir = std::env::temp_dir().join(format!("weft-out-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    for n in ["a.txt", "b.txt"] {
+        std::fs::write(dir.join(n), "x").unwrap();
+    }
+    let root = dir.display().to_string().replace('\\', "/");
+    let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}], "sidebar": true, "follow_cwd": false}));
+    h.app.side.tab = crate::app::SideTab::Files;
+    h.app.set_root("local", &root);
+    assert!(h.wait_for(10.0, |h| h.has("b.txt")), "listed");
+    h.click(h.at_exact("a.txt"));
+    h.click_with(h.at_exact("b.txt"), Modifiers { shift: true, ..Modifiers::NONE });
+    let a = h.at_exact("a.txt");
+    h.frame(vec![egui::Event::PointerMoved(a)]);
+    h.frame(vec![egui::Event::PointerButton { pos: a, button: egui::PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE }]);
+    for k in 1..4 {
+        h.frame(vec![egui::Event::PointerMoved(egui::pos2(a.x + 10.0 * k as f32, a.y))]);
+    }
+    assert!(h.app.file_drag.is_some(), "dragging");
+    // Past the window's left edge, still held.
+    h.frame(vec![egui::Event::PointerMoved(egui::pos2(-30.0, a.y))]);
+    let want: Vec<std::path::PathBuf> = ["a.txt", "b.txt"].iter().map(|n| std::path::PathBuf::from(format!("{root}/{n}"))).collect();
+    assert_eq!(h.app.drag_out.as_ref(), Some(&want), "both handed to the system's drag");
+    assert!(h.app.file_drag.is_none(), "weft's own drag ended");
+    // The pointer gone from the window (as some systems say it) does the same.
+    h.app.drag_out = None;
+    h.frame(vec![egui::Event::PointerButton { pos: a, button: egui::PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE }]);
+    h.frame(vec![egui::Event::PointerMoved(a)]);
+    h.frame(vec![egui::Event::PointerButton { pos: a, button: egui::PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE }]);
+    for k in 1..4 {
+        h.frame(vec![egui::Event::PointerMoved(egui::pos2(a.x + 10.0 * k as f32, a.y))]);
+    }
+    h.frame(vec![egui::Event::PointerGone]);
+    assert_eq!(h.app.drag_out.as_ref(), Some(&want), "gone from the window: out");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A tooltip comes once the pointer rests on a thing (0.8 s), and on the
 /// next thing only after resting there too: passing over Files' rows
 /// showed one at once, and after the first, every row's came at once.

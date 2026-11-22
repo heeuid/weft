@@ -10,7 +10,7 @@ members = ["crates/weft-core", "crates/weft-draw"]
 
 # One version for weft and its crates: raised here, with CHANGELOG.md.
 [workspace.package]
-version = "0.11.6"
+version = "0.12.0"
 license = "MIT"
 
 [dependencies]
@@ -44,6 +44,18 @@ embed-resource = "3"
 [profile.release]
 opt-level = 3
 debug = false
+
+# Files dragged out to other apps: each system's own drag.
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+drag = "2.1"
+
+[target.'cfg(not(any(windows, target_os = "macos")))'.dependencies]
+x11rb = "0.13"
+raw-window-handle = "0.6"
+
+[target.'cfg(not(any(windows, target_os = "macos")))'.dev-dependencies]
+# The drag out's test moves and presses the pointer of an X server of its own.
+x11rb = { version = "0.13", features = ["xtest"] }
 
 [target."cfg(windows)".dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging"] }

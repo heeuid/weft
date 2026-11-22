@@ -106,7 +106,9 @@ const FEATURES_KO: &[(&str, &str)] = &[
         "Files의 파일·폴더를 끌어 다른 사이드 패널의 Files, 폴더, 터미널(그 셸의 폴더) 위에 놓으면 복사합니다. 우클릭 Download = \
          이 PC의 다운로드 폴더(시스템이 정한 곳)로, Send to = 다른 패널·터미널의 폴더로. 탐색기에서 끌어 놓아도 됩니다. 사이드 패널을 나눠 머리의 호스트 이름(▾)에서 \
          다른 호스트를 고르면 양쪽 창이 됩니다. weft가 512 KB씩 중계하고, 받는 쪽엔 .weft-part로 쓰다 끝나면 이름을 바꿉니다. 같은 이름이 \
-         있으면 '이름 (1)'. 오른쪽 아래 목록에서 진행률과 취소.",
+         있으면 '이름 (1)'. 오른쪽 아래 목록에서 진행률과 취소. 여러 개: Ctrl+클릭으로 더하고 빼기, Shift+클릭으로 범위, 행들 아래 빈 곳에서 \
+         상자 끌기, Ctrl+A 전부, Esc 해제; 하나를 끌면 고른 것 모두. 창 밖으로 끌면 다른 앱(브라우저 업로드, 파일 관리자)에 놓을 수 있습니다; \
+         원격 파일은 이 PC로 먼저 받아 옵니다. Wayland 창에서는 아직 안 됩니다.",
     ),
     (
         "에디터 (Ctrl+Shift+J)",
@@ -204,7 +206,10 @@ const FEATURES_EN: &[(&str, &str)] = &[
         "Drag a file or folder in Files onto another side panel's Files, a folder or a terminal (its shell's folder) to copy it there. Right-click \
          Download = to this PC's downloads folder (where the system keeps it), Send to = another panel's or terminal's folder. Dragging in from \
          the file manager works too. Split the side panel and pick another host at its top (▾) for two sides. weft carries it 512 KB at a time, \
-         written as .weft-part and renamed when whole; a name taken becomes 'name (1)'. Progress and cancel at the bottom right.",
+         written as .weft-part and renamed when whole; a name taken becomes 'name (1)'. Progress and cancel at the bottom right. Several: \
+         Ctrl+click adds or takes one, Shift+click a range, a box dragged in the space below the rows, Ctrl+A all, Esc none; dragging one \
+         drags them all. Dragged out of the window they go to another app (a browser's upload, a file manager); a remote host's are \
+         fetched to this PC first. Not yet from a Wayland window.",
     ),
     (
         "Editor (Ctrl+Shift+J)",
