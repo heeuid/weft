@@ -5,6 +5,7 @@
 
 pub mod editfind;
 pub mod find;
+pub mod git;
 pub mod host;
 pub mod pty;
 pub mod records;

@@ -15,6 +15,7 @@ mod dragout;
 mod help;
 mod fileops;
 mod frame;
+mod gitui;
 #[cfg(test)]
 mod testkit;
 #[cfg(test)]

@@ -1110,6 +1110,19 @@ impl Conn {
                 thread::spawn(move || {
                     // In order, as they were asked; ends when the Conn goes.
                     for req in requests {
+                        // git on a thread of its own: a commit waiting on a
+                        // hook or a key, a big work tree's status, held up
+                        // every other answer here (Files, opening a file).
+                        if req["op"] == "git" {
+                            let (answers, wake) = (answers.clone(), wake.clone());
+                            thread::spawn(move || {
+                                let mut res = local_op(&req);
+                                res["id"] = req["id"].clone();
+                                let _ = answers.send(res);
+                                wake();
+                            });
+                            continue;
+                        }
                         let mut res = local_op(&req);
                         res["id"] = req["id"].clone();
                         if answers.send(res).is_err() {
@@ -1421,6 +1434,95 @@ pub fn file_mode(md: &std::fs::Metadata) -> String {
     }
 }
 
+/// What a git command may print for weft (a diff of a big file): more is
+/// cut, and said so.
+const GIT_MAX: usize = 4 * 1024 * 1024;
+
+/// git in a folder, its arguments as weft gives them (no shell), with what
+/// it prints and its exit code (the agent's `git` on this PC).
+fn local_git(req: &Value) -> Result<Value, String> {
+    let dir = req.get("dir").and_then(|v| v.as_str()).unwrap_or(".");
+    let args: Vec<String> = req.get("args").and_then(|v| v.as_array()).map(|a| a.iter().map(|x| x.as_str().map(String::from).unwrap_or_else(|| x.to_string())).collect()).unwrap_or_default();
+    let input = req.get("input").and_then(|v| v.as_str());
+    let mut cmd = Command::new("git");
+    // Paths as they are ([1] is no pattern, :x no magic), never a prompt,
+    // its words in English (weft reads none of them but "not a git
+    // repository").
+    cmd.arg("-C").arg(dir).args(&args).env("GIT_TERMINAL_PROMPT", "0").env("GIT_EDITOR", "true").env("GIT_LITERAL_PATHSPECS", "1").env("GIT_OPTIONAL_LOCKS", "0").env("LC_ALL", "C");
+    cmd.stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    // A group of its own: its time limit ends it and what it started (a
+    // hook, gpg) with it.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    let mut child = cmd.spawn().map_err(|e| if e.kind() == std::io::ErrorKind::NotFound { "git is not installed here".to_string() } else { e.to_string() })?;
+    if let Some(text) = input {
+        let mut stdin = child.stdin.take().ok_or("no stdin")?;
+        let text = text.to_string();
+        // On a thread: a big input and a big output would wait on each other.
+        thread::spawn(move || {
+            let _ = stdin.write_all(text.as_bytes());
+        });
+    }
+    // Two minutes at most (a hook or a signing key waiting for what never
+    // comes), as the agent's.
+    let pid = child.id();
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let killed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    {
+        let (done, killed) = (done.clone(), killed.clone());
+        thread::spawn(move || {
+            let end = std::time::Instant::now() + std::time::Duration::from_secs(120);
+            while !done.load(std::sync::atomic::Ordering::SeqCst) {
+                if std::time::Instant::now() > end {
+                    killed.store(true, std::sync::atomic::Ordering::SeqCst);
+                    crate::pty::kill_tree(pid);
+                    return;
+                }
+                thread::sleep(std::time::Duration::from_millis(200));
+            }
+        });
+    }
+    // What it prints read up to the most shown, then it is ended (a diff
+    // of a 1 GB file never held in memory whole).
+    use std::io::Read as _;
+    let mut stdout = child.stdout.take().ok_or("no stdout")?;
+    let mut stderr = child.stderr.take().ok_or("no stderr")?;
+    let errs = thread::spawn(move || {
+        let mut v = Vec::new();
+        let _ = stderr.read_to_end(&mut v);
+        v
+    });
+    let mut text = Vec::new();
+    let _ = (&mut stdout).take(GIT_MAX as u64 + 1).read_to_end(&mut text);
+    let cut = text.len() > GIT_MAX;
+    if cut {
+        crate::pty::kill_tree(pid);
+    }
+    drop(stdout);
+    let status = child.wait().map_err(|e| e.to_string());
+    done.store(true, std::sync::atomic::Ordering::SeqCst);
+    let status = status?;
+    let stderr = errs.join().unwrap_or_default();
+    if killed.load(std::sync::atomic::Ordering::SeqCst) {
+        return Ok(json!({"code": -1, "out": "", "err": "stopped after 2 minutes: it waited for something (a hook, a signing key's passphrase): run it in a terminal", "cut": false}));
+    }
+    text.truncate(GIT_MAX);
+    let text = String::from_utf8_lossy(&text).into_owned();
+    let err = String::from_utf8_lossy(&stderr);
+    let err: String = err.chars().rev().take(4000).collect::<Vec<_>>().into_iter().rev().collect();
+    // (Ended for being long: what it printed is the answer.)
+    let code = if cut { 0 } else { status.code().unwrap_or(-1) };
+    Ok(json!({"code": code, "out": text, "err": err, "cut": cut}))
+}
+
 pub fn mtime_of(md: &std::fs::Metadata) -> f64 {
     md.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs_f64()).unwrap_or(0.0)
 }
@@ -1555,6 +1657,7 @@ fn local_op(req: &Value) -> Value {
             }).filter(|m| m.exact_on_grep());
             local_grep(&s("path"), &s("pattern"), flag("icase"), flag("regex"), flag("hidden"), exact.as_ref(), num("limit", 500), num("line_max", 400))
         }
+        "git" => local_git(req),
         "tree" => Ok(local_tree(&s("path"), req.get("hidden").and_then(|v| v.as_bool()).unwrap_or(false), req.get("max").and_then(|v| v.as_u64()).unwrap_or(20000) as usize)),
         // File transfer: the same ops as agent.py (see there).
         "walk" => local_walk(&s("path")),
@@ -2026,6 +2129,40 @@ mod tests {
         let out = Command::new(crate::pty::tests::python()).args(["-c", &code]).env("XDG_DATA_HOME", &data).stdin(Stdio::null()).output().unwrap();
         assert!(data.join("Trash/files/b.txt").is_file() && std::fs::read_to_string(data.join("Trash/info/b.txt.trashinfo")).unwrap().contains("/work/b.txt"), "the agent's trash: {}", String::from_utf8_lossy(&out.stderr));
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// weft's git takes a path as it is: discarding b[1].txt leaves b1.txt
+    /// alone (as a pattern, [1] matched b1.txt too and threw its change
+    /// away), and a name starting ":" is a name.
+    #[test]
+    fn git_paths_are_taken_as_they_are() {
+        let dir = std::env::temp_dir().join(format!("weft-gitpath-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let d = dir.display().to_string();
+        let git = |args: &[&str]| local_op(&json!({"op": "git", "dir": d, "args": args}));
+        if git(&["init", "-q"])["code"] != 0 {
+            return; // no git here
+        }
+        for (k, v) in [("user.name", "t"), ("user.email", "t@example.com"), ("commit.gpgsign", "false")] {
+            git(&["config", k, v]);
+        }
+        for n in ["b[1].txt", "b1.txt", ":x.txt"] {
+            std::fs::write(dir.join(n), "one\n").unwrap_or_default();
+        }
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "first"]);
+        for n in ["b[1].txt", "b1.txt"] {
+            std::fs::write(dir.join(n), "two\n").unwrap();
+        }
+        assert_eq!(git(&["checkout", "-q", "--", "b[1].txt"])["code"], 0);
+        assert_eq!(std::fs::read_to_string(dir.join("b[1].txt")).unwrap().trim(), "one", "that one back");
+        assert_eq!(std::fs::read_to_string(dir.join("b1.txt")).unwrap().trim(), "two", "the other left alone");
+        if dir.join(":x.txt").exists() {
+            std::fs::write(dir.join(":x.txt"), "two\n").unwrap();
+            assert_eq!(git(&["add", "--", ":x.txt"])["code"], 0, "a name, not magic");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The downloads folder is the system's: an XDG user dir in the

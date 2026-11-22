@@ -1420,6 +1420,7 @@ pub enum SideTab {
     History,
     Search,
     Procs,
+    Git,
 }
 
 /// The part of the side state each side panel has of its own.
@@ -1706,6 +1707,17 @@ pub enum Pending {
     /// An editor file's time on disk (is it still the one opened?).
     EditorStat { path: String, generation: u64 },
     List { path: String },
+    /// git: the work tree a folder is in; its state; a command of ours;
+    /// a file's diff (crate::gitui).
+    GitRoot { dir: String },
+    GitStatus { top: String },
+    GitDone { top: String, what: String },
+    GitDiff { top: String, path: String, staged: bool },
+    /// The names in a work tree's git folder: a merge, a rebase in progress.
+    GitUnderway { top: String },
+    /// The names in its rebase-apply folder (git am or a rebase), with the
+    /// git folder's.
+    GitUnderwayApply { top: String, names: Vec<String> },
     /// A Files widget's folder (wls), listed for it.
     WidgetFiles { pane: usize, id: String },
     Open { path: String, line: usize },
@@ -1946,6 +1958,8 @@ pub struct App {
     /// ssh's questions about a host key it has not seen, from the askpass
     /// of a connection weft gave a password to: asked here, one at a time.
     pub host_keys: Vec<weft_core::secret::HostKeyQuestion>,
+    /// Git work trees of the folders shown (crate::gitui).
+    pub git: crate::gitui::GitState,
     /// This window takes them (a process has one window; tests make many,
     /// and only the one asked of takes them there).
     pub answers_host_keys: bool,
@@ -2175,6 +2189,7 @@ impl App {
             file_op: None,
             confirm: None,
             host_keys: Vec::new(),
+            git: Default::default(),
             answers_host_keys: !cfg!(test),
             after_save: None,
             quit_confirmed: false,
@@ -3963,6 +3978,7 @@ impl App {
                     w.kind = WidgetKind::Files { dir: r["path"].as_str().unwrap_or("").into(), entries };
                 }
             }
+            p @ (Pending::GitRoot { .. } | Pending::GitStatus { .. } | Pending::GitDone { .. } | Pending::GitDiff { .. } | Pending::GitUnderway { .. } | Pending::GitUnderwayApply { .. }) => self.on_git(host, p, ok, &r, err),
             Pending::SerialPorts { host } => {
                 if let Some(d) = self.serial_dialog.as_mut().filter(|d| d.host == host) {
                     d.ports = Some(if ok { Ok(crate::serial_ui::parse_ports(&r)) } else { Err(err) });

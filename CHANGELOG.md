@@ -5,6 +5,37 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.14.0
+
+Added
+- **git where the files are**, on this PC and remote hosts (the agent
+  runs that host's git, no shell, paths as they are):
+  - Files marks each changed file (M modified, A added, D deleted, R
+    renamed, ? untracked, U in conflict) and a folder with changes in it
+    (•), and says the branch, how far from its upstream (↑ ↓) and how many
+    changes (a click opens the Git tab).
+  - A **Git** side tab: the changes in conflict, staged, changed and
+    untracked; a click shows a file's diff; + stages, − unstages, ↶
+    discards (pressed again within 5 s; a new file is deleted); Stage all
+    (asked again with conflicts) and Unstage all; a message and Commit.
+    Fetch, pull and push run in a terminal of that host (they may ask for
+    a password).
+  - It is asked again every few seconds while shown (a slow work tree
+    less often, none while the window is not looked at); a command of
+    ours is never shown its old state after it; a commit that waits for
+    something (a hook, a signing key) is stopped after two minutes and
+    said so; after ten seconds its buttons can be had back.
+  - A merge, rebase, git am, cherry-pick or revert in progress is said,
+    with Continue and Abort (a cherry-pick of several commits goes on to
+    the next; git never opens an editor for weft); a detached HEAD says
+    its commit; Ctrl+Enter commits.
+  - Another repository in a folder, staged, is taken back (git would add
+    a bare commit of it); a file added with -N, discarded, is untracked
+    again with its text kept; a submodule has no discard.
+  - Big diffs and long lists stay quick (only what is in sight drawn, a
+    diff read at most 4 MB and asked again only when its file changed or
+    now and then).
+
 ## 0.13.3
 
 Fixed

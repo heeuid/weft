@@ -89,6 +89,12 @@ const FEATURES_KO: &[(&str, &str)] = &[
          Commands: 지금 페인의 명령 목록. History: 저장된 명령 기록. Search: 내용 검색. Procs: 프로세스 표(정렬, TERM/KILL; 원격과 이 PC 모두).",
     ),
     (
+        "Git (사이드 패널 Git 탭)",
+        "Files가 보는 폴더의 저장소를 이 PC와 원격 모두에서 보여 줍니다. Files 행의 글자: M 수정, A 추가, D 삭제, R 이름 바꿈, ? 추적 안 함, \
+         U 충돌, 폴더의 • = 안에 변경 있음. Files 위 줄 = 브랜치, ↑↓ 앞섬·뒤처짐, 변경 개수(누르면 Git 탭). Git 탭: 파일 클릭 = 변경 내용, \
+         + 스테이지, − 해제, ↶ 되돌리기(5초 안에 한 번 더), 메시지를 쓰고 Commit. fetch·pull·push는 그 호스트의 터미널에서 실행합니다.",
+    ),
+    (
         "파일 만들기, 이름 바꾸기, 지우기",
         "Files의 행을 우클릭: New folder / New file(폴더에서는 그 안에, 파일에서는 그 옆에), Rename, Delete. 머리의 + = 보고 있는 폴더에 만들기. \
          로컬과 원격 모두 되고, 같은 이름이 있으면 덮어쓰지 않습니다. 지우기는 먼저 묻고, 휴지통으로 보낼지 완전히 지울지 고릅니다 \
@@ -194,6 +200,13 @@ const FEATURES_EN: &[(&str, &str)] = &[
         "Files: a tree that follows the terminal's folder. Double-click = open a file / cd to a folder, the ↵ button = cd to the folder shown. \
          Commands: this pane's commands. History: the commands kept. Search: contents. Procs: a table of processes (sorted, TERM/KILL; remote \
          and on this PC).",
+    ),
+    (
+        "Git (the side panel's Git tab)",
+        "The work tree of the folder Files shows, on this PC and remote hosts. Letters on Files' rows: M modified, A added, D deleted, \
+         R renamed, ? untracked, U in conflict; a folder's • = changes in it. The line above Files = the branch, ↑↓ ahead and behind, how many \
+         changes (a click: the Git tab). The Git tab: click a file = its changes, + stage, − unstage, ↶ discard (again within 5 s), write a \
+         message and Commit. fetch, pull and push run in a terminal of that host.",
     ),
     (
         "Making, renaming and deleting files",

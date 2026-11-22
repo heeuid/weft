@@ -1319,7 +1319,7 @@ impl App {
             ui.spacing_mut().item_spacing.x = 2.0;
             self.dock_grip(ui);
             self.panel_buttons(ui);
-            const TABS: [(SideTab, &str); 5] = [(SideTab::Files, "Files"), (SideTab::Blocks, "Commands"), (SideTab::History, "History"), (SideTab::Search, "Search"), (SideTab::Procs, "Procs")];
+            const TABS: [(SideTab, &str); 6] = [(SideTab::Files, "Files"), (SideTab::Git, "Git"), (SideTab::Blocks, "Commands"), (SideTab::History, "History"), (SideTab::Search, "Search"), (SideTab::Procs, "Procs")];
             // A narrow panel shows the tabs that fit (the open one always) and
             // the rest under ».
             let pad = ui.spacing().button_padding.x * 2.0 + ui.spacing().item_spacing.x;
@@ -1357,6 +1357,7 @@ impl App {
             SideTab::History => self.ui_history(ui),
             SideTab::Search => self.ui_grep(ui),
             SideTab::Procs => self.ui_procs(ui),
+            SideTab::Git => self.ui_git(ui),
         }
     }
 
@@ -1405,6 +1406,8 @@ impl App {
                     for k in keys {
                         self.dir_cache.remove(&k);
                     }
+                    // Work trees made or gone meanwhile: asked again.
+                    self.git_forget(&h);
                     self.side.root = Some((h.clone(), dir.clone()));
                     self.actions.push(Action::ListDir(h, dir));
                 }
@@ -1593,6 +1596,25 @@ impl App {
                 ui.label(RichText::new("empty").color(theme::text_faint()));
             }
             let send_to = self.send_targets(&host);
+            // git's word on each row: what changed (a folder: something in it).
+            let git = self.git_status_at(&host, &root);
+            // The branch, and how much changed: a click shows the changes.
+            if let Some(st) = git.as_ref().map(|g| g.status.clone()) {
+                let branch = st.branch.clone().unwrap_or_else(|| "no branch".into());
+                let mut line = format!("\u{e0a0} {branch}");
+                if st.ahead > 0 || st.behind > 0 {
+                    line.push_str(&format!("  ↑{} ↓{}", st.ahead, st.behind));
+                }
+                line.push_str(&match st.changed() {
+                    0 => "  · nothing changed".to_string(),
+                    1 => "  · 1 change".to_string(),
+                    n => format!("  · {n} changes"),
+                });
+                let r = ui.add(egui::Label::new(RichText::new(line).size(11.5).color(theme::text_dim())).sense(Sense::click()));
+                if r.on_hover_text("git: the changes, to look at, stage and commit (the Git tab)").clicked() {
+                    self.side.tab = SideTab::Git;
+                }
+            }
             // The rows in order, for a Shift+click's range and a box's rows.
             let order: Vec<String> = rows.iter().map(|r| r.path.clone()).collect();
             let mods = ui.input(|i| i.modifiers);
@@ -1646,13 +1668,27 @@ impl App {
                     icons::paint(p, egui::Rect::from_min_size(pos2(x, rect.top() + 5.0), vec2(12.0, 12.0)), if r.open { Icon::ChevronDown } else { Icon::ChevronRight }, theme::text_faint());
                 }
                 icons::paint(p, egui::Rect::from_min_size(pos2(x + 14.0, rect.top() + 3.0), vec2(16.0, 16.0)), if r.dir { Icon::Folder } else { Icon::File }, if r.dir { theme::ansi(4) } else { theme::text_faint() });
-                let name_col = if r.dir { theme::text() } else { theme::text_dim() };
+                let mark = git.as_ref().and_then(|g| g.mark(&r.path, r.dir));
+                let name_col = match mark {
+                    Some(m) if m != '•' => crate::gitui::mark_color(m),
+                    _ if r.dir => theme::text(),
+                    _ => theme::text_dim(),
+                };
                 let label = if r.link { format!("{} ↪", r.name) } else { r.name.clone() };
                 let mut name_end = rect.right() - 6.0;
                 if !r.dir {
                     let size = human_size(r.size);
                     name_end -= text_width(p, &size, FontId::proportional(11.0)) + 8.0;
                     p.text(pos2(rect.right() - 6.0, rect.center().y), Align2::RIGHT_CENTER, size, FontId::proportional(11.0), theme::text_faint());
+                }
+                // git's letter, left of the size.
+                if let Some(m) = mark {
+                    let w = 14.0;
+                    p.text(pos2(name_end - w / 2.0, rect.center().y), Align2::CENTER_CENTER, m.to_string(), FontId::monospace(11.5), crate::gitui::mark_color(m));
+                    name_end -= w + 2.0;
+                    if resp.hovered() {
+                        resp.clone().on_hover_text(format!("git: {}", crate::gitui::mark_meaning(m)));
+                    }
                 }
                 text_fit(p, pos2(x + 34.0, rect.center().y), &label, FontId::proportional(13.0), name_col, name_end - (x + 34.0));
                 // One click selects (and expands folders); opening a file takes a

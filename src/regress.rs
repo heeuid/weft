@@ -5657,6 +5657,193 @@ fn serial_consoles_are_logged_and_read_back() {
     assert!(h.app.editor.files.iter().any(|f| f.text == "U-Boot 2024.01\n"), "the lines shown, as text");
 }
 
+/// git where the files are: Files marks what changed (M, ?, a dot on a
+/// folder with a change in it); the Git tab lists the changes, shows a
+/// file's diff, stages, commits (the message cleared, the list empty
+/// after), and discards a change only when asked twice.
+#[test]
+fn git_changes_are_shown_staged_and_committed() {
+    let git = |dir: &std::path::Path, args: &[&str]| std::process::Command::new("git").arg("-C").arg(dir).args(args).output().map(|o| o.status.success()).unwrap_or(false);
+    let dir = std::env::temp_dir().join(format!("weft-git-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    if !git(&dir, &["init", "-q"]) {
+        return; // no git here
+    }
+    for (k, v) in [("user.name", "weft test"), ("user.email", "t@example.com"), ("commit.gpgsign", "false")] {
+        git(&dir, &["config", k, v]);
+    }
+    std::fs::write(dir.join("src/kept.rs"), "fn a() {}\n").unwrap();
+    std::fs::write(dir.join("README.md"), "one\n").unwrap();
+    assert!(git(&dir, &["add", "-A"]) && git(&dir, &["commit", "-q", "-m", "first"]), "a first commit");
+    std::fs::write(dir.join("src/kept.rs"), "fn a() {}\nfn b() {}\n").unwrap();
+    std::fs::write(dir.join("new file.txt"), "hello\n").unwrap();
+    std::fs::write(dir.join("README.md"), "one\ntwo\n").unwrap();
+    let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}], "sidebar": true, "follow_cwd": false}));
+    let root = dir.display().to_string().replace('\\', "/");
+    h.app.side.tab = crate::app::SideTab::Files;
+    h.app.set_root("local", &root);
+    // Files: the letters, on the rows they are about.
+    let row_mark = |h: &Harness, name: &str, mark: &str| {
+        let Some(r) = h.texts.iter().find(|(t, _)| t == name).map(|(_, r)| *r) else { return false };
+        h.texts.iter().any(|(t, m)| t == mark && (m.center().y - r.center().y).abs() < 6.0)
+    };
+    assert!(h.wait_for(20.0, |h| row_mark(h, "README.md", "M") && row_mark(h, "new file.txt", "?") && row_mark(h, "src", "•")), "marked: {:?}", h.texts.iter().map(|t| &t.0).take(60).collect::<Vec<_>>());
+    assert!(h.shows("· 3 changes"), "the branch line says how much changed");
+    // The same through an agent (a remote host's git): the agent's own.
+    if let Some(bash) = crate::host::git_bash().map(|p| p.display().to_string()).or_else(|| (!cfg!(windows)).then(|| "/bin/bash".to_string())) {
+        h.app.settings.profiles.push(serde_json::from_value(json!({"name": "lo", "kind": "custom", "pty": [bash.clone(), "-c"], "agent": [bash, "-c"]})).unwrap());
+        let top = h.app.git_status_at("lo", &root);
+        assert!(top.is_none(), "asked for, not known yet");
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let mut same = false;
+        while !same && std::time::Instant::now() < end {
+            same = h.app.git_status_at("lo", &root).is_some_and(|v| v.status.changed() == 3 && v.status.files.iter().any(|f| f.path == "new file.txt" && f.untracked));
+            h.frames(1);
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(same, "the agent's git says the same");
+    }
+    // The Git tab.
+    h.app.side.tab = crate::app::SideTab::Git;
+    assert!(h.wait_for(10.0, |h| h.shows("Changes (2)") && h.shows("Untracked (1)")), "the changes listed");
+    // A file's diff.
+    h.click(h.at_exact("README.md"));
+    assert!(h.wait_for(10.0, |h| h.has("+two")), "its diff");
+    // Discard: once is not enough.
+    h.frames(2);
+    // Stage README and the new file, then commit.
+    let plus = |h: &Harness, name: &str| {
+        let r = h.texts.iter().find(|(t, _)| t == name).map(|(_, r)| *r).unwrap();
+        h.texts.iter().filter(|(t, m)| t == "+" && (m.center().y - r.center().y).abs() < 6.0).map(|(_, m)| m.center()).next().unwrap()
+    };
+    let p = plus(&h, "README.md");
+    h.click(p);
+    assert!(h.wait_for(10.0, |h| h.shows("Staged (1)")), "staged");
+    let p = plus(&h, "new file.txt");
+    h.click(p);
+    assert!(h.wait_for(10.0, |h| h.shows("Staged (2)")), "the new file staged");
+    h.click(h.at("commit message"));
+    h.type_text("second: readme and a new file");
+    h.frames(2);
+    h.click(h.at("Commit 2 files"));
+    assert!(h.wait_for(15.0, |h| h.app.git.message.is_empty() && h.shows("Changes (1)") && !h.shows("Staged (")), "committed");
+    let log = std::process::Command::new("git").arg("-C").arg(&dir).args(["log", "--oneline"]).output().unwrap();
+    assert!(String::from_utf8_lossy(&log.stdout).contains("second: readme and a new file"), "in git's log");
+    // Discard the last change: asked twice.
+    let undo = |h: &Harness, label: &str| {
+        let r = h.texts.iter().find(|(t, _)| t.ends_with("kept.rs")).map(|(_, r)| *r).unwrap();
+        h.texts.iter().filter(|(t, m)| t == label && (m.center().y - r.center().y).abs() < 6.0).map(|(_, m)| m.center()).next()
+    };
+    let u = undo(&h, "↶").expect("discard");
+    h.click(u);
+    h.frames(2);
+    assert!(h.shows("Changes (1)") && h.has("Discard?"), "asked first");
+    let u = undo(&h, "Discard?").unwrap();
+    h.click(u);
+    assert!(h.wait_for(10.0, |h| h.shows("nothing changed")), "thrown away");
+    assert_eq!(std::fs::read_to_string(dir.join("src/kept.rs")).unwrap().replace("\r\n", "\n"), "fn a() {}\n");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// git's harder cases: another repository in a folder, +'d, is taken back
+/// (not staged as a bare commit); a file added with -N, discarded, is
+/// untracked again with its text kept (checkout would empty it); a merge
+/// in progress is said, and Abort (pressed twice) backs out of it; a
+/// detached HEAD says its commit.
+#[test]
+fn git_harder_cases() {
+    let git = |dir: &std::path::Path, args: &[&str]| std::process::Command::new("git").arg("-C").arg(dir).args(args).output().map(|o| o.status.success()).unwrap_or(false);
+    let out = |dir: &std::path::Path, args: &[&str]| std::process::Command::new("git").arg("-C").arg(dir).args(args).output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+    let dir = std::env::temp_dir().join(format!("weft-git2-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("inner")).unwrap();
+    let init = |d: &std::path::Path| {
+        let ok = git(d, &["init", "-q"]);
+        for (k, v) in [("user.name", "weft test"), ("user.email", "t@example.com"), ("commit.gpgsign", "false")] {
+            git(d, &["config", k, v]);
+        }
+        ok
+    };
+    if !init(&dir) {
+        return; // no git here
+    }
+    std::fs::write(dir.join("a.txt"), "base\n").unwrap();
+    assert!(git(&dir, &["add", "a.txt"]) && git(&dir, &["commit", "-q", "-m", "first"]));
+    assert!(init(&dir.join("inner")));
+    std::fs::write(dir.join("inner/x.txt"), "x\n").unwrap();
+    assert!(git(&dir.join("inner"), &["add", "-A"]) && git(&dir.join("inner"), &["commit", "-q", "-m", "inner"]));
+    std::fs::write(dir.join("n.rs"), "keep me\n").unwrap();
+    assert!(git(&dir, &["add", "-N", "n.rs"]));
+    let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}], "sidebar": true, "follow_cwd": false}));
+    let root = dir.display().to_string().replace('\\', "/");
+    h.app.side.tab = crate::app::SideTab::Files;
+    h.app.set_root("local", &root);
+    h.app.side.tab = crate::app::SideTab::Git;
+    assert!(h.wait_for(20.0, |h| h.shows("Untracked (1)") && h.shows("Changes (1)")), "listed: {:?}", h.texts.iter().map(|t| &t.0).take(40).collect::<Vec<_>>());
+    let button = |h: &Harness, name: &str, label: &str| {
+        let r = h.texts.iter().find(|(t, _)| t == name).map(|(_, r)| *r)?;
+        h.texts.iter().filter(|(t, m)| t == label && (m.center().y - r.center().y).abs() < 6.0).map(|(_, m)| m.center()).next()
+    };
+    // The other repository: +'d, taken back.
+    let p = button(&h, "inner/", "+").expect("+ for the folder");
+    h.click(p);
+    assert!(h.wait_for(15.0, |h| h.app.toasts.iter().any(|t| t.text.contains("is another git repository")) && h.app.git.repos_busy() == 0 && !out(&dir, &["ls-files", "-s"]).contains("inner")), "taken back: {} {:?}", out(&dir, &["ls-files", "-s"]), h.app.toasts.iter().map(|t| t.text.clone()).collect::<Vec<_>>());
+    // The file added with -N: untracked again, kept.
+    assert!(h.wait_for(10.0, |h| h.app.git.repos_busy() == 0 && h.shows("Untracked (1)") && button(h, "n.rs", "↶").is_some()), "settled");
+    let u = button(&h, "n.rs", "↶").expect("discard");
+    h.click(u);
+    assert!(h.wait_for(3.0, |h| button(h, "n.rs", "Discard?").is_some()), "asked first: {:?}", h.texts.iter().map(|t| &t.0).take(40).collect::<Vec<_>>());
+    let u = button(&h, "n.rs", "Discard?").unwrap();
+    h.click(u);
+    assert!(h.wait_for(10.0, |h| h.shows("Untracked (2)")), "untracked again");
+    assert_eq!(std::fs::read_to_string(dir.join("n.rs")).unwrap().replace("\r\n", "\n"), "keep me\n", "its text kept");
+    // A merge with a conflict, made in a terminal.
+    let _ = std::fs::remove_dir_all(dir.join("inner"));
+    let _ = std::fs::remove_file(dir.join("n.rs"));
+    assert!(git(&dir, &["checkout", "-q", "-b", "other"]));
+    std::fs::write(dir.join("a.txt"), "theirs\n").unwrap();
+    assert!(git(&dir, &["commit", "-q", "-am", "theirs"]) && git(&dir, &["checkout", "-q", "-"]));
+    std::fs::write(dir.join("a.txt"), "ours\n").unwrap();
+    assert!(git(&dir, &["commit", "-q", "-am", "ours"]));
+    assert!(!git(&dir, &["merge", "-q", "other"]), "a conflict");
+    let top = h.app.git_status_at("local", &root).unwrap().top;
+    h.app.git_refresh("local", &top);
+    assert!(h.wait_for(15.0, |h| h.shows("merge in progress") && h.shows("Conflicts (1)")), "said");
+    h.click(h.at_exact("Abort"));
+    h.frames(2);
+    h.click(h.at_exact("Abort?"));
+    assert!(h.wait_for(15.0, |h| !h.shows("merge in progress") && h.shows("nothing changed")), "backed out");
+    assert!(!dir.join(".git/MERGE_HEAD").exists());
+    // A detached HEAD: its commit.
+    assert!(git(&dir, &["checkout", "-q", "--detach", "HEAD"]));
+    let short: String = out(&dir, &["rev-parse", "--short=7", "HEAD"]).trim().to_string();
+    h.app.git_refresh("local", &top);
+    assert!(h.wait_for(15.0, |h| h.shows(&format!("detached at {short}"))), "its commit");
+    // A cherry-pick of two commits stopped at the first's conflict:
+    // resolved, Continue applies the second too (a commit alone left it).
+    assert!(git(&dir, &["checkout", "-q", "-b", "picks"]));
+    std::fs::write(dir.join("a.txt"), "picked\n").unwrap();
+    assert!(git(&dir, &["commit", "-q", "-am", "pick one"]));
+    std::fs::write(dir.join("b.txt"), "two\n").unwrap();
+    assert!(git(&dir, &["add", "b.txt"]) && git(&dir, &["commit", "-q", "-m", "pick two"]));
+    let (one, two) = (out(&dir, &["rev-parse", "HEAD~1"]).trim().to_string(), out(&dir, &["rev-parse", "HEAD"]).trim().to_string());
+    assert!(git(&dir, &["checkout", "-q", "--detach", &short]));
+    std::fs::write(dir.join("a.txt"), "here\n").unwrap();
+    assert!(git(&dir, &["commit", "-q", "-am", "here"]));
+    assert!(!git(&dir, &["cherry-pick", &one, &two]), "a conflict on the first");
+    h.app.git_refresh("local", &top);
+    assert!(h.wait_for(15.0, |h| h.shows("cherry-pick in progress") && h.shows("Conflicts (1)")), "said");
+    std::fs::write(dir.join("a.txt"), "resolved\n").unwrap();
+    let p = button(&h, "a.txt", "+").expect("+ for the conflict");
+    h.click(p);
+    assert!(h.wait_for(15.0, |h| !h.shows("Conflicts (") && h.app.git.repos_busy() == 0), "resolved");
+    h.click(h.at_exact("Continue"));
+    assert!(h.wait_for(15.0, |h| !h.shows("in progress") && h.app.git.repos_busy() == 0), "done: {:?}", h.app.toasts.iter().map(|t| t.text.clone()).collect::<Vec<_>>());
+    assert!(dir.join("b.txt").exists() && out(&dir, &["log", "--oneline", "-3"]).contains("pick two"), "the second applied too: {}", out(&dir, &["log", "--oneline", "-3"]));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The log viewer follows a log as it grows (only what is new is read and
 /// made into lines): a line that was still coming is shown whole once it
 /// ends, a search keeps finding in what comes; and a tab's port with no

@@ -642,6 +642,70 @@ def op_grep(req):
 TREE_SKIP = {".git", "node_modules", "target", "__pycache__", ".venv", "venv", ".cache", ".tox", "dist", "build"}
 
 
+# What a git command may print for weft (a diff of a big file): more is
+# cut, and said so.
+GIT_MAX = 4 * 1024 * 1024
+
+
+def op_git(req):
+    """git in a folder, its arguments as weft gives them (no shell), with
+    what it prints and its exit code: weft reads status, diffs and the rest
+    itself. Never asks on a terminal (there is none here)."""
+    d = _path(req.get("dir"))
+    args = [str(a) for a in req.get("args") or []]
+    # Paths as they are ([1] is no pattern, :x no magic).
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GIT_EDITOR="true", GIT_LITERAL_PATHSPECS="1", GIT_OPTIONAL_LOCKS="0", LC_ALL="C")
+    data = req.get("input")
+    try:
+        p = subprocess.Popen(["git", "-C", d] + args, stdin=subprocess.PIPE if data is not None else subprocess.DEVNULL,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, start_new_session=(os.name != "nt"))
+    except FileNotFoundError:
+        raise OSError("git is not installed there")
+    def end():
+        # Its group (a hook, gpg with it).
+        try:
+            if os.name != "nt":
+                os.killpg(p.pid, signal.SIGKILL)
+            else:
+                p.kill()
+        except OSError:
+            pass
+
+    if data is not None:
+        def feed():
+            try:
+                p.stdin.write(data.encode("utf-8"))
+                p.stdin.close()
+            except OSError:
+                pass
+        threading.Thread(target=feed, daemon=True).start()
+    errs = []
+    reader = threading.Thread(target=lambda: errs.append(p.stderr.read()), daemon=True)
+    reader.start()
+    # What it prints read up to the most shown, then it is ended (a diff of
+    # a 1 GB file never held in memory whole); on a thread, waited for two
+    # minutes (a hook's child that keeps the pipe open holds no answer).
+    outs = []
+    out_reader = threading.Thread(target=lambda: outs.append(p.stdout.read(GIT_MAX + 1)), daemon=True)
+    out_reader.start()
+    out_reader.join(120)
+    late = out_reader.is_alive()
+    if late:
+        end()
+        out_reader.join(5)
+    stdout = outs[0] if outs else b""
+    cut = len(stdout) > GIT_MAX
+    if cut:
+        end()
+    p.wait()
+    reader.join(5)
+    if late:
+        return {"code": -1, "out": "", "err": "stopped after 2 minutes: it waited for something (a hook, a signing key's passphrase): run it in a terminal", "cut": False}
+    stderr = errs[0] if errs else b""
+    out = stdout[:GIT_MAX].decode("utf-8", "replace")
+    return {"code": 0 if cut else p.returncode, "out": out, "err": stderr.decode("utf-8", "replace")[-4000:], "cut": cut}
+
+
 def op_tree(req):
     # Every name under a folder, for the file panel filter (matching is local):
     # the nearest first, a folder at a time by depth (at the limit the deepest
@@ -704,6 +768,7 @@ OPS = {
     "tree": op_tree, "cwd": op_cwd, "walk": op_walk, "rchunk": op_rchunk, "wchunk": op_wchunk,
     "finish": op_finish, "mkdirs": op_mkdirs, "serial_ports": op_serial_ports,
     "mkdir": op_mkdir, "create": op_create, "rename": op_rename, "delete": op_delete,
+    "git": op_git,
 }
 
 
