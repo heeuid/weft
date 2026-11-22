@@ -169,6 +169,25 @@ What the numbers don't show:
 | Enter in the password dialog is Connect (it did nothing), and the password is the host's | `regress::enter_in_the_password_dialog_connects` |
 | A password given in the dialog starts again the host's terminals waiting at ssh's password prompt; one that got in is left alone | `regress::a_password_given_once_serves_the_waiting_terminals` |
 | ~/.ssh/config Host names: quoted ones without their quotes (spaces kept), `Host=`, wildcards and negations left out | `host::tests::ssh_config_host_names` |
+| A profile weft 0.8.0 named by its host alone though it goes to another port gets its name with the port, everywhere the name is kept (session, files, folders, panels, history), when weft starts; the host typed alone is then its port 22 | `regress::profiles_named_by_0_8_0_get_their_port` |
+| Which old profiles are renamed: named as their host, with options, the new name free; not one named by hand or with no options | `host::tests::old_profile_names_get_their_port` |
+| ~/.ssh/config Host names: quoted ones without their quotes, `Host=`, wildcards and negations left out | `host::tests::ssh_config_host_names` |
+| A serial tab's traffic is logged in data/logs both ways with times; the viewer shows it as text or raw, output/input/both, with or without times, searched, the choices kept, into the editor; "Serial console…" starts on the session's host | `regress::serial_consoles_are_logged_and_read_back` |
+| A local port another program has open (Linux /proc, macOS lsof): who has it is listed, Open asks again before joining it; lsof's output read | `regress::a_local_port_in_use_is_named_and_asked_for` |
+| A remote console keeps typing only once the port is open: the answer to "open with sudo?" and the sudo password are not kept | `serial_log::tests::typing_before_the_port_opens_is_not_kept` |
+| Serial log lines: split where the device ends them and at Enter, in the order they started; raw writes the escapes out | `serial_log::tests::traffic_becomes_lines_both_ways` |
+| The remote serial bridge on a pseudo-terminal device: a 64 KB paste reaches it whole, what it sends comes as it sent it, what is typed before Ctrl+] goes, an unplugged device ends it | `host::tests::the_serial_bridge_on_a_device` |
+| Serial log lines made piece by piece are the lines made at once (a growing log); CR alone ends a line, CR CR LF is one end | `serial_log::tests::lines_made_piece_by_piece_are_the_same`, `serial_log::tests::a_cr_alone_ends_a_line` |
+| Bytes that are not UTF-8 spoil only themselves in a serial log; a character cut by a read waits for its rest | `serial_log::tests::bad_bytes_spoil_only_themselves` |
+| The remote bridge's end cut across reads a byte at a time: none of it logged, the device's text before it whole | `serial_log::tests::the_bridges_end_cut_by_reads_is_not_logged` |
+| A serial console opened again keeps its screen with a line between, the modes an app left (mouse, bracketed paste) off; one never opened gets no such line | `regress::a_serial_console_opened_again_keeps_its_screen` |
+| The serial log viewer follows a growing log (the line still coming shown whole once it ends, the search applied to what comes); a tab's port with no log today says so | `regress::the_serial_log_viewer_follows_a_growing_log` |
+| A port of this PC open in a tab of this weft is not opened a second time: "Go to that tab"; port names the same however typed (Windows) | `regress::a_port_open_in_this_weft_is_asked_for` |
+| A remote port open in a tab, opened again at another speed: a name of its own, the first tab's speed kept; not open any more, the same name at the new speed; an ended serial console says "disconnected", not "process exited" | `regress::a_port_opened_again_at_another_speed_keeps_the_first` |
+| A serial console coming back with the session is held, not opened (an opening resets many boards), and opens on Enter | `regress::a_restored_serial_console_waits_to_be_opened` |
+| Serial log plain text: escapes left out, backspaces applied, Ctrl keys sent shown as ^C | `serial_log::tests::plain_text_leaves_out_escapes` |
+| The serial log writer keeps a character cut in two by a read whole; its file name and title | `serial_log::tests::the_writer_keeps_characters_whole` |
+| A serial log view as text, with times and > before what was sent; which way each choice shows | `serial_log::tests::a_view_as_text` |
 | Ctrl+Shift+Z is redo in a text field | `ui_panels::tests::redo_key_stays_with_a_text_field` |
 | Tab drag reorder; narrow tab rows; which tabs a tab's menu closes | `ui_panels::tests::dragged_tab_lands_between_tabs`, `narrow_tab_rows_keep_the_open_tab`, `app::close_tests::*` |
 | Palette reopens full height, at the top | `regress::palette_reopens_full_height_at_the_top` |

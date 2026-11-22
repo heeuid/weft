@@ -47,6 +47,7 @@ impl App {
         self.ui_memo_picker(ctx);
         self.ui_keys_window(ctx);
         self.ui_serial_dialog(ctx);
+        self.ui_serial_log(ctx);
         self.ui_settings_window(ctx);
         self.ui_file_op(ctx);
         self.ui_confirm(ctx);

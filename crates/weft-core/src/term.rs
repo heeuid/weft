@@ -867,10 +867,19 @@ impl Term {
 
     fn reset(&mut self) {
         let (cols, rows) = (self.cols, self.rows);
-        self.leave_alt();
         self.screen = (0..rows).map(|_| Row::new(cols, Attr::default())).collect();
-        self.attr = Attr::default();
+        self.reset_modes();
         self.goto(0, 0);
+    }
+
+    /// The modes a program left back to their start (mouse reports,
+    /// bracketed paste, the other screen, a scroll region, a hidden cursor),
+    /// what is on the screen kept: a serial port opened again after its
+    /// device went away inside an app.
+    pub fn reset_modes(&mut self) {
+        let rows = self.rows;
+        self.leave_alt();
+        self.attr = Attr::default();
         self.top = 0;
         self.bot = rows - 1;
         self.app_cursor = false;

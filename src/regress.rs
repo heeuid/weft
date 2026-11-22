@@ -5528,3 +5528,243 @@ fn shells_say_what_weft_has_for_them_and_can_be_chosen() {
     assert!(crate::app::shell_notice_text("cmd").is_some_and(|t| t.contains("exit codes")));
     assert!(crate::app::shell_notice_text("tcsh").is_some_and(|t| t.contains("no shell integration") && t.contains("Shells…")));
 }
+
+/// A serial console's traffic is logged on this PC, both ways with times,
+/// and read back in "Serial console log": text or raw, output, input or
+/// both, with or without times, searched. "Serial console…" starts on the
+/// session's own host.
+#[test]
+fn serial_consoles_are_logged_and_read_back() {
+    use weft_core::serial_log::Dir;
+    let mut h = Harness::new(json!({}));
+    // The dialog starts on the host of the terminal that has the keyboard.
+    h.app.settings.profiles.push(crate::host::Profile::ssh("u@board-host -p 22008"));
+    h.app.open_serial_dialog_on(Some("u@board-host:22008"));
+    assert_eq!(h.app.serial_dialog.as_ref().unwrap().host, "u@board-host:22008", "the session's host");
+    h.app.serial_dialog = None;
+    // A console (no port here: the traffic is put in by hand).
+    h.app.open_serial("local", "COM99", 115_200);
+    h.frames(3);
+    let id = h.app.active_pane_id().unwrap();
+    h.app.open_serial_dialog();
+    assert_eq!(h.app.serial_dialog.as_ref().unwrap().host, "local", "a serial tab's: the host its port is on");
+    h.app.serial_dialog = None;
+    {
+        let p = h.app.panes.get_mut(&id).unwrap();
+        // (No port here: as if it had opened; an ended tab sends nothing.)
+        p.exited = false;
+        let log = p.serial_log.as_mut().expect("a serial tab keeps a log");
+        log.write(Dir::Rx, b"U-Boot 2024.01\r\n\x1b[1mlogin\x1b[0m: ");
+        p.send(b"root\r");
+        p.serial_log.as_mut().unwrap().write(Dir::Rx, b"root\r\nPassword: \r\n# ");
+    }
+    let path = h.app.panes[&id].serial_log.as_ref().unwrap().path();
+    assert!(path.starts_with(h.app.data.path("logs")), "in data/logs on this PC");
+    // Read back: from the tab's menu entry.
+    h.app.actions.push(crate::app::Action::SerialLog("COM99".into()));
+    h.frames(3);
+    assert!(h.app.serial_log.is_some(), "the viewer opened");
+    assert!(h.shows("U-Boot 2024.01") && h.shows("login: root"), "the device's lines, as text");
+    assert!(h.texts.iter().any(|(t, _)| t == "root"), "and what was sent");
+    assert!(h.texts.iter().any(|(t, _)| t.len() == 23 && t.starts_with("20") && t.contains('.')), "with times");
+    // Only what was sent.
+    h.click(h.at("input"));
+    h.frames(2);
+    assert!(!h.shows("U-Boot") && h.texts.iter().any(|(t, _)| t == "root"), "input only");
+    // Only what came.
+    h.click(h.at("output"));
+    h.frames(2);
+    assert!(h.shows("U-Boot") && h.shows("login: root") && !h.texts.iter().any(|(t, _)| t == "root"), "output only");
+    // Raw: the escapes written out.
+    h.click(h.at("raw"));
+    h.frames(2);
+    assert!(h.shows("\\e[1mlogin\\e[0m: root\\r\\n"), "raw");
+    h.click(h.at("text"));
+    // No times.
+    h.click(h.at("times"));
+    h.frames(2);
+    assert!(!h.texts.iter().any(|(t, _)| t.len() == 23 && t.starts_with("20") && t.contains('.')), "times hidden");
+    // Searched (both ways again).
+    h.click(h.at("in + out"));
+    h.click(h.at("search lines"));
+    h.type_text("boot");
+    h.frames(3);
+    assert!(h.shows("U-Boot") && !h.shows("login: root") && h.shows("1 of 5 lines"), "found, any case");
+    // The choices are kept.
+    let s = h.app.settings.search;
+    assert!(!s.serial_raw && !s.serial_times && s.serial_show == weft_core::serial_log::Show::Both);
+    // As text in the editor.
+    h.click(h.at("Open in editor"));
+    h.frames(3);
+    assert!(h.app.editor.files.iter().any(|f| f.text == "U-Boot 2024.01\n"), "the lines shown, as text");
+}
+
+/// The log viewer follows a log as it grows (only what is new is read and
+/// made into lines): a line that was still coming is shown whole once it
+/// ends, a search keeps finding in what comes; and a tab's port with no
+/// log today says so, not showing another port's.
+#[test]
+fn the_serial_log_viewer_follows_a_growing_log() {
+    use weft_core::serial_log::Dir;
+    let mut h = Harness::new(json!({}));
+    h.app.open_serial("local", "COM95", 115_200);
+    h.frames(2);
+    let id = h.app.active_pane_id().unwrap();
+    // No log for its port yet: said.
+    h.app.open_serial_log(Some("COM95"));
+    h.frames(2);
+    assert!(h.shows("COM95: no log today yet") && h.shows("no log for today"), "said, not another port's");
+    let p = h.app.panes.get_mut(&id).unwrap();
+    p.exited = false;
+    p.serial_log.as_mut().unwrap().write(Dir::Rx, b"boot one\r\nhalf a li");
+    h.app.open_serial_log(Some("COM95"));
+    h.frames(2);
+    assert!(h.shows("boot one") && h.shows("half a li"), "what there is, the last line as far as it came");
+    h.click(h.at("search lines"));
+    h.type_text("line");
+    h.frames(2);
+    let log = h.app.panes.get_mut(&id).unwrap().serial_log.as_mut().unwrap();
+    log.write(Dir::Rx, b"ne ended\r\nanother line\r\n");
+    // (It looks again at most a 0.7 s later.)
+    assert!(h.wait_for(5.0, |h| h.shows("half a line ended") && h.shows("another line")), "the rest came, found by the search");
+    assert!(!h.shows("boot one") && h.shows("2 of 3 lines"), "the search still applies: {:?}", h.texts.iter().map(|t| &t.0).filter(|t| t.contains("lines")).collect::<Vec<_>>());
+}
+
+/// A remote port open in a tab, opened again at another speed: a tab of
+/// its own name, the first tab's speed not changed under it; an ended
+/// serial console says it was disconnected (not "process exited").
+#[test]
+fn a_port_opened_again_at_another_speed_keeps_the_first() {
+    use crate::host::HostKind;
+    let mut h = Harness::new(json!({"profiles": [{"name": "pi", "kind": "ssh", "target": "pi"}]}));
+    h.app.open_serial("pi", "/dev/ttyUSB0", 115_200);
+    h.frames(2);
+    let first = h.app.active_pane_id().unwrap();
+    h.app.panes.get_mut(&first).unwrap().exited = false;
+    h.app.open_serial("pi", "/dev/ttyUSB0", 9600);
+    h.frames(2);
+    let baud = |h: &Harness, n: &str| h.app.settings.profiles.iter().find(|p| p.name == n).and_then(|p| match p.kind {
+        HostKind::Serial { baud, .. } => Some(baud),
+        _ => None,
+    });
+    assert_eq!(baud(&h, "pi:/dev/ttyUSB0"), Some(115_200), "the open tab's speed kept");
+    assert_eq!(baud(&h, "pi:/dev/ttyUSB0 @9600"), Some(9600), "the new one a name of its own");
+    assert_eq!(h.app.panes[&first].host, "pi:/dev/ttyUSB0");
+    // Not open any more: the same name, at the speed asked for.
+    h.app.panes.get_mut(&first).unwrap().exited = true;
+    h.app.open_serial("pi", "/dev/ttyUSB0", 57_600);
+    assert_eq!(baud(&h, "pi:/dev/ttyUSB0"), Some(57_600));
+    // An ended console's banner.
+    h.app.focus_pane(first);
+    let p = h.app.panes.get_mut(&first).unwrap();
+    (p.held, p.spawn_error) = (false, None);
+    h.frames(2);
+    assert!(h.texts.iter().any(|(t, _)| t.contains("pi:/dev/ttyUSB0: disconnected (Ctrl+], or the device went away) — Enter: open again")), "{:?}", h.texts.iter().map(|t| &t.0).filter(|t| t.contains("—")).collect::<Vec<_>>());
+}
+
+/// A port a tab of this weft has open: Open asks again before a second tab
+/// joins it (two readers split the data), naming the tab.
+#[test]
+fn a_port_open_in_this_weft_is_asked_for() {
+    use crate::serial_ui::{PortInfo, SerialDialog};
+    let mut h = Harness::new(json!({}));
+    h.app.open_serial("local", "COM97", 115_200);
+    h.frames(2);
+    let first = h.app.active_pane_id().unwrap();
+    // (No port here: as if it had opened.)
+    h.app.panes.get_mut(&first).unwrap().exited = false;
+    let mut d = SerialDialog::new();
+    d.ports = Some(Ok(vec![PortInfo { port: "COM97".into(), desc: String::new(), holders: Vec::new() }]));
+    d.port = "COM97".into();
+    h.app.serial_dialog = Some(d);
+    h.frames(2);
+    assert!(h.shows("open in this weft: \"COM97\""), "listed as ours");
+    let tabs = h.app.tabs.len();
+    h.click(h.at("Open"));
+    h.frames(2);
+    assert!(h.app.serial_dialog.is_some() && h.app.tabs.len() == tabs, "not opened");
+    assert!(h.shows("is open in this weft already, in the tab \"COM97\" (a port of this PC opens once)"), "said, naming the tab");
+    // A port of this PC opens once: never a second tab for it.
+    h.click(h.at("Open"));
+    h.frames(2);
+    assert_eq!(h.app.tabs.len(), tabs, "not a second time either");
+    // That tab instead.
+    h.app.new_tab("local", None);
+    h.frames(2);
+    h.click(h.at("Go to that tab"));
+    h.frames(2);
+    assert!(h.app.serial_dialog.is_none() && h.app.active_pane_id() == Some(first), "the tab that has it");
+    // Typed another way (com97, \\.\COM97 on Windows): the same port.
+    if cfg!(windows) {
+        assert_eq!(crate::serial_ui::port_name(r"\\.\com97"), "COM97");
+        assert_eq!(crate::serial_ui::port_name("com97"), "COM97");
+    }
+}
+
+/// A serial console opened again (Enter after it ended): what the device
+/// said stays on the screen, a line between; what an app there left on
+/// (mouse reports, bracketed paste, the other screen) is off. Never opened
+/// (it failed): no such line.
+#[test]
+fn a_serial_console_opened_again_keeps_its_screen() {
+    let mut h = Harness::new(json!({}));
+    h.app.open_serial("local", "COM94", 115_200);
+    h.frames(2);
+    let id = h.app.active_pane_id().unwrap();
+    h.app.actions.push(crate::app::Action::Restart(id));
+    h.frames(2);
+    assert!(!h.shows("opened again"), "never opened: no line for it");
+    {
+        let p = h.app.panes.get_mut(&id).unwrap();
+        // As if it had been open, the device in an app when it went.
+        p.serial_opened = true;
+        p.term.feed(&mut p.parser, b"U-Boot 2024.01 boot log\r\n\x1b[?1000h\x1b[?2004h");
+        assert!(p.term.mouse_mode != 0 && p.term.bracketed_paste);
+    }
+    h.app.actions.push(crate::app::Action::Restart(id));
+    h.frames(3);
+    assert!(h.shows("U-Boot 2024.01 boot log") && h.shows("opened again"), "the screen kept, a line between");
+    let t = &h.app.panes[&id].term;
+    assert!(t.mouse_mode == 0 && !t.bracketed_paste, "the app's modes off");
+}
+
+/// A serial console coming back with the session is not opened by itself
+/// (an opening resets many boards): it says so and opens on Enter.
+#[test]
+fn a_restored_serial_console_waits_to_be_opened() {
+    let serial = json!({"name": "COM96", "kind": "serial", "via": "local", "port": "COM96", "baud": 9600});
+    let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}, serial], "session": [{"t": "Pane", "host": "COM96", "cwd": null}]}));
+    h.frames(3);
+    let id = h.app.panes.iter().find(|(_, p)| p.host == "COM96").map(|(id, _)| *id).expect("the session's serial tab");
+    assert!(h.app.panes[&id].held && h.app.panes[&id].pty.is_none(), "not opened");
+    assert!(h.shows("COM96: not opened yet (opening it may reset the board)"), "said so");
+    h.app.actions.push(crate::app::Action::Restart(id));
+    h.frames(3);
+    assert!(!h.app.panes[&id].held, "opened on asking (no port here: it says why)");
+}
+
+/// A port of this PC another program has open (Linux /proc, macOS lsof):
+/// listed with who has it, and Open asks again before joining it.
+#[test]
+fn a_local_port_in_use_is_named_and_asked_for() {
+    use crate::serial_ui::{parse_lsof, PortInfo, SerialDialog};
+    // macOS: lsof -FpcL.
+    let lsof = "p812\ncminicom\nLme\nf3\np99\ncscreen\nLroot\n";
+    assert_eq!(parse_lsof(lsof), vec![(812, "me".into(), "minicom".into()), (99, "root".into(), "screen".into())]);
+    assert!(parse_lsof("").is_empty());
+    let mut h = Harness::new(json!({}));
+    let mut d = SerialDialog::new();
+    d.ports = Some(Ok(vec![PortInfo { port: "COM98".into(), desc: "USB UART".into(), holders: vec![(812, "me".into(), "minicom -D COM98".into())] }]));
+    d.port = "COM98".into();
+    h.app.serial_dialog = Some(d);
+    h.frames(2);
+    assert!(h.shows("in use: pid 812 · me · minicom -D COM98"), "who has it");
+    let tabs = h.app.tabs.len();
+    h.click(h.at("Open"));
+    h.frames(2);
+    assert!(h.app.serial_dialog.is_some() && h.app.tabs.len() == tabs, "not opened yet");
+    assert!(h.shows("is open in another program"), "asked");
+    h.click(h.at("Open"));
+    h.frames(2);
+    assert!(h.app.serial_dialog.is_none() && h.app.tabs.len() == tabs + 1, "opened when pressed again");
+}

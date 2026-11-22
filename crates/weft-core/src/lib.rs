@@ -9,6 +9,7 @@ pub mod host;
 pub mod pty;
 pub mod records;
 pub mod secret;
+pub mod serial_log;
 pub mod term;
 
 /// Text as it is to be drawn: each combining mark put together with the

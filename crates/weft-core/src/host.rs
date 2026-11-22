@@ -193,7 +193,7 @@ foreach ($e in $list) {
     if ($py) { break }
 }
 if (-not $py) {
-    [Console]::Error.WriteLine('weft: no Python 3.6 or newer found on this host: the Files panel, editor and search need one. Check Python is installed there (where python), or add its name or path in Python on remote hosts (command palette). Tried: ' + ($list -join ' '))
+    [Console]::Error.WriteLine('weft: no Python 3.6 or newer found on this host: the Files panel, editor, search and serial consoles need one. Check Python is installed there (where python), or add its name or path in Python on remote hosts (command palette). Tried: ' + ($list -join ' '))
     exit 127
 }
 & $py -u -c 'import sys;exec(sys.stdin.buffer.read(int(sys.stdin.buffer.readline())))'
@@ -217,7 +217,7 @@ pub const NO_PYTHON: &str = "weft: no Python 3.6 or newer found on this host";
 /// what to do, and ends. macOS' /usr/bin/python3 is not run where the
 /// Command Line Tools are not installed (wpy): it is no Python there, only
 /// asks to install them, in a window on that Mac.
-const FIND_PY: &str = r#"PL=$(printf %s "$PY64" | base64 -d 2>/dev/null || printf %s "$PY64" | base64 -D 2>/dev/null || printf %s "$PY64" | openssl base64 -d -A 2>/dev/null); wpy() { [ "$(command -v "$1" 2>/dev/null)" != /usr/bin/python3 ] || [ "$(uname 2>/dev/null)" != Darwin ] || xcode-select -p >/dev/null 2>&1; }; P=$(printf '%s\n' "$PL" | while IFS= read -r e; do IFS='|'; set +f; for c in $e; do if wpy "$c" && "$c" -c 'import sys; sys.exit(sys.version_info < (3, 6))' >/dev/null 2>&1; then printf %s "$c"; exit 0; fi; done; done); set -f; if [ -z "$P" ]; then T=; for e in $PL; do T="$T $e"; done; M=; wpy python3 || M=" On macOS python3 comes with the Command Line Tools (xcode-select --install there), or install Python (python.org, Homebrew)."; echo "weft: no Python 3.6 or newer found on this host: the Files panel, editor and search need one. Check python3 is installed there (command -v python3), or add its name or path in Python on remote hosts (command palette).$M Tried:$T" >&2; exit 127; fi"#;
+const FIND_PY: &str = r#"PL=$(printf %s "$PY64" | base64 -d 2>/dev/null || printf %s "$PY64" | base64 -D 2>/dev/null || printf %s "$PY64" | openssl base64 -d -A 2>/dev/null); wpy() { [ "$(command -v "$1" 2>/dev/null)" != /usr/bin/python3 ] || [ "$(uname 2>/dev/null)" != Darwin ] || xcode-select -p >/dev/null 2>&1; }; P=$(printf '%s\n' "$PL" | while IFS= read -r e; do IFS='|'; set +f; for c in $e; do if wpy "$c" && "$c" -c 'import sys; sys.exit(sys.version_info < (3, 6))' >/dev/null 2>&1; then printf %s "$c"; exit 0; fi; done; done); set -f; if [ -z "$P" ]; then T=; for e in $PL; do T="$T $e"; done; M=; wpy python3 || M=" On macOS python3 comes with the Command Line Tools (xcode-select --install there), or install Python (python.org, Homebrew)."; echo "weft: no Python 3.6 or newer found on this host: the Files panel, editor, search and serial consoles need one. Check python3 is installed there (command -v python3), or add its name or path in Python on remote hosts (command palette).$M Tried:$T" >&2; exit 127; fi"#;
 
 /// Agent bootstrap: find Python (FIND_PY), read `<len>\n<source>` from stdin
 /// and exec it in memory.
@@ -261,6 +261,7 @@ pub fn says_exec_unknown(text: &str) -> bool {
 const PLAIN_SHELL: &str = "echo weft: no base64, openssl or python3 h$()ere: a plain shell, without its integration; IFS=; exec ${SHELL:-sh} -i";
 /// And the agent, or the serial bridge: says so and ends.
 const NO_DECODER: &str = "echo weft: no base64, openssl or python3 h$()ere: the Files panel, editor and search do not run >&2; exit 127";
+const NO_DECODER_SERIAL: &str = "echo weft: no base64, openssl or python3 h$()ere: no serial console >&2; exit 127";
 
 fn posix_wrap(vars: &[(&str, String)], script: &str, fail: &str) -> String {
     let mut s = String::from("exec sh -c '");
@@ -437,22 +438,36 @@ pub fn ssh_name(host: &str, args: &[String]) -> String {
 pub const SERIAL_PY: &str = include_str!("../../../remote/serial.py");
 
 /// Speeds offered for serial consoles.
-pub const BAUDS: &[u32] = &[9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600, 1000000, 1500000, 3000000];
+/// (Any other can be typed: 74880 for an ESP8266's boot, say.)
+pub const BAUDS: &[u32] = &[9600, 19200, 38400, 57600, 74880, 115200, 230400, 250000, 460800, 500000, 921600, 1000000, 1500000, 2000000, 3000000];
+
+/// What the bridge prints once the port is open (serial logs keep what
+/// was typed only from then on: not an answer or a sudo password before).
+pub const SERIAL_READY: &str = "connected to ";
 
 /// The remote command for a serial console: the bridge, sent in the command
-/// itself (base64) so nothing is written on the host.
+/// itself (base64) so nothing is written on the host. When the port may not
+/// be opened and sudo is asked for, the bridge ends with 77 and runs again
+/// under sudo (its password prompt in the terminal).
 pub fn serial_command(port: &str, baud: u32) -> String {
     serial_command_of(port, baud, &PYTHONS.read().unwrap_or_else(|e| e.into_inner()).clone())
 }
 
 /// `serial_command` with these Pythons.
 pub fn serial_command_of(port: &str, baud: u32, list: &[String]) -> String {
-    let src = base64::engine::general_purpose::STANDARD.encode(SERIAL_PY);
-    let py = pythons_b64_of(list);
-    format!(
-        "PY64={py}; {FIND_PY}; exec \"$P\" -c 'import base64;exec(base64.b64decode(\"{src}\"))' {} {baud}",
-        sh_quote(port)
-    )
+    // Gzipped: the bridge with sudo and its holders grew past what a
+    // Windows console takes on a command line (about 8 KB).
+    // sudo runs the Python by its path: a name found on the user's PATH
+    // (pyenv, conda, ~/.local/bin) is not on sudo's secure_path.
+    // In sh whatever the login shell (fish's and tcsh's own words broke
+    // it): the script base64 as the agent's, the bridge beside it.
+    let src = gz_b64(SERIAL_PY);
+    let port = sh_quote(port);
+    let script = format!(
+        "{FIND_PY}; S=\"import base64,zlib;exec(zlib.decompress(base64.b64decode('$SRC'),47))\"; \"$P\" -c \"$S\" {port} {baud}; s=$?; \
+         [ $s = 77 ] && exec sudo -p '[sudo] password for %u: ' \"$(command -v \"$P\")\" -c \"$S\" {port} {baud}; exit $s"
+    );
+    posix_wrap(&[("PY64", pythons_b64_of(list)), ("SRC", src)], &script, NO_DECODER_SERIAL)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -2729,6 +2744,112 @@ print(json.dumps(out))
         }
     }
 
+    /// The remote bridge run for real on a pseudo-terminal standing for the
+    /// device: a long paste reaches the device whole (it was written
+    /// without waiting, and the rest dropped), what the device sends comes
+    /// as it sent it (shown with CRLF by weft, logged as it came), what is
+    /// typed before Ctrl+] goes, and an unplugged device ends it (it read
+    /// nothing for good, a core busy).
+    #[test]
+    #[cfg(unix)]
+    fn the_serial_bridge_on_a_device() {
+        use std::time::{Duration, Instant};
+        if Command::new(crate::pty::tests::python()).arg("-V").output().is_err() {
+            return;
+        }
+        let open = || {
+            let (mut master, mut slave) = (0, 0);
+            let mut name = [0 as libc::c_char; 128];
+            // SAFETY: openpty fills the two descriptors and the name.
+            let rc = unsafe { libc::openpty(&mut master, &mut slave, name.as_mut_ptr(), std::ptr::null_mut(), std::ptr::null_mut()) };
+            assert_eq!(rc, 0, "a pseudo-terminal");
+            // SAFETY: the name is NUL-ended by openpty.
+            let name = unsafe { std::ffi::CStr::from_ptr(name.as_ptr()) }.to_string_lossy().into_owned();
+            (master, slave, name)
+        };
+        let read_dev = move |fd: i32, want: usize, secs: u64| {
+            let mut got = Vec::new();
+            let end = Instant::now() + Duration::from_secs(secs);
+            while got.len() < want && Instant::now() < end {
+                let mut buf = [0u8; 65536];
+                let mut p = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+                // SAFETY: plain descriptors and a buffer of ours.
+                if unsafe { libc::poll(&mut p, 1, 100) } > 0 {
+                    let n = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) };
+                    if n > 0 {
+                        got.extend_from_slice(&buf[..n as usize]);
+                    }
+                }
+            }
+            got
+        };
+        let (master, slave, dev) = open();
+        // Only the device's side held here (the bridge would see this
+        // process holding its end, and ask).
+        // SAFETY: our descriptor, closed once.
+        unsafe { libc::close(slave) };
+        // The device's side as raw as a UART: no echo, no LF made CRLF.
+        // SAFETY: termios of our own descriptor.
+        unsafe {
+            let mut t: libc::termios = std::mem::zeroed();
+            libc::tcgetattr(master, &mut t);
+            libc::cfmakeraw(&mut t);
+            libc::tcsetattr(master, libc::TCSANOW, &t);
+        }
+        let argv = vec!["sh".to_string(), "-c".to_string(), serial_command(&dev, 115200)];
+        let mut pty = crate::pty::Pty::spawn(&argv, None, &[], 100, 30, || {}).unwrap();
+        let mut seen = Vec::new();
+        let wait_for = |pty: &mut crate::pty::Pty, seen: &mut Vec<u8>, what: &[u8], secs: u64| {
+            let end = Instant::now() + Duration::from_secs(secs);
+            while Instant::now() < end {
+                seen.extend(pty.read());
+                if seen.windows(what.len()).any(|w| w == what) {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            false
+        };
+        assert!(wait_for(&mut pty, &mut seen, SERIAL_READY.as_bytes(), 30), "connected: {}", String::from_utf8_lossy(&seen));
+        // A long paste, whole.
+        let paste: Vec<u8> = (0..65536u32).map(|i| b'a' + (i % 26) as u8).collect();
+        // (The device reads as it comes, as a UART does.)
+        let n = paste.len();
+        let reading = std::thread::spawn(move || read_dev(master, n, 30));
+        pty.write(&paste);
+        let got = reading.join().unwrap();
+        assert_eq!(got.len(), paste.len(), "all of it reached the device");
+        assert!(got == paste, "as it was sent");
+        // What the device sends: as it sent it.
+        // SAFETY: a buffer of ours.
+        unsafe { libc::write(master, b"one\ntwo\r\n".as_ptr().cast(), 9) };
+        assert!(wait_for(&mut pty, &mut seen, b"one\ntwo\r\n", 10), "a lone LF as it came: {:?}", String::from_utf8_lossy(&seen));
+        // Typed before Ctrl+]: sent, then it ends.
+        // (The device reads as it comes: from before it is sent.)
+        let reading = std::thread::spawn(move || read_dev(master, 3, 10));
+        pty.write(b"bye\x1d");
+        assert_eq!(reading.join().unwrap(), b"bye", "what came before Ctrl+]");
+        assert!(wait_for(&mut pty, &mut seen, b"disconnected", 10), "ended by Ctrl+]");
+        // SAFETY: our descriptor, closed once.
+        unsafe { libc::close(master) };
+        // Unplugged: the bridge ends, not spinning.
+        let (master, slave, dev) = open();
+        // SAFETY: as above.
+        unsafe { libc::close(slave) };
+        let argv = vec!["sh".to_string(), "-c".to_string(), serial_command(&dev, 115200)];
+        let mut pty = crate::pty::Pty::spawn(&argv, None, &[], 100, 30, || {}).unwrap();
+        seen.clear();
+        assert!(wait_for(&mut pty, &mut seen, SERIAL_READY.as_bytes(), 30), "connected again");
+        // SAFETY: as above.
+        unsafe { libc::close(master) };
+        assert!(wait_for(&mut pty, &mut seen, b"went away", 10), "unplugged: said so: {}", String::from_utf8_lossy(&seen));
+        let end = Instant::now() + Duration::from_secs(10);
+        while !pty.exited() && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(pty.exited(), "and ended");
+    }
+
     #[test]
     fn serial_bridge_and_command() {
         // The bridge compiles (it runs on the remote host only: no termios here).
@@ -2736,15 +2857,25 @@ print(json.dumps(out))
         if let Ok(out) = std::process::Command::new(crate::pty::tests::python()).arg("-c").arg(&check).output() {
             assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
         }
-        // The command carries it whole, the port quoted.
-        let cmd = serial_command("/dev/tty USB0", 115200);
+        // The command carries it whole, the port quoted; all of it in sh
+        // (`exec sh -c '…'` with no quote in it: any login shell runs it).
+        let wrapped = serial_command("/dev/tty USB0", 115200);
+        assert!(wrapped.starts_with("exec sh -c '") && wrapped.matches('\'').count() == 2, "{wrapped}");
+        let b = wrapped.split("B=").nth(1).and_then(|s| s.split(';').next()).unwrap();
+        let cmd = String::from_utf8(base64::engine::general_purpose::STANDARD.decode(b).unwrap()).unwrap();
         assert!(cmd.contains("'/dev/tty USB0' 115200"), "{cmd}");
-        let b64 = cmd.split("b64decode(\"").nth(1).and_then(|s| s.split('"').next()).unwrap();
-        assert_eq!(base64::engine::general_purpose::STANDARD.decode(b64).unwrap(), SERIAL_PY.as_bytes());
+        let b64 = wrapped.split("SRC=").nth(1).and_then(|s| s.split(';').next()).unwrap();
+        let gz = base64::engine::general_purpose::STANDARD.decode(b64).unwrap();
+        let mut whole = String::new();
+        std::io::Read::read_to_string(&mut flate2::read::GzDecoder::new(&gz[..]), &mut whole).unwrap();
+        assert_eq!(whole, SERIAL_PY, "the bridge, whole (gzipped)");
+        assert_eq!(wrapped.matches("SRC=").count(), 1, "the bridge is sent once, also for sudo");
+        assert!(SERIAL_PY.contains("SUDO_EXIT = 77") && cmd.contains("[ $s = 77 ] && exec sudo"), "sudo when the bridge asks for it");
+        assert!(SERIAL_PY.contains(&format!("\"\\x1b[2m{SERIAL_READY}")), "the bridge says it is ready as the logs expect");
         // Through ssh: the target, then the bridge instead of a shell.
         let argv = Profile::ssh("pi").serial_argv("/dev/ttyUSB0", 9600, false);
         assert_eq!(&argv[..3], ["ssh", "-tt", "pi"]);
-        assert!(argv[3].contains("exec \"$P\" -c"));
+        assert!(argv[3].starts_with("exec sh -c '") && argv[3].contains("SRC="));
         // A serial host has no agent of its own.
         assert_eq!(Profile { name: "COM3".into(), kind: HostKind::Serial { via: "local".into(), port: "COM3".into(), baud: 115200 } }.agent_argv(false), None);
     }

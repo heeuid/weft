@@ -1350,7 +1350,22 @@ impl App {
                 if focused {
                     p.sel = None;
                 }
-                p.send(&out);
+                // A port of this PC: Ctrl+] ends it, as the bridge ends a
+                // remote one (what came before it is sent).
+                let quit = out.iter().position(|b| *b == 0x1d).filter(|_| p.pty.as_ref().is_some_and(|t| t.is_port()));
+                match quit {
+                    Some(i) => {
+                        p.send(&out[..i]);
+                        if let Some(t) = p.pty.as_ref() {
+                            t.send_before_closing();
+                        }
+                        p.pty = None;
+                        p.exited = true;
+                        let name = p.title();
+                        p.term.feed(&mut p.parser, format!("\r\n\x1b[2mdisconnected from {name}\x1b[0m\r\n").as_bytes());
+                    }
+                    None => p.send(&out),
+                }
             }
             if !mouse_out.is_empty() {
                 p.send(&mouse_out);
@@ -1695,7 +1710,9 @@ impl App {
         // Exited banner.
         if p.exited {
             let msg = match &p.spawn_error {
+                _ if p.held => format!("{}: not opened yet (opening it may reset the board) — Enter: open · Ctrl+Shift+W: close", p.title()),
                 Some(e) => format!("failed to start: {e} — Enter: retry · Ctrl+Shift+W: close"),
+                None if p.serial_log.is_some() => format!("{}: disconnected (Ctrl+], or the device went away) — Enter: open again · Ctrl+Shift+W: close", p.title()),
                 None => "process exited — Enter: restart · Ctrl+Shift+W: close".to_string(),
             };
             let r = banner;
@@ -1752,6 +1769,7 @@ impl App {
         // is the app's; Shift+right-click opens this menu instead, the same
         // way Shift+drag selects here instead of in the app.
         let has_sel = p.sel.is_some();
+        let serial_tab = p.serial_log.is_some();
         let sel_text = p.sel.map(|s| selection_text(t, s));
         let cwd = t.cwd.clone();
         let app_mouse = t.mouse_mode != 0 && (t.alt_active || p.scroll == 0);
@@ -1775,6 +1793,15 @@ impl App {
                     acts.push(Action::SetRoot(host.clone(), cwd));
                     ui.close_menu();
                 }
+            }
+            if serial_tab {
+                if ui.button("Serial console log").on_hover_text("this console's traffic, with times").clicked() {
+                    acts.push(Action::SerialLog(host.clone()));
+                    ui.close_menu();
+                }
+            } else if ui.button("Serial console on this host…").on_hover_text("a UART (/dev/tty…, COM) of the host this terminal is on").clicked() {
+                acts.push(Action::SerialHere(host.clone()));
+                ui.close_menu();
             }
             ui.separator();
             if ui.button("Split right  (Ctrl+Shift+D)").clicked() {

@@ -5,6 +5,98 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.13.0
+
+Added
+- **Serial console logs.** A serial console tab's traffic is written on
+  this PC, both ways, each piece with its time to the millisecond:
+  `data/logs/serial-<port>-<date>.jsonl` (nothing is stored on the remote
+  host). On by default; Privacy has its switch, keep time and size limit
+  like the other logs (30 days, 500 MB).
+- **"Serial console log"** (palette, or a serial tab's right-click menu):
+  the log as text (escapes left out, backspaces applied) or raw (escapes
+  and control characters written out); output, input or both; times on
+  or off; searched as text, fuzzy, glob or regex, with Aa. The choices are
+  kept. Today's log follows the tab as it grows; Copy and Open in editor
+  take the lines shown.
+- **"Serial console…" opens on the session's host**: the host of the
+  terminal that has the keyboard (a serial tab's: the host its port is
+  on), so its UARTs are listed straight away. A terminal's right-click
+  menu has "Serial console on this host…".
+- **A remote port you may not open can be opened with sudo.** The bridge
+  says so (and how to join the port's group for good), then asks "Open it
+  with sudo now?"; on yes it runs again under sudo, whose password prompt
+  is in the tab. weft keeps no password, and the serial log keeps what
+  was typed only once the port is open: neither the answer nor the sudo
+  password is in it.
+- **Who has a port open, on Linux and macOS too.** A port of this PC on
+  Linux or macOS lists the programs that have it open (/proc and lock
+  files, else lsof), and Open asks again before joining them (Windows
+  refuses a port in use, as before). A remote macOS host lists its
+  /dev/cu.* ports, and who has them open through lsof.
+
+Serial consoles as a whole, gone over (four reviews):
+- **The log keeps what the device sent**, byte for byte: a lone LF is
+  shown as CRLF in the tab only (it was turned into CRLF before it was
+  logged, here and by the remote bridge). Each piece is stamped when it
+  is read, not when the window next draws; weft's own words ("connected
+  to", an error) and, for a remote console, ssh's and the bridge's (its
+  banner, a password prompt, "went away") are not the device's and are
+  not logged; a terminal's answers to the device are logged as sent.
+- **A long paste reaches the device whole**: here it is written on a
+  thread of its own (a slow line held the window for seconds, and what a
+  write timeout left was dropped); the remote bridge queues it and writes
+  as the port takes it, reading meanwhile, so Ctrl+] works however the
+  device is (with flow control left on by another program it waited for
+  ever). The bridge sets 8N1 with no flow control.
+- **Unplugged**: a remote bridge ends (it spun a core reading nothing);
+  a port of this PC is let go at once, so plugged in again it has the
+  same name and Enter opens it. Opened again, the tab keeps what was on
+  its screen with a line between, and the modes an app there left
+  (mouse, bracketed paste, the other screen) are off.
+- **Windows: a port another program has said "no such port"**; it says
+  "in use" now. Port names are one however typed (com3, \\.\COM3).
+- **A port open in a tab of this weft** is not opened a second time (it
+  can't be: "Go to that tab"); opening the same remote port twice asks
+  first.
+- **The log viewer** reads only what a growing log gained, makes lines
+  only of that, follows a port to the next day's file, says when a tab's
+  port has no log today (it showed another port's), scrolls sideways for
+  long lines, and its Refresh lists the logs again. A device that ends
+  its lines with CR alone gets a line each (a day was one line); CR CR LF
+  is one end.
+- **A day's log of a port stops at a quarter of the serial logs' limit**
+  (a device that never stopped filled the disk, and the next pruning took
+  every older log), said once in the log.
+- **Serial tabs coming back with the session are not opened by
+  themselves** (an opening resets many boards): Enter opens them.
+- This PC's ports are listed on a thread (who has each open: /proc,
+  lsof given five seconds); macOS' Bluetooth and debug ports left out as
+  the agent leaves them.
+- sudo runs the bridge's Python by its full path (a Python on the user's
+  PATH only, pyenv or conda, was not on sudo's).
+- **A remote port opens whatever the login shell** (fish's and tcsh's own
+  words broke the command: it runs in sh now, as the agent's).
+- **Any speed**: typed, or from the list (74880 for an ESP8266's boot,
+  250000…); a remote Linux or macOS host sets one its termios does not
+  name (termios2, IOSSIOSPEED: a Mac took nothing above 230400).
+- **Ctrl+] ends a port of this PC too**, as it ends a remote one (what
+  was typed before it still sent); an ended serial tab says
+  "disconnected", not "process exited".
+- **A paste on a serial console is sent as it is** (a device rebooted
+  under a shell that had asked for bracketed paste, and its boot loader
+  took the markers as typing).
+- **Bytes that are not UTF-8 stay in the log** (a binary protocol, a
+  wrong speed's garbage): raw shows them \xNN, text as U+FFFD (they were
+  U+FFFD for good). A port's day's log reaching its limit is said in the
+  tab too.
+- The remote bridge turns XON/XOFF off too, gives the port its settings
+  back as it closes, and reads its questions' answers unbuffered.
+- Windows: a key typed while the device was quiet went out up to a
+  tenth of a second late (the reader held the port).
+- A remote port opened again at another speed while a tab has it is a
+  tab of its own (the first tab's speed was changed under it).
+
 ## 0.12.4
 
 Changed

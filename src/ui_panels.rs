@@ -92,6 +92,8 @@ pub(crate) enum Cmd {
     Graphics,
     /// Open a serial port (UART) of this PC or a remote host in a tab.
     Serial,
+    /// Read the serial consoles' logs.
+    SerialLog,
     /// X11 forwarding on/off for the active tab's ssh host (new tabs).
     X11,
     /// Move the active pane's border: (panes side by side, toward the
@@ -109,7 +111,8 @@ pub(crate) enum Cmd {
 const COMMANDS: &[(Cmd, &str, &str, &[&str])] = &[
     (Cmd::NewTab, "new_tab", "New tab (same host)", &["Ctrl+Shift+T"]),
     (Cmd::Connect, "connect", "Connect to host…", &["Ctrl+Shift+N"]),
-    (Cmd::Serial, "serial", "Serial console… (UART: a COM port here or a /dev/tty port on a remote host)", &[]),
+    (Cmd::Serial, "serial", "Serial console… (UART: a COM port here or a /dev/tty port on the session's host)", &[]),
+    (Cmd::SerialLog, "serial_log", "Serial console log: what each serial console sent and was sent, with times (text or raw, input / output, search)", &[]),
     (Cmd::X11, "x11", "X11 forwarding on/off for this host (GUI programs there show here; new tabs)", &[]),
     (Cmd::SplitRight, "split_right", "Split right", &["Ctrl+Shift+D"]),
     (Cmd::SplitDown, "split_down", "Split down", &["Ctrl+Shift+E"]),
@@ -370,6 +373,10 @@ impl App {
             Cmd::Restart => self.restart(),
             Cmd::Graphics => self.graphics_window = Some(if self.settings.renderer.is_empty() { "auto".into() } else { self.settings.renderer.clone() }),
             Cmd::Serial => self.open_serial_dialog(),
+            Cmd::SerialLog => {
+                let host = pane.and_then(|id| self.panes.get(&id)).map(|p| p.host.clone()).filter(|h| matches!(self.profile(h).kind, HostKind::Serial { .. }));
+                self.open_serial_log(host.as_deref())
+            }
             Cmd::X11 => {
                 let host = self.active_host();
                 let now = match self.settings.profiles.iter_mut().find(|p| p.name == host).map(|p| &mut p.kind) {
@@ -568,7 +575,7 @@ impl App {
     /// shell gets no Esc for it. (A key being bound has taken its Esc by
     /// now: that cancels the binding, not the window.)
     pub fn escape_closes_windows(&mut self, ctx: &egui::Context) {
-        let windows = [self.display_test.is_some(), self.serial_dialog.is_some(), self.font_menu.is_some(), self.memo_picker, self.keys_window.is_some(), self.records_window.is_some(), self.help.is_some(), self.python_window.is_some(), self.graphics_window.is_some(), self.shells_window.is_some()];
+        let windows = [self.display_test.is_some(), self.serial_dialog.is_some(), self.font_menu.is_some(), self.memo_picker, self.keys_window.is_some(), self.records_window.is_some(), self.help.is_some(), self.serial_log.is_some(), self.python_window.is_some(), self.graphics_window.is_some(), self.shells_window.is_some()];
         let now = windows.iter().enumerate().fold(0u32, |m, (i, open)| m | ((*open as u32) << i));
         // One that has just opened takes the keyboard from the terminal;
         // a click in a terminal gives it back, and Esc is then the shell's
@@ -609,7 +616,7 @@ impl App {
             return;
         }
         // One at a time, the smaller ones (opened from the others) first.
-        if self.display_test.take().is_some() || self.serial_dialog.take().is_some() || self.font_menu.take().is_some() || std::mem::take(&mut self.memo_picker) || self.keys_window.take().is_some() || self.records_window.take().is_some() || self.python_window.take().is_some() || self.graphics_window.take().is_some() || self.shells_window.take().is_some() {
+        if self.display_test.take().is_some() || self.serial_dialog.take().is_some() || self.font_menu.take().is_some() || std::mem::take(&mut self.memo_picker) || self.keys_window.take().is_some() || self.records_window.take().is_some() || self.serial_log.take().is_some() || self.python_window.take().is_some() || self.graphics_window.take().is_some() || self.shells_window.take().is_some() {
         } else {
             self.help = None;
         }
@@ -2684,7 +2691,7 @@ impl App {
                 ui.label(
                     RichText::new(
                         "Limits apply at start and every hour; dated files go a whole day at a time.\n\
-                         Keystrokes are never written, so passwords typed at a prompt are in none of these.\n\
+                         Keystrokes are written only to serial console logs (what was sent to the device, a password at its login too).\n\
                          A command typed with a leading space is left out of commands and history.",
                     )
                     .size(11.0)
@@ -4829,6 +4836,7 @@ fn group(c: Cmd) -> &'static str {
         Cmd::NewTab
         | Cmd::Connect
         | Cmd::Serial
+        | Cmd::SerialLog
         | Cmd::X11
         | Cmd::SplitRight
         | Cmd::SplitDown

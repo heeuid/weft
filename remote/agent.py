@@ -335,11 +335,33 @@ def _trash(p, home, mac):
         return
 
 
+def _lsof_holders(dev):
+    """lsof's (pid, user, command) for `dev`, where there is no /proc
+    (macOS, BSD)."""
+    import subprocess
+    try:
+        out = subprocess.run(["lsof", "-FpcL", dev], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, universal_newlines=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    found, cur = [], None
+    for line in out.splitlines():
+        if line.startswith("p"):
+            cur = [line[1:], "?", ""]
+            found.append(cur)
+        elif cur is not None and line.startswith("c"):
+            cur[2] = line[1:]
+        elif cur is not None and line.startswith("L"):
+            cur[1] = line[1:]
+    return [(p, u, c) for p, u, c in found if p.isdigit() and int(p) != os.getpid()]
+
+
 def _port_holders(dev):
     """Other processes with a serial port open (pid, user, command), and
     the pid in a lock file (minicom, screen…). Other users' processes show
-    only to root."""
+    only to root. Without /proc (macOS): lsof."""
     import glob
+    if not os.path.isdir("/proc/self/fd"):
+        return [{"pid": int(p), "user": u, "cmd": c[:200]} for p, u, c in _lsof_holders(dev)]
     real = os.path.realpath(dev)
     found = {}
     for fd in glob.glob("/proc/[0-9]*/fd/*"):

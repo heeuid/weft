@@ -603,11 +603,30 @@ pub struct SearchModes {
     pub editor_mode: crate::editfind::MatchMode,
     pub editor_case: bool,
     pub terminal_icase: bool,
+    /// The serial log viewer: raw (else plain text), which way, times, and
+    /// its search.
+    pub serial_raw: bool,
+    pub serial_show: weft_core::serial_log::Show,
+    pub serial_times: bool,
+    pub serial_mode: crate::editfind::MatchMode,
+    pub serial_case: bool,
 }
 
 impl Default for SearchModes {
     fn default() -> Self {
-        SearchModes { files_mode: Default::default(), files_icase: true, files_hidden: false, editor_mode: Default::default(), editor_case: false, terminal_icase: true }
+        SearchModes {
+            files_mode: Default::default(),
+            files_icase: true,
+            files_hidden: false,
+            editor_mode: Default::default(),
+            editor_case: false,
+            terminal_icase: true,
+            serial_raw: false,
+            serial_show: Default::default(),
+            serial_times: true,
+            serial_mode: Default::default(),
+            serial_case: false,
+        }
     }
 }
 
@@ -1106,6 +1125,13 @@ pub const CLEAR_KEY: &[u8] = b"\x1b[24;8~";
 pub struct Pane {
     /// A recording of this terminal's traffic, while one is being made.
     pub trace: Option<OutputTrace>,
+    /// A serial console's log (settings "records": serial_log).
+    pub serial_log: Option<weft_core::serial_log::Writer>,
+    /// A serial console: the last byte shown, for showing a lone LF as
+    /// CRLF (as picocom's --imap lfcrlf; the log keeps what came).
+    pub serial_last: Option<u8>,
+    /// Its port has been open (opened again: what was on the screen stays).
+    pub serial_opened: bool,
     /// Synchronized output (DEC 2026) held until its update is whole.
     pub sync: crate::term::SyncOutput,
     /// The remote shell's process (from the bootstrap), for its directory
@@ -1175,6 +1201,9 @@ pub struct Pane {
     /// comes in a moment after the process ends, on Windows' console).
     pub judge_at: Option<Instant>,
     pub spawn_error: Option<String>,
+    /// Not opened yet (a serial console coming back with the session: an
+    /// opening sets DTR, which resets many boards); Enter opens it.
+    pub held: bool,
     pub initial_cwd: Option<String>,
     /// Visual rows scrolled back from the bottom.
     pub scroll: usize,
@@ -1233,6 +1262,7 @@ impl Pane {
             exited: false,
             judge_at: None,
             spawn_error: None,
+            held: false,
             initial_cwd: cwd,
             scroll: 0,
             sel: None,
@@ -1246,6 +1276,9 @@ impl Pane {
             ime_rect: None,
             cursor_drawn: None,
             trace: None,
+            serial_log: None,
+            serial_last: None,
+            serial_opened: false,
             pending_size: None,
             sized: false,
             hist_seen: 0,
@@ -1343,7 +1376,12 @@ impl Pane {
         if let Some(t) = self.trace.as_mut() {
             t.input(bytes);
         }
-        if let Some(p) = self.pty.as_mut() {
+        // Sent, and so logged, only while it runs (keys typed into an ended
+        // serial tab went nowhere, and were logged as sent).
+        if let (Some(l), false) = (self.serial_log.as_mut(), self.exited) {
+            l.write(weft_core::serial_log::Dir::Tx, bytes);
+        }
+        if let Some(p) = self.pty.as_mut().filter(|_| !self.exited) {
             p.write(bytes);
         }
         self.scroll = 0;
@@ -1771,6 +1809,10 @@ pub enum Action {
     NewMemo,
     Reconnect(String),
     ToggleZoom,
+    /// "Serial console…" on this pane's host.
+    SerialHere(String),
+    /// The serial log viewer, on this serial tab's log.
+    SerialLog(String),
 }
 
 pub struct App {
@@ -1876,6 +1918,7 @@ pub struct App {
     /// The shells tried on each host in this run (its terminal ended before
     /// the shell started), so a failure goes on to one not tried yet.
     pub shells_tried: HashMap<String, Vec<RemoteShell>>,
+    pub serial_log: Option<crate::serial_ui::SerialLogView>,
     /// Which of the windows Esc closes were open last frame (a bit each),
     /// and what had the keyboard then.
     pub esc_windows: u32,
@@ -2116,6 +2159,7 @@ impl App {
             changed_here: HashMap::new(),
             trial_profiles: Vec::new(),
             shells_tried: HashMap::new(),
+            serial_log: None,
             console_host,
             esc_windows: 0,
             focus_before: None,
@@ -2237,6 +2281,10 @@ impl App {
 
     fn restore_node(&mut self, n: &SavedNode) -> Node {
         match n {
+            // A serial console is not opened again by itself: opening one
+            // resets many boards (Arduino, ESP32), as the port list never
+            // opens a port to look.
+            SavedNode::Pane { host, cwd } if matches!(self.profile(host).kind, HostKind::Serial { .. }) => Node::Leaf(self.spawn_pane_held(host, cwd.clone())),
             SavedNode::Pane { host, cwd } => Node::Leaf(self.spawn_pane(host, cwd.clone())),
             SavedNode::Split { vertical, ratio, a, b } => Node::Split {
                 vertical: *vertical,
@@ -2611,7 +2659,19 @@ impl App {
         id
     }
 
+    /// A pane for `host` not started: it waits for Enter (see Pane::held).
+    pub fn spawn_pane_held(&mut self, host: &str, cwd: Option<String>) -> usize {
+        let id = self.next_pane;
+        self.next_pane += 1;
+        let mut pane = Pane::new(id, host, cwd);
+        pane.exited = true;
+        pane.held = true;
+        self.panes.insert(id, pane);
+        id
+    }
+
     fn start_pty(&mut self, pane: &mut Pane) {
+        pane.held = false;
         let prof = self.profile(&pane.host);
         if let host::HostKind::Serial { via, port, baud } = prof.kind.clone() {
             self.start_serial(pane, &via, &port, baud);
@@ -2696,8 +2756,27 @@ impl App {
     /// A serial console pane: a local port opened here, or a remote one
     /// through that host's ssh with the bridge (remote/serial.py).
     fn start_serial(&mut self, pane: &mut Pane, via: &str, port: &str, baud: u32) {
-        pane.term = Term::new(pane.term.cols, pane.term.rows);
-        pane.term.show_guesses = self.settings.guess_blocks;
+        // A remote console's typing is kept once its port is open (not an
+        // answer to the bridge, nor a sudo password).
+        let logs = self.data.path("logs");
+        pane.serial_log = Some(if via == "local" {
+            weft_core::serial_log::Writer::new(logs, &pane.host)
+        } else {
+            // The bridge's own line for this port, whole (ssh's banner may
+            // say "connected to" too, before a password is typed).
+            weft_core::serial_log::Writer::after(logs, &pane.host, &format!("\x1b[2m{}{port} at {baud}", host::SERIAL_READY))
+        });
+        // Opened again (Enter after it ended): what the device said before
+        // stays on the screen (a boot log), a line between.
+        if pane.serial_opened {
+            pane.parser = vte::Parser::new();
+            pane.term.reset_modes();
+            pane.term.feed(&mut pane.parser, b"\r\n\x1b[2m\xe2\x80\x94 opened again \xe2\x80\x94\x1b[0m\r\n");
+        } else {
+            pane.term = Term::new(pane.term.cols, pane.term.rows);
+            pane.term.show_guesses = self.settings.guess_blocks;
+        }
+        pane.serial_last = Some(0);
         pane.injected = true; // no shell integration to inject
         pane.shell_pid = None;
         pane.parser = vte::Parser::new();
@@ -2733,6 +2812,7 @@ impl App {
         };
         match result {
             Ok(p) => {
+                pane.serial_opened = true;
                 pane.pty = Some(p);
                 pane.exited = false;
                 pane.spawn_error = None;
@@ -3405,7 +3485,10 @@ impl App {
     pub fn paste_into(&mut self, id: usize, text: &str) {
         let Some(p) = self.panes.get_mut(&id) else { return };
         let text = text.replace("\r\n", "\n").replace('\n', "\r");
-        if p.term.bracketed_paste {
+        // Not bracketed on a serial console: the device may have rebooted
+        // under a shell that had asked for it, and its boot loader took
+        // the markers as typing.
+        if p.term.bracketed_paste && p.serial_log.is_none() {
             let mut b = b"\x1b[200~".to_vec();
             b.extend_from_slice(text.replace('\x1b', "").as_bytes());
             b.extend_from_slice(b"\x1b[201~");
@@ -3444,15 +3527,52 @@ impl App {
                     self.ctx.request_repaint_after(*at - Instant::now());
                 }
             }
+            // An ended serial console lets its port go (its last output
+            // read): unplugged and plugged in again, it is the same name
+            // (Linux gave it the next one while it was held) and Enter
+            // opens it.
+            // (A remote console's process is gone and its port with it; its
+            // last words may still be on their way: read as any terminal's.)
+            if pane.exited && pane.pty.as_mut().is_some_and(|p| p.is_port() && p.exited()) {
+                pane.pty = None;
+            }
             if let Some(pty) = pane.pty.as_mut() {
                 // An app's synchronized update (DEC 2026) comes in whole.
                 let now = Instant::now();
                 // Seen ended before the read: its last output (ssh's own
                 // error, say) is in this read, not left for after the end.
                 let ended = pty.exited();
-                let read = pty.read();
+                let parts = pty.read_parts();
+                let mut read: Vec<u8> = parts.iter().flat_map(|p| p.2.iter().copied()).collect();
                 if let (Some(t), false) = (pane.trace.as_mut(), read.is_empty()) {
                     t.output(&read);
+                }
+                // A serial console's log: what the device sent, when it came
+                // (not weft's own words).
+                if let Some(l) = pane.serial_log.as_mut() {
+                    for (t, info, b) in &parts {
+                        if !info {
+                            l.write_at(weft_core::serial_log::Dir::Rx, *t, b);
+                        }
+                    }
+                    // Its day's limit reached: said, not only in the log.
+                    if l.take_filled() {
+                        let text = format!("{}: today's serial log is full; nothing more is logged today (Privacy… sets how much is kept)", pane.host);
+                        self.data.log(&format!("toast: {text}"));
+                        self.toasts.push(Toast { text, kind: ToastKind::Info, at: Instant::now() });
+                    }
+                }
+                // Shown with a lone LF as CRLF.
+                if let Some(last) = pane.serial_last.as_mut() {
+                    let mut shown = Vec::with_capacity(read.len() + 16);
+                    for &b in &read {
+                        if b == b'\n' && *last != b'\r' {
+                            shown.push(b'\r');
+                        }
+                        shown.push(b);
+                        *last = b;
+                    }
+                    read = shown;
                 }
                 let mut bytes = pane.sync.push(&read, now);
                 if ended {
@@ -3486,6 +3606,11 @@ impl App {
                         timings.push(format!("startup: pane {id} [{}] first output at {}", pane.host, crate::since_start()));
                     }
                     let replies = std::mem::take(&mut pane.term.replies);
+                    // A terminal's answers go to a serial device too: logged
+                    // as sent.
+                    if let (Some(l), false) = (pane.serial_log.as_mut(), replies.is_empty()) {
+                        l.write(weft_core::serial_log::Dir::Tx, &replies);
+                    }
                     pty.write(&replies);
                     if pane.scroll > 0 {
                         pane.scroll += (pane.term.end_line() - before) as usize;
@@ -3503,6 +3628,7 @@ impl App {
                 }
                 if !pane.exited && ended {
                     pane.exited = true;
+
                     // Ended before weft's command said it ran there, or (a
                     // chosen shell) before its prompt: what ran it there?
                     // (see shell_failed). Not by the code alone: Windows'
@@ -4140,10 +4266,22 @@ impl App {
                 Action::NewTab(h, cwd) => self.new_tab(&h, cwd),
                 Action::Split(v) => self.split(v),
                 Action::ToggleZoom => self.toggle_zoom(),
+                Action::SerialHere(host) => self.open_serial_dialog_on(Some(&host)),
+                Action::SerialLog(host) => self.open_serial_log(Some(&host)),
                 Action::ClosePane(id) => self.ask_close_panes(vec![id]),
                 Action::Restart(id) => {
                     if let Some(mut p) = self.panes.remove(&id) {
                         p.initial_cwd = p.term.cwd.clone().or(p.initial_cwd.clone());
+                        // The old one let go first: a serial port opens once
+                        // at a time (Windows refused it, its own tab still
+                        // holding it).
+                        // A port of this PC still held: its reader and
+                        // writer let it go within a tenth of a second.
+                        let held_port = p.pty.as_ref().is_some_and(|t| t.is_port());
+                        drop(p.pty.take());
+                        if held_port {
+                            std::thread::sleep(std::time::Duration::from_millis(250));
+                        }
                         self.start_pty(&mut p);
                         self.panes.insert(id, p);
                     }

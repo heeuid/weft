@@ -138,7 +138,10 @@ fn pick_console_host(_setting: &str) -> ConsoleHost {
 pub struct Pty {
     master: Option<Box<dyn MasterPty + Send>>,
     writer: Box<dyn Write + Send>,
-    rx: Receiver<Vec<u8>>,
+    /// What came, each piece with when it came (as it was read, not when
+    /// the window next drew) and whether it is weft's own word (a serial
+    /// port's "connected to", an error), not the other end's.
+    rx: Receiver<Piece>,
     /// The process behind the terminal (None: a serial port, read in-process).
     child: Option<Box<dyn Child + Send + Sync>>,
     /// It and all it starts, ended together.
@@ -146,12 +149,33 @@ pub struct Pty {
     exited: Arc<AtomicBool>,
     /// Set when dropped: a serial port's reader stops and lets the port go.
     closed: Arc<AtomicBool>,
+    /// A serial port's writer sends what it still has before it lets go
+    /// (a few seconds at most): Ctrl+] right after Enter.
+    drain: Arc<AtomicBool>,
     /// A cursor position report went to it (see `Drop`).
     reported: bool,
     /// Columns and rows it was opened with.
     opened: (u16, u16),
     /// The process's exit code, once it has ended.
     code: Option<u32>,
+}
+
+/// A piece of what came: when (unix seconds), whether weft said it, the
+/// bytes.
+pub type Piece = (f64, bool, Vec<u8>);
+
+/// What a serial port's writes go through: its writing thread.
+struct ChannelWriter(mpsc::Sender<Vec<u8>>);
+
+impl Write for ChannelWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.send(buf.to_vec()).map_err(|_| std::io::Error::from(std::io::ErrorKind::BrokenPipe))?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 /// These bytes with their first cursor position report kept inside a screen
@@ -238,7 +262,7 @@ impl Pty {
         drop(pair.slave);
         let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
         let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::channel::<Piece>();
         let exited = Arc::new(AtomicBool::new(false));
         let exited2 = exited.clone();
         thread::spawn(move || {
@@ -254,7 +278,7 @@ impl Pty {
                     Ok(0) | Err(_) => break,
                     Ok(_) if dropped => {}
                     Ok(n) => {
-                        if tx.send(buf[..n].to_vec()).is_err() {
+                        if tx.send((crate::serial_log::now(), false, buf[..n].to_vec())).is_err() {
                             // Elsewhere the reader lets go at once: the
                             // master closing is what ends whatever still
                             // runs in the terminal (SIGHUP).
@@ -273,52 +297,106 @@ impl Pty {
                 wake();
             }
         });
-        Ok(Pty { master: Some(pair.master), writer, rx, child: Some(child), tree, exited, closed: Arc::new(AtomicBool::new(false)), reported: false, opened: (cols, rows), code: None })
+        Ok(Pty { master: Some(pair.master), writer, rx, child: Some(child), tree, exited, closed: Arc::new(AtomicBool::new(false)), drain: Arc::new(AtomicBool::new(false)), reported: false, opened: (cols, rows), code: None })
     }
 
     /// A serial port (COM3, /dev/ttyUSB0) as the terminal's other end, opened
     /// here: what is typed goes out, what comes in is shown, a lone LF as
     /// CRLF (as picocom's --imap lfcrlf). Unplugged, the pane ends.
     pub fn serial(port: &str, baud: u32, wake: impl Fn() + Send + 'static) -> Result<Pty, String> {
-        let dev = serialport::new(port, baud).timeout(std::time::Duration::from_millis(100)).open().map_err(|e| serial_open_error(port, &e))?;
+        // (Windows: the reader and the writer share one handle, and one
+        // waits for the other's call to end: a short wait, or a key typed
+        // while the device was quiet went out up to a tenth of a second
+        // late.)
+        let wait = std::time::Duration::from_millis(if cfg!(windows) { 20 } else { 100 });
+        let dev = serialport::new(port, baud).timeout(wait).open().map_err(|e| serial_open_error(port, &e))?;
         let mut reader = dev.try_clone().map_err(|e| format!("{port}: {e}"))?;
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::channel::<Piece>();
         let exited = Arc::new(AtomicBool::new(false));
         let closed = Arc::new(AtomicBool::new(false));
         let (exited2, closed2) = (exited.clone(), closed.clone());
         let name = port.to_string();
-        let _ = tx.send(format!("\x1b[2mconnected to {name} at {baud}\x1b[0m\r\n").into_bytes());
+        // weft's own words, said in the terminal and left out of the log.
+        let say = {
+            let tx = tx.clone();
+            move |text: String| {
+                let _ = tx.send((crate::serial_log::now(), true, text.into_bytes()));
+            }
+        };
+        say(format!("\x1b[2mconnected to {name} at {baud}\x1b[0m\r\n"));
+        // Writing on a thread of its own: a slow line takes as long as it
+        // takes (a paste at 9600 baud held the window for seconds), and
+        // what a timeout left is sent after it.
+        let (wtx, wrx) = mpsc::channel::<Vec<u8>>();
+        let mut device = dev;
+        let drain = Arc::new(AtomicBool::new(false));
+        let (wsay, wname, wclosed, wdrain) = (say.clone(), name.clone(), closed.clone(), drain.clone());
+        thread::spawn(move || {
+            // Until the pane lets it go or the device is gone (the reader
+            // ends then): the port is not held a moment longer; let go after
+            // sending what it has (Ctrl+]), three seconds at most.
+            let mut until: Option<std::time::Instant> = None;
+            let going = |until: &mut Option<std::time::Instant>| {
+                if !wclosed.load(Ordering::SeqCst) {
+                    return true;
+                }
+                if !wdrain.load(Ordering::SeqCst) {
+                    return false;
+                }
+                std::time::Instant::now() < *until.get_or_insert_with(|| std::time::Instant::now() + std::time::Duration::from_secs(3))
+            };
+            while going(&mut until) {
+                let chunk = if wclosed.load(Ordering::SeqCst) {
+                    match wrx.try_recv() {
+                        Ok(c) => c,
+                        Err(_) => break,
+                    }
+                } else {
+                    let Ok(c) = wrx.recv_timeout(std::time::Duration::from_millis(50)) else { continue };
+                    c
+                };
+                let mut rest = &chunk[..];
+                while !rest.is_empty() && going(&mut until) {
+                    match device.write(rest) {
+                        Ok(n) => rest = &rest[n..],
+                        Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {}
+                        // That piece is lost (said); what is typed next is
+                        // tried again.
+                        Err(e) => {
+                            wsay(format!("\r\n\x1b[31m{wname}: {e}: what was typed did not all go\x1b[0m\r\n"));
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+        let reader_say = say.clone();
         thread::spawn(move || {
             let mut buf = vec![0u8; 16 * 1024];
-            let mut last = 0u8;
             while !closed2.load(Ordering::SeqCst) {
                 match reader.read(&mut buf) {
                     Ok(0) => {}
                     Ok(n) => {
-                        let mut out = Vec::with_capacity(n + 8);
-                        for &b in &buf[..n] {
-                            if b == b'\n' && last != b'\r' {
-                                out.push(b'\r');
-                            }
-                            out.push(b);
-                            last = b;
-                        }
-                        if tx.send(out).is_err() {
+                        // As the device sent it (shown with a lone LF as
+                        // CRLF, logged as it came), with when it came.
+                        if tx.send((crate::serial_log::now(), false, buf[..n].to_vec())).is_err() {
                             break;
                         }
                         wake();
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {}
                     Err(e) => {
-                        let _ = tx.send(format!("\r\n\x1b[31m{name}: {e}\x1b[0m\r\n").into_bytes());
+                        reader_say(format!("\r\n\x1b[31m{name}: {e}\x1b[0m\r\n"));
                         break;
                     }
                 }
             }
+            // The writer lets the port go too.
+            closed2.store(true, Ordering::SeqCst);
             exited2.store(true, Ordering::SeqCst);
             wake();
         });
-        Ok(Pty { master: None, writer: dev, rx, child: None, tree: None, exited, closed, reported: true, opened: (0, 0), code: None })
+        Ok(Pty { master: None, writer: Box::new(ChannelWriter(wtx)), rx, child: None, tree: None, exited, closed, drain, reported: true, opened: (0, 0), code: None })
     }
 
     pub fn write(&mut self, bytes: &[u8]) {
@@ -347,15 +425,23 @@ impl Pty {
         }
     }
 
-    pub fn read(&self) -> Vec<u8> {
+    /// What has come, in pieces: when each came and whether it is weft's
+    /// own word (see `rx`).
+    pub fn read_parts(&self) -> Vec<Piece> {
         let mut out = Vec::new();
-        while let Ok(chunk) = self.rx.try_recv() {
-            out.extend_from_slice(&chunk);
-            if out.len() > 4 * 1024 * 1024 {
+        let mut len = 0;
+        while let Ok(p) = self.rx.try_recv() {
+            len += p.2.len();
+            out.push(p);
+            if len > 4 * 1024 * 1024 {
                 break;
             }
         }
         out
+    }
+
+    pub fn read(&self) -> Vec<u8> {
+        self.read_parts().into_iter().flat_map(|p| p.2).collect()
     }
 
     /// The process's exit code, once it has ended (None while it runs, and
@@ -375,6 +461,18 @@ impl Pty {
         self.code
     }
 
+    /// A serial port: what was written is still sent when it is dropped
+    /// (a few seconds at most).
+    pub fn send_before_closing(&self) {
+        self.drain.store(true, Ordering::SeqCst);
+    }
+
+    /// A serial port of this PC (no process behind it): it holds the port
+    /// until dropped.
+    pub fn is_port(&self) -> bool {
+        self.child.is_none() && self.master.is_none()
+    }
+
     pub fn exited(&mut self) -> bool {
         if self.exited.load(Ordering::SeqCst) {
             return true;
@@ -389,11 +487,22 @@ impl Pty {
 /// Linux and macOS the user may not open it (its group, dialout or uucp),
 /// which "in use" sent looking in the wrong place.
 fn serial_open_error(port: &str, e: &serialport::Error) -> String {
+    serial_open_error_listed(port, e, || serialport::available_ports().map(|v| v.into_iter().map(|p| p.port_name).collect()).unwrap_or_default())
+}
+
+/// `serial_open_error`, with the ports the system lists.
+fn serial_open_error_listed(port: &str, e: &serialport::Error, listed: impl Fn() -> Vec<String>) -> String {
     // By its kind, not its words (Windows says it in its own language).
-    let denied = matches!(e.kind(), serialport::ErrorKind::Io(std::io::ErrorKind::PermissionDenied));
+    let mut denied = matches!(e.kind(), serialport::ErrorKind::Io(std::io::ErrorKind::PermissionDenied));
+    // Windows' "access denied" (another program has it) comes as "no such
+    // device", as a port that is not there does: one the system lists is
+    // there, and in use.
+    if cfg!(windows) && e.kind() == serialport::ErrorKind::NoDevice && listed().iter().any(|p| p.eq_ignore_ascii_case(port)) {
+        denied = true;
+    }
     match e.kind() {
-        serialport::ErrorKind::NoDevice | serialport::ErrorKind::Io(std::io::ErrorKind::NotFound) => format!("{port}: no such port"),
         _ if denied && cfg!(windows) => format!("{port} is in use by another program (only one can have it open)"),
+        serialport::ErrorKind::NoDevice | serialport::ErrorKind::Io(std::io::ErrorKind::NotFound) => format!("{port}: no such port"),
         _ if denied => match port_group(port) {
             Some(g) => format!("{port}: you may not open it: it is the group {g}'s, which your user is not in (add your user to {g}, then log in again)"),
             None => format!("{port}: you may not open it: its group (ls -l {port}) is one your user is not in (add your user to it, then log in again)"),
@@ -710,6 +819,15 @@ pub(crate) mod tests {
         use serialport::{Error, ErrorKind};
         let io = |k| Error::new(ErrorKind::Io(k), "os error");
         assert_eq!(serial_open_error("COM99", &Error::new(ErrorKind::NoDevice, "x")), "COM99: no such port");
+        // Windows says a port another program has is no device: one the
+        // system lists is in use.
+        let listed = || vec!["COM3".to_string()];
+        let busy = serial_open_error_listed("com3", &Error::new(ErrorKind::NoDevice, "x"), listed);
+        let gone = serial_open_error_listed("COM7", &Error::new(ErrorKind::NoDevice, "x"), listed);
+        if cfg!(windows) {
+            assert_eq!(busy, "com3 is in use by another program (only one can have it open)");
+        }
+        assert_eq!(gone, "COM7: no such port");
         assert_eq!(serial_open_error("/dev/ttyUSB9", &io(std::io::ErrorKind::NotFound)), "/dev/ttyUSB9: no such port");
         let refused = serial_open_error("/dev/ttyUSB0", &io(std::io::ErrorKind::PermissionDenied));
         if cfg!(windows) {

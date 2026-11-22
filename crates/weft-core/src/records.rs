@@ -6,12 +6,13 @@
 //! | history   | `history/<host>.txt`                   | command lines (`#<unix>` before each, as bash writes them) |
 //! | app log   | `logs/weft-<date>.log`                 | weft's own events                       |
 //! | agent log | `logs/agent-<host>-<date>.log`         | requests to and answers from each host's agent |
+//! | serial    | `logs/serial-<port>-<date>.jsonl`      | a serial console's traffic both ways (serial_log) |
 //!
 //! Each item can be turned off and has a keep time and a size limit
-//! (settings "records"). Keystrokes are never written, so what a password
-//! prompt reads (not echoed) is in none of them; a command typed with a
-//! leading space is left out of commands and history, as bash's
-//! HISTCONTROL=ignorespace does.
+//! (settings "records"). Keystrokes are written only to serial console
+//! logs (what was sent to the device, a password at its login too); a
+//! command typed with a leading space is left out of commands and history,
+//! as bash's HISTCONTROL=ignorespace does.
 
 use chrono::{Local, NaiveDate, TimeZone};
 use serde::{Deserialize, Serialize};
@@ -36,6 +37,7 @@ pub struct Records {
     pub history: Rule,
     pub app_log: Rule,
     pub agent_log: Rule,
+    pub serial_log: Rule,
 }
 
 impl Default for Records {
@@ -46,6 +48,7 @@ impl Default for Records {
             history: Rule { on: true, keep_days: 365, max_mb: 20 },
             app_log: Rule { on: true, keep_days: 30, max_mb: 50 },
             agent_log: Rule { on: true, keep_days: 14, max_mb: 200 },
+            serial_log: Rule { on: true, keep_days: 30, max_mb: 500 },
         }
     }
 }
@@ -56,10 +59,11 @@ pub enum Item {
     History,
     AppLog,
     AgentLog,
+    SerialLog,
 }
 
 impl Item {
-    pub const ALL: [Item; 4] = [Item::Commands, Item::History, Item::AppLog, Item::AgentLog];
+    pub const ALL: [Item; 5] = [Item::Commands, Item::History, Item::AppLog, Item::AgentLog, Item::SerialLog];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -67,6 +71,7 @@ impl Item {
             Item::History => "Command history",
             Item::AppLog => "weft log",
             Item::AgentLog => "Agent logs",
+            Item::SerialLog => "Serial console logs",
         }
     }
 
@@ -76,6 +81,7 @@ impl Item {
             Item::History => "command lines for the composer's ↑↓ and suggestions; the size limit is per host",
             Item::AppLog => "weft's own events: start, shells started, toasts, errors",
             Item::AgentLog => "what the file panel and editor asked each host and what came back",
+            Item::SerialLog => "each serial console's traffic both ways, with times: what the device sent and what was sent to it (typing too, a password at its login as well); palette \"Serial console log\" shows it",
         }
     }
 
@@ -85,6 +91,7 @@ impl Item {
             Item::History => r.history,
             Item::AppLog => r.app_log,
             Item::AgentLog => r.agent_log,
+            Item::SerialLog => r.serial_log,
         }
     }
 
@@ -94,6 +101,7 @@ impl Item {
             Item::History => &mut r.history,
             Item::AppLog => &mut r.app_log,
             Item::AgentLog => &mut r.agent_log,
+            Item::SerialLog => &mut r.serial_log,
         }
     }
 
@@ -104,6 +112,7 @@ impl Item {
             Item::History => ("history", |n| n.ends_with(".txt")),
             Item::AppLog => ("logs", |n| n.starts_with("weft") && n.ends_with(".log")),
             Item::AgentLog => ("logs", |n| n.starts_with("agent-") && n.ends_with(".log")),
+            Item::SerialLog => ("logs", |n| n.starts_with("serial-") && n.ends_with(".jsonl")),
         };
         let Ok(rd) = std::fs::read_dir(root.join(dir)) else { return Vec::new() };
         rd.flatten().filter(|e| keep(&e.file_name().to_string_lossy())).map(|e| e.path()).collect()
@@ -119,10 +128,19 @@ impl Item {
 // run on their own threads).
 static APP_LOG: AtomicBool = AtomicBool::new(true);
 static AGENT_LOG: AtomicBool = AtomicBool::new(true);
+static SERIAL_LOG: AtomicBool = AtomicBool::new(true);
+/// The serial logs' size limit, in MB (0: none): a day's log stops there.
+static SERIAL_LOG_MB: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(500);
 
 pub fn set_switches(r: &Records) {
     APP_LOG.store(r.app_log.on, Ordering::Relaxed);
     AGENT_LOG.store(r.agent_log.on, Ordering::Relaxed);
+    SERIAL_LOG.store(r.serial_log.on, Ordering::Relaxed);
+    SERIAL_LOG_MB.store(r.serial_log.max_mb, Ordering::Relaxed);
+}
+
+pub fn serial_log_on() -> bool {
+    SERIAL_LOG.load(Ordering::Relaxed)
 }
 
 pub fn app_log_on() -> bool {
@@ -141,6 +159,11 @@ pub fn today() -> String {
 /// Now, for a file name: "20261115-143005".
 pub fn stamp() -> String {
     Local::now().format("%Y%m%d-%H%M%S").to_string()
+}
+
+/// How big all serial logs may grow together (bytes; 0: no limit).
+pub fn serial_log_max() -> u64 {
+    SERIAL_LOG_MB.load(Ordering::Relaxed) as u64 * 1024 * 1024
 }
 
 pub fn now() -> f64 {
@@ -236,7 +259,7 @@ fn file_date(p: &Path) -> Option<NaiveDate> {
 pub fn prune(root: &Path, r: &Records) -> Vec<String> {
     let mut done = Vec::new();
     let today = Local::now().date_naive();
-    for item in [Item::Commands, Item::AppLog, Item::AgentLog] {
+    for item in [Item::Commands, Item::AppLog, Item::AgentLog, Item::SerialLog] {
         let rule = item.rule(r);
         // Oldest first.
         let mut files: Vec<(NaiveDate, PathBuf, u64)> =
