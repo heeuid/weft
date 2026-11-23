@@ -5,6 +5,30 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.12.1
+
+Fixed
+- The editor's buttons no longer jump while the word beside Save
+  changes (a memo's editing… / ✓ saved / saved automatically, a file's
+  unsaved / saving… / ✓ saved) or Copy says ✓ copied: each word has the
+  room of its widest.
+- Nothing of weft's is drawn over what a program wrote in a terminal:
+  - The running command's badge (● 2.1s, top right when the prompt is
+    at the top) measured a row by its characters, so a row of Korean
+    (two columns each) looked half empty and the badge went over its
+    end. Rows are measured in columns now; the badge goes only where
+    nothing is, and with no room for it (or its row scrolled away) the
+    running time is a blue badge in the status bar.
+  - Copy mode's keys and "N lines below" were drawn over the terminal
+    (top right, bottom right); they are a blue badge in the status bar
+    now, and a pane in copy mode has a blue frame round it (in the
+    margin, over no text).
+- Typing Korean: a half syllable could stay at the cursor while the next
+  ones were written before it, and Enter and Backspace did nothing. The
+  IME's word that the syllable was over came in a frame without the
+  focus and was missed; it counts now, and text with no word of the IME
+  at all ends the composing too.
+
 ## 0.12.0
 
 Added

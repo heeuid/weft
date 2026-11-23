@@ -557,6 +557,13 @@ pub fn typed_bytes(events: &[Event], preedit: &mut String, mods: Modifiers, app_
     // The preedit was just emptied by the IME (last jamo deleted): the
     // Backspace that did it may arrive after the update in the same frame.
     let mut emptied_by_ime = false;
+    // Composing, yet text with no word of the IME at all this frame: it
+    // let go of the syllable (turned off without saying so); the text is
+    // not composing.
+    let ime_said = events.iter().any(|e| matches!(e, Event::Ime(_)));
+    if !preedit.is_empty() && !ime_said && events.iter().any(|e| matches!(e, Event::Text(_))) {
+        preedit.clear();
+    }
     for ev in events {
         let composing = !preedit.is_empty();
         match ev {
@@ -570,7 +577,8 @@ pub fn typed_bytes(events: &[Event], preedit: &mut String, mods: Modifiers, app_
                 emptied_by_ime = false;
                 out.append(&mut held);
             }
-            Event::Ime(ImeEvent::Disabled) => {
+            // The IME turned off, or on anew: nothing is being composed.
+            Event::Ime(ImeEvent::Disabled) | Event::Ime(ImeEvent::Enabled) => {
                 preedit.clear();
                 out.append(&mut held);
             }
@@ -596,6 +604,25 @@ pub fn typed_bytes(events: &[Event], preedit: &mut String, mods: Modifiers, app_
         }
     }
     out.append(&mut held);
+    out
+}
+
+/// The IME's events alone, for a pane composing in a frame without the
+/// focus: a syllable committed goes to it (it was typed there), and the
+/// composing ends with the IME's word (emptied, turned off or on anew).
+pub fn ime_only(events: &[Event], preedit: &mut String) -> Vec<u8> {
+    let mut out = Vec::new();
+    for ev in events {
+        match ev {
+            Event::Ime(ImeEvent::Commit(s)) if !preedit.is_empty() => {
+                out.extend_from_slice(s.as_bytes());
+                preedit.clear();
+            }
+            Event::Ime(ImeEvent::Preedit(s)) if !preedit.is_empty() => *preedit = s.clone(),
+            Event::Ime(ImeEvent::Disabled) | Event::Ime(ImeEvent::Enabled) => preedit.clear(),
+            _ => {}
+        }
+    }
     out
 }
 
@@ -1108,6 +1135,14 @@ impl App {
             let mut out: Vec<u8> = Vec::new();
             let mut mouse_out: Vec<u8> = Vec::new();
 
+            // A syllable being composed here, and a frame without the focus
+            // (egui then turns the IME off and on again): the IME's word on
+            // it still counts. Its end missed, the half syllable stayed at
+            // the cursor, the next ones written before it, and Enter and
+            // Backspace were taken for composing and dropped.
+            if !focused && !p.preedit.is_empty() {
+                out.extend(ime_only(&events, &mut p.preedit));
+            }
             // Keyboard (only when this pane owns focus).
             if focused && p.copy.is_some() {
                 let mut cm = p.copy.unwrap();
@@ -1382,16 +1417,14 @@ impl App {
             }
         }
         if let Some(cm) = p.copy {
+            // The pane framed while in copy mode: on its edge, in the margin
+            // round the text, so seen without covering any.
+            painter.rect_stroke(body.shrink(1.0), CornerRadius::same(3), Stroke::new(2.0_f32, theme::accent()), StrokeKind::Inside);
             if let Some(i) = vis_index(cm.cur.0) {
                 let r = Rect::from_min_size(pos2(inner.left() + cm.cur.1 as f32 * cw, row_y(i)), vec2(cw, ch));
                 painter.rect_filled(r, CornerRadius::ZERO, theme::tint(theme::accent(), 90));
                 painter.rect_stroke(r, CornerRadius::ZERO, Stroke::new(1.5_f32, theme::accent()), StrokeKind::Inside);
             }
-            let label = "COPY · hjkl w b e 0 $ gg G · v V Ctrl+v select · y copy · Esc";
-            let g = painter.layout_no_wrap(label.into(), FontId::proportional(11.0), theme::accent());
-            let pill = Rect::from_min_size(pos2(inner.right() - g.size().x - 16.0, inner.top()), vec2(g.size().x + 16.0, 18.0));
-            painter.rect_filled(pill, CornerRadius::same(9), theme::tint(theme::accent(), 45));
-            painter.galley(pos2(pill.left() + 8.0, pill.center().y - g.size().y / 2.0), g, theme::accent());
         }
 
         // Ctrl-hover: underline clickable paths/URLs.
@@ -1414,6 +1447,9 @@ impl App {
 
         // Block chrome: gutter bars, status badges, hover toolbars.
         let mut widget_slots: Vec<(usize, Rect)> = Vec::new();
+        // Whether the running command's badge was drawn (else its time goes
+        // to the status bar).
+        let mut running_shown = false;
         if !t.alt_active && !window.is_empty() {
             let first_abs = window.iter().find_map(|v| v.abs(t)).unwrap_or(0);
             let last_abs = window.iter().rev().find_map(|v| v.abs(t)).unwrap_or(0);
@@ -1471,7 +1507,10 @@ impl App {
                 // Badge / toolbar on the prompt line.
                 let Some(ip) = vis_index(b.prompt_line) else { continue };
                 let yp = row_y(ip);
-                let text_len = t.line(b.prompt_line).map(|r| r.text().chars().count()).unwrap_or(0) as f32 * cw;
+                // How far the row is written, in columns (a wide character
+                // takes two, so not its count of characters): the badge goes
+                // only where nothing is, never over what a program drew.
+                let text_len = t.line(b.prompt_line).map(|r| r.used_cols()).unwrap_or(0) as f32 * cw;
                 if in_block && state != BlockState::Prompt {
                     let bs = ch.max(18.0);
                     // A block whose command's text is not known (ksh, dash:
@@ -1517,6 +1556,7 @@ impl App {
                     let w = g.size().x + ch + 8.0;
                     let r = Rect::from_min_size(pos2(inner.right() - w, yp + 2.0), vec2(w, ch - 4.0));
                     if inner.left() + text_len + 12.0 < r.left() {
+                        running_shown |= state == BlockState::Running;
                         painter.rect_filled(r, CornerRadius::same(4), theme::tint(col, 22));
                         let ir = Rect::from_min_size(pos2(r.left() + 3.0, r.top() + (r.height() - ch + 6.0) / 2.0), vec2(ch - 6.0, ch - 6.0));
                         let ic = if state == BlockState::Running {
@@ -1649,11 +1689,6 @@ impl App {
             let frac = top as f32 / (n - rows as f32).max(1.0);
             let y = inner.top() + (inner.height() - h) * frac;
             painter.rect_filled(Rect::from_min_size(pos2(body.right() - 5.0, y), vec2(3.0, h)), CornerRadius::same(2), theme::tint(theme::text_dim(), 120));
-            let label = format!("{} lines below — scroll or type to return", p.scroll);
-            let g = painter.layout_no_wrap(label, FontId::proportional(11.5), theme::text());
-            let r = Rect::from_min_size(pos2(inner.right() - g.size().x - 16.0, inner.bottom() - g.size().y - 10.0), g.size() + vec2(12.0, 6.0));
-            painter.rect_filled(r, CornerRadius::same(5), theme::bg_raised());
-            painter.galley(r.min + vec2(6.0, 3.0), g, theme::text());
         }
 
         let painter = whole;
@@ -1777,6 +1812,10 @@ impl App {
         // put even if the app redraws and moves the cursor around.
         {
             let pm = self.panes.get_mut(&id).unwrap();
+            pm.running_hidden = match pm.term.blocks.last() {
+                Some(b) if !pm.term.alt_active && !running_shown && b.state() == BlockState::Running => Some(b.elapsed().map(fmt_dur).unwrap_or_default()),
+                _ => None,
+            };
             pm.cursor_drawn = drawn;
             pm.text_top = inner.top();
             if let Some(tr) = pm.trace.as_mut() {
@@ -1806,7 +1845,7 @@ impl App {
             crate::widgets::ui_widget(&mut child, w, r, cw, ch, &font, id, &host, at_prompt, &mut acts);
         }
         self.ui_composer(ui, id, inner, cursor_rect, ch, &font, &mut acts);
-        self.ui_search(ui, id, inner, &all, rows, &mut acts);
+        self.ui_search(ui, id, inner, &all, rows);
         self.actions.extend(acts);
     }
 
@@ -1958,7 +1997,7 @@ impl App {
         }
     }
 
-    fn ui_search(&mut self, ui: &mut Ui, id: usize, inner: Rect, all: &[VRow], rows: usize, _acts: &mut Vec<Action>) {
+    fn ui_search(&mut self, ui: &mut Ui, id: usize, inner: Rect, all: &[VRow], rows: usize) {
         // Aa as set here is how the next find starts (kept in settings).
         let mut remember_icase: Option<bool> = None;
         let p = self.panes.get_mut(&id).unwrap();
@@ -2064,6 +2103,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
 
     /// A pane dragged by its header in the real App, frame by frame: the
     /// pointer events egui gets from the mouse.
@@ -2302,6 +2342,34 @@ mod tests {
     }
     fn commit(s: &str) -> Event {
         Event::Ime(ImeEvent::Commit(s.into()))
+    }
+
+    /// The IME turned off and on (a frame without the focus does it): the
+    /// half syllable it held is gone, not left at the cursor taking keys.
+    #[test]
+    fn a_syllable_left_by_the_ime_is_let_go() {
+        // Its end came in a frame without the focus: the IME's word counts.
+        let mut preedit = "하".to_string();
+        assert!(ime_only(&[Event::Ime(ImeEvent::Disabled)], &mut preedit).is_empty());
+        assert_eq!(preedit, "", "turned off: nothing composed");
+        let mut preedit = "하".to_string();
+        assert_eq!(ime_only(&[commit("한")], &mut preedit), "한".as_bytes(), "committed: typed here");
+        assert_eq!(preedit, "");
+        // Not composing: another widget's IME words are not this pane's.
+        let mut preedit = String::new();
+        assert!(ime_only(&[commit("x")], &mut preedit).is_empty());
+        // Missed, then the IME on anew: Enter goes through, new jamo shown.
+        let mut preedit = "하".to_string();
+        let out = typed_bytes(&[Event::Ime(ImeEvent::Enabled), key(Key::Enter)], &mut preedit, Modifiers::NONE, false);
+        assert_eq!(out, b"\r", "Enter not dropped");
+        let mut preedit = "하".to_string();
+        typed_bytes(&[Event::Ime(ImeEvent::Enabled), pre("ㄱ")], &mut preedit, Modifiers::NONE, false);
+        assert_eq!(preedit, "ㄱ");
+        // Text with no word of the IME at all: it let go of the syllable.
+        let mut preedit = "하".to_string();
+        let out = typed_bytes(&[Event::Text("한".into()), key(Key::Enter)], &mut preedit, Modifiers::NONE, false);
+        assert_eq!(out, "한\r".as_bytes(), "the text and Enter, in order");
+        assert_eq!(preedit, "");
     }
 
     #[test]

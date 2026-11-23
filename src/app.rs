@@ -1177,6 +1177,9 @@ pub struct Pane {
     pub search: Option<SearchState>,
     pub bell_at: Option<Instant>,
     pub preedit: String,
+    /// The running command's time when its badge is not on screen (its
+    /// row full, or scrolled away): the status bar says it instead.
+    pub running_hidden: Option<String>,
     /// Caret position last reported to the IME (kept while composing).
     pub ime_rect: Option<Rect>,
     /// Where the terminal's cursor was drawn in the last frame (None: it
@@ -1231,6 +1234,7 @@ impl Pane {
             search: None,
             bell_at: None,
             preedit: String::new(),
+            running_hidden: None,
             ime_rect: None,
             cursor_drawn: None,
             trace: None,

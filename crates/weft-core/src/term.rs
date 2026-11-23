@@ -91,6 +91,13 @@ impl Row {
         self.text_range(0, self.cells.len())
     }
 
+    /// How many columns from the left are written (a wide character takes
+    /// two; a coloured background counts): what is drawn over the row's
+    /// right goes only past this.
+    pub fn used_cols(&self) -> usize {
+        self.cells.iter().rposition(|c| (c.ch != ' ' && c.wide == 0) || c.wide == WIDE_LEAD || c.wide == WIDE_TAIL || c.attr.bg != Color::Default).map_or(0, |i| i + 1 + (self.cells[i].wide == WIDE_LEAD) as usize).min(self.cells.len())
+    }
+
     /// (char, column) pairs, used for searching and hit-testing.
     pub fn chars_with_cols(&self) -> Vec<(char, usize)> {
         self.cells
@@ -2291,6 +2298,18 @@ mod tests {
     fn run(t: &mut Term, s: &str) {
         let mut p = vte::Parser::new();
         t.feed(&mut p, s.as_bytes());
+    }
+
+    /// How far a row is written, in columns: a wide character takes two
+    /// (its count of characters said half), a coloured blank counts.
+    #[test]
+    fn a_rows_written_columns() {
+        let mut t = Term::new(20, 3);
+        run(&mut t, "\u{d55c}\u{ae00}ab\r\n\x1b[41m \x1b[0m\r\n");
+        assert_eq!(t.screen[0].used_cols(), 6, "two wide and two narrow");
+        assert_eq!(t.screen[0].text().chars().count(), 4);
+        assert_eq!(t.screen[1].used_cols(), 1, "a red blank");
+        assert_eq!(t.screen[2].used_cols(), 0, "nothing");
     }
 
     #[test]

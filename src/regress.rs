@@ -645,6 +645,98 @@ fn a_memo_is_typed_and_saved() {
     assert!(h.wait_for(20.0, |_| std::fs::read_to_string(&path).is_ok_and(|t| t == "remember this")), "on disk");
 }
 
+/// Copy mode and a terminal scrolled back are said in the status bar, not
+/// drawn over the terminal's text (a program's own words were covered).
+#[test]
+fn copy_mode_and_scrollback_are_said_in_the_status_bar() {
+    let mut h = Harness::new(json!({}));
+    let id = h.app.active_pane_id().unwrap();
+    // The pane's program says what it says first (ConPTY clears the screen
+    // as it starts): then the lines, so they stay to be scrolled back over.
+    let mut quiet = 0;
+    let mut seen = h.app.panes[&id].term.generation;
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while quiet < 5 && std::time::Instant::now() < until {
+        h.frames(1);
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let now = h.app.panes[&id].term.generation;
+        quiet = if now == seen { quiet + 1 } else { 0 };
+        seen = now;
+    }
+    {
+        let p = h.app.panes.get_mut(&id).unwrap();
+        let mut parser = vte::Parser::new();
+        let lines: String = (0..200).map(|i| format!("line {i}\r\n")).collect();
+        p.term.feed(&mut parser, lines.as_bytes());
+    }
+    h.frames(2);
+    h.command("copy_mode");
+    h.frames(2);
+    assert!(h.texts.iter().any(|t| t.0.trim().starts_with("COPY ·")), "copy mode said");
+    h.key(Key::Escape, Modifiers::NONE);
+    h.frames(2);
+    assert!(!h.texts.iter().any(|t| t.0.trim().starts_with("COPY ·")), "and no more");
+    h.app.panes.get_mut(&id).unwrap().scroll = 5;
+    h.frames(2);
+    assert!(h.texts.iter().any(|t| t.0.trim() == "5 lines below — scroll or type to return"), "scrolled back said");
+}
+
+/// A running command whose badge has no room (a program filled its row
+/// with Korean, two columns each): no badge over the text, its time in the
+/// status bar instead.
+#[test]
+fn a_running_commands_time_shows_when_its_badge_cannot() {
+    let script = std::env::temp_dir().join(format!("weft-fullrow-{}.py", std::process::id()));
+    // The top ten rows, each in place (no scrolling): the prompt's row is
+    // among them wherever the shell put it (zsh may print a blank line first).
+    std::fs::write(&script, "import sys,time\nE=chr(27)\nfor r in range(1, 11):\n    sys.stdout.write(E+'['+str(r)+';1H'+E+'[2K'+'\u{d55c}\u{ae00} '*33)\nsys.stdout.write(E+'[12;1H')\nsys.stdout.flush()\ntime.sleep(30)\n").unwrap();
+    let mut h = Harness::new(json!({"profiles": [{"name": "local", "kind": "local"}], "session": [{"t": "Pane", "host": "local", "cwd": null}], "sidebar": false}));
+    let id = h.app.active_pane_id().unwrap();
+    assert!(h.wait_for(90.0, |h| h.app.panes[&id].term.integrated && h.app.panes[&id].term.at_prompt()), "at the prompt");
+    h.frames(5);
+    h.type_text(&format!("{} -u \"{}\"", crate::testkit::py(), script.display().to_string().replace('\\', "/")));
+    h.key(Key::Enter, Modifiers::NONE);
+    assert!(h.wait_for(30.0, |h| h.app.panes[&id].running_hidden.is_some()), "the badge had no room");
+    assert!(h.wait_for(5.0, |h| h.texts.iter().any(|t| t.0.trim().starts_with("\u{25cf} running"))), "its time in the status bar");
+    h.key(Key::C, Modifiers::CTRL);
+    let _ = std::fs::remove_file(&script);
+}
+
+/// The editor's buttons stay where they are while the word beside Save
+/// changes (editing…, ✓ saved, saved automatically; unsaved, saving…) and
+/// while Copy says ✓ copied.
+#[test]
+fn the_editor_buttons_stay_put() {
+    let mut h = Harness::new(json!({}));
+    h.command("new_memo");
+    h.frames(3);
+    let at = |h: &Harness, t: &str| h.at_exact(t).x;
+    let saved_auto = (at(&h, "Delete…"), at(&h, "Read"));
+    h.type_text("x");
+    h.frames(2);
+    assert!(h.has("memo · editing…"));
+    assert_eq!((at(&h, "Delete…"), at(&h, "Read")), saved_auto, "editing: the same places");
+    h.click_text("Save");
+    assert!(h.wait_for(10.0, |h| h.has("memo · \u{2713} saved")), "said saved");
+    assert_eq!((at(&h, "Delete…"), at(&h, "Read")), saved_auto, "just saved: the same places");
+    h.click_text("Copy");
+    h.frames(2);
+    assert!(h.has("\u{2713} copied"));
+    assert_eq!(at(&h, "Read"), saved_auto.1, "copied: Read stays");
+    // A file: unsaved, saved.
+    let file = h.dir.join("f.txt");
+    std::fs::write(&file, "a").unwrap();
+    h.app.open_file("local", &file.display().to_string().replace('\\', "/"), 1);
+    assert!(h.wait_for(10.0, |h| h.app.editor.files.get(h.app.editor.active).is_some_and(|f| f.text == "a" && !f.loading) && h.has("Reload")), "opened");
+    let clean = at(&h, "Reload");
+    let i = h.app.editor.active;
+    h.app.editor.files[i].text.push('b');
+    h.app.editor.files[i].dirty = true;
+    h.frames(2);
+    assert!(h.has("\u{25cf} unsaved"));
+    assert_eq!(at(&h, "Reload"), clean, "unsaved: Reload stays");
+}
+
 /// The composer sends its line on Enter and closes.
 #[test]
 fn the_composer_sends_on_enter() {

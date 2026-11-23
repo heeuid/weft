@@ -1227,9 +1227,30 @@ impl App {
                 }
                 ui.spacing_mut().item_spacing.x = 10.0;
                 ui.add_space(14.0);
-                // Optional extras, only on a wide window.
-                if width > 1000.0 {
-                    ui.label(small("Ctrl+Space composer · Ctrl+Shift+P commands".into(), theme::text_faint()));
+                // What the active terminal is in, said here and not over its
+                // text (a program's own words would be covered): copy mode,
+                // scrolled back, the running time.
+                let mode = self.active_pane().and_then(|p| {
+                    if p.copy.is_some() {
+                        Some(if width > 1000.0 { "COPY · hjkl w b e 0 $ gg G · v V Ctrl+v select · y copy · Esc".to_string() } else { "COPY · y copy · Esc".to_string() })
+                    } else if p.scroll > 0 && !p.term.alt_active {
+                        Some(format!("{} lines below — scroll or type to return", p.scroll))
+                    } else {
+                        // A running command whose badge has no room on
+                        // screen (a full row, scrolled away): its time here.
+                        p.running_hidden.as_ref().map(|t| format!("\u{25cf} running {t}"))
+                    }
+                });
+                match mode {
+                    // A badge, not faint words: seen at a glance down there.
+                    Some(m) => {
+                        ui.label(RichText::new(format!(" {m} ")).size(11.5).strong().color(theme::bg_base()).background_color(theme::accent()));
+                    }
+                    // Optional extras, only on a wide window.
+                    None if width > 1000.0 => {
+                        ui.label(small("Ctrl+Space composer · Ctrl+Shift+P commands".into(), theme::text_faint()));
+                    }
+                    None => {}
                 }
                 if let Some(p) = self.active_pane() {
                     ui.label(small(format!("{}×{}", p.term.cols, p.term.rows), theme::text_faint()));
@@ -3648,7 +3669,8 @@ impl App {
                     } else {
                         ("memo · saved automatically", theme::text_faint())
                     };
-                    ui.label(RichText::new(state).size(11.5).color(color));
+                    // As wide as its widest: the buttons after it stay put.
+                    crate::widgets::steady_label(ui, state, color, 11.5, &["memo · editing…", "memo · \u{2713} saved", "memo · saved automatically"]);
                     ui.menu_button(RichText::new("Delete…").size(12.5), |ui| {
                         if ui.button(RichText::new("Delete this memo").color(theme::error())).clicked() {
                             delete = true;
@@ -3665,12 +3687,20 @@ impl App {
                     if ui.add_enabled(can_save, save_btn).on_hover_text("Ctrl+S — writes through the agent").clicked() {
                         save = true;
                     }
-                    if f.saving {
-                        ui.label(RichText::new("saving…").size(11.5).color(theme::text_faint()));
+                    // The word beside it, in room as wide as the widest (the
+                    // buttons after it stay put).
+                    let (word, color) = if f.saving {
+                        ("saving…", theme::text_faint())
                     } else if f.dirty && !f.scratch {
-                        ui.label(RichText::new("\u{25cf} unsaved").size(11.5).color(theme::warn())).on_hover_text("changed since it was opened or saved");
+                        ("\u{25cf} unsaved", theme::warn())
                     } else if just_saved {
-                        ui.label(RichText::new("\u{2713} saved").size(11.5).color(theme::success()));
+                        ("\u{2713} saved", theme::success())
+                    } else {
+                        ("", theme::text_faint())
+                    };
+                    let r = crate::widgets::steady_label(ui, word, color, 11.5, &["saving…", "\u{25cf} unsaved", "\u{2713} saved"]);
+                    if f.dirty && !f.scratch && !f.saving {
+                        r.on_hover_text("changed since it was opened or saved");
                     }
                 }
                 // Copy: the selection, or the whole file; says so for a moment.
@@ -3679,7 +3709,7 @@ impl App {
                     ui.ctx().request_repaint_after(std::time::Duration::from_millis(200));
                 }
                 let copy_label = if just_copied { RichText::new("\u{2713} copied").size(12.5).color(theme::success()) } else { RichText::new("Copy").size(12.5) };
-                if !f.binary && ui.add(egui::Button::new(copy_label)).on_hover_text("copy the selection, or the whole file when nothing is selected").clicked() {
+                if !f.binary && crate::widgets::steady_button(ui, copy_label, 12.5, &["Copy", "\u{2713} copied"]).on_hover_text("copy the selection, or the whole file when nothing is selected").clicked() {
                     copy = true;
                 }
                 if !f.scratch && !memo && ui.add_enabled(!f.loading, egui::Button::new(RichText::new("Reload").size(12.5))).clicked() {

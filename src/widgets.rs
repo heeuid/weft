@@ -100,6 +100,29 @@ pub fn text_width(p: &egui::Painter, text: &str, font: FontId) -> f32 {
     p.layout_no_wrap(text.to_owned(), font, egui::Color32::WHITE).size().x
 }
 
+/// A word that changes (saving…, saved, unsaved) in room as wide as the
+/// widest it can be: what follows it stays where it is.
+pub fn steady_label(ui: &mut Ui, text: &str, color: egui::Color32, size: f32, all: &[&str]) -> egui::Response {
+    let font = FontId::proportional(size);
+    let width = |t: &str| ui.fonts(|f| f.layout_no_wrap(t.to_string(), font.clone(), color).size().x);
+    let w = all.iter().copied().chain([text]).map(width).fold(0.0, f32::max);
+    let h = ui.fonts(|f| f.row_height(&font)).max(ui.spacing().interact_size.y);
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, h), Sense::hover());
+    if !text.is_empty() {
+        ui.painter().text(rect.left_center(), Align2::LEFT_CENTER, text, font, color);
+    }
+    resp
+}
+
+/// A button whose word changes for a moment (Copy, ✓ copied) as wide as
+/// the widest of them.
+pub fn steady_button(ui: &mut Ui, text: egui::RichText, size: f32, all: &[&str]) -> egui::Response {
+    let font = FontId::proportional(size);
+    let w = all.iter().map(|t| ui.fonts(|f| f.layout_no_wrap(t.to_string(), font.clone(), egui::Color32::WHITE).size().x)).fold(0.0, f32::max);
+    let pad = ui.spacing().button_padding.x * 2.0;
+    ui.add(egui::Button::new(text).min_size(vec2(w + pad, 0.0)))
+}
+
 pub fn human_size(n: u64) -> String {
     let mut v = n as f64;
     for u in ["B", "K", "M", "G", "T"] {

@@ -150,7 +150,9 @@ jobs:
       matrix:
         include:
           - image: rockylinux:8
-            setup: dnf install -y gcc curl git python3 procps-ng which zsh tcsh ksh
+            # --nobest: a mirror with a newer gcc than its libgcc (seen twice)
+            # still gives a gcc that installs.
+            setup: dnf install -y --nobest gcc curl git python3 procps-ng which zsh tcsh ksh
           - image: debian:12
             setup: apt-get update && apt-get install -y gcc curl git python3 procps zsh fish tcsh ksh mksh dash busybox-static
           - image: alpine:3.20

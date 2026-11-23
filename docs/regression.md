@@ -227,6 +227,11 @@ What the numbers don't show:
 | Files as text/uri-list: file URIs, percent-encoded, CRLF | `xdnd::tests::files_as_a_uri_list` |
 | A folder picked with what is in it is taken once (deleted, copied, dragged) | `dragout::tests::a_folder_once_with_what_is_in_it` |
 | Files of the same name copied to one folder at once each get a name of their own | `transfer::tests::same_names_copied_together_both_arrive` |
+| The editor's buttons stay put while the word beside Save changes (memo: editing…, ✓ saved, saved automatically; a file: unsaved, saving…, ✓ saved) and while Copy says ✓ copied | `regress::the_editor_buttons_stay_put` |
+| A row's written width counts a wide character as two columns and a coloured blank (the running badge measured characters and drew over a full row of Korean) | `term::tests::a_rows_written_columns` |
+| Copy mode and scrolled back are said in the status bar, not drawn over the terminal's text | `regress::copy_mode_and_scrollback_are_said_in_the_status_bar` |
+| A half syllable the IME let go of (its end in a frame without the focus, the IME off and on) is not left at the cursor taking Enter and Backspace | `ui_term::tests::a_syllable_left_by_the_ime_is_let_go` |
+| A running command whose badge has no room (its row full, or scrolled away) has its time in the status bar | `regress::a_running_commands_time_shows_when_its_badge_cannot` |
 | A tooltip waits for the pointer to rest (0.8 s), on each thing anew: passing over Files' rows shows none | `regress::a_tooltip_waits_for_the_pointer_to_rest` |
 | A character weft's fonts lack (kana, Thai, …) is found in a font the system has installed and drawn with it; one no font has stays a box, asked for once | `fallback::tests::a_character_the_fonts_lack_is_found_in_the_systems`, `regress::a_character_weft_lacks_is_drawn_with_an_installed_font` |
 | Deleting to the trash: freedesktop.org's (files/, a .trashinfo with the path percent-encoded and the date, name.2 for a second), macOS' ~/.Trash, the agent's the same | `host::tests::deleting_to_the_trash_keeps_where_it_was` |
