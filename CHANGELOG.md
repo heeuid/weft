@@ -5,6 +5,56 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.12.2
+
+Added
+- **A Settings window** (palette or ☰ menu: Settings…): weft's settings
+  by name with a word on each (theme, font, text size, window scale,
+  cursor, the shell here, asking before closing, Files following the
+  terminal, hidden and git-ignored files, markdown line breaks, the
+  help's language), applied and saved as they change; the windows for
+  theme, fonts, shells, privacy, keys, remote Python and graphics a
+  button away. Hosts lists the hosts weft keeps (ssh hosts, serial
+  consoles opened) to forget one (not one a tab uses). Advanced is
+  settings.json itself, applied on Apply, with the line and column where
+  it is not valid and the names weft does not know.
+- **weft run more than once**, each a window of its own: state.json has
+  a place per window, each weft writing its own (under a lock, so two
+  never write over each other). A window closed while another weft runs
+  is forgotten; the last one closed opens again next time. Ended at once
+  (the system shut down, a crash), they all open again, the most recent
+  in the weft started and the others in more wefts it starts; Settings >
+  General > Windows (`"restore_windows"`) makes it the last one only, or
+  none. A restart's new weft takes the same window. A running weft holds
+  its window's lock (the system's lock on a file, let go when the
+  process ends), which is how another tells it is running.
+
+Changed
+- **Two files**: settings.json holds the settings a person sets, and
+  weft writes it only when one changes, and then only that one, over the
+  file as it is; state.json holds what weft keeps on its own (the tabs,
+  files and folders open, the panels, the searches' modes). An old
+  settings.json's part moves to state.json as weft starts
+  (settings.json.bak kept). Both are written whole beside and moved over
+  the old file: never half a file.
+- The same setting changed in weft and in settings.json before weft
+  read the file: the later of the two wins. settings.json held open by a
+  program that lets others write but not move it over (C's fopen,
+  Python's open) is written where it is, the file as it was kept as
+  settings.json.prev.
+
+Fixed
+- A selection dragged over a markdown table while editing (rich, not
+  Read) made the table flip between its source and the drawn table at
+  every frame. It stays as it was until the button is let go.
+- settings.json edited while weft ran was written over with weft's
+  settings within ten seconds (weft wrote its tabs to it). It is read
+  within a second of a change now and applied, what changed said; not
+  valid JSON (being edited), weft writes nothing to it, says so once,
+  and takes it when it is valid again. Not valid as weft starts, the
+  tabs still come back (from state.json) and the file is not written
+  over with the defaults.
+
 ## 0.12.1
 
 Fixed

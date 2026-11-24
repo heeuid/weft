@@ -177,7 +177,7 @@ What the numbers don't show:
 | Display test: its pages fit, open from Help, show their lines; the logo in pixels | `display_test::tests::the_pages_fit_their_terminal`, `regress::the_display_test_window_shows_its_pages` |
 | Closing weft with unsaved files asks, then closes | `regress::closing_weft_with_unsaved_files_asks` |
 | A restart brings back what was open | `regress::a_restart_brings_back_what_was_open` |
-| The timed save writes settings.json only when something changed | `regress::the_timed_save_writes_only_changes` |
+| The timed save writes state.json only when something changed | `regress::the_timed_save_writes_only_changes` |
 | Keyboard shortcuts: rows hold still on remove | `regress::keys_window_rows_hold_still` |
 | Keyboard shortcuts: + takes the next key (Esc: none, and the window stays), the key then runs the command, ↺ and Reset all go back; the changed filter, search by key, the clash count | `regress::a_key_is_bound_by_pressing_it` |
 | The tab bar: click switches, drag moves (the dragged tab stays active), + opens one on the same host, × and middle click close, the menu closes the others | `regress::the_tab_bar_switches_moves_and_closes` |
@@ -232,6 +232,20 @@ What the numbers don't show:
 | Copy mode and scrolled back are said in the status bar, not drawn over the terminal's text | `regress::copy_mode_and_scrollback_are_said_in_the_status_bar` |
 | A half syllable the IME let go of (its end in a frame without the focus, the IME off and on) is not left at the cursor taking Enter and Backspace | `ui_term::tests::a_syllable_left_by_the_ime_is_let_go` |
 | A running command whose badge has no room (its row full, or scrolled away) has its time in the status bar | `regress::a_running_commands_time_shows_when_its_badge_cannot` |
+| The Settings window: a checkbox applied and saved at once; a host kept forgotten on a second press; Advanced applies settings.json's text, says where it is not valid, names a setting weft does not know | `regress::the_settings_window_changes_settings` |
+| settings.json changed outside is read within a second and applied, not written over; not valid (being edited), nothing written to it, said once; valid again, taken | `regress::settings_json_changed_outside_is_taken` |
+| A setting changed outside and another in weft before weft read the file: both kept, then quiet; a BOM read | `regress::settings_json_and_weft_both_changed_keep_both` |
+| The Settings window's changes take effect beyond the value (Files following); a host a tab uses is not forgotten | `regress::the_settings_window_takes_effect` |
+| settings.json changed outside to an f32 number (window scale 1.3) is taken; Advanced's Apply puts over only what its text changed (a host kept meanwhile stays) | `regress::settings_merges_go_by_what_changed` |
+| A setting set back to empty leaves settings.json too; settings.json read empty for a moment (an editor saving) is not taken for the defaults; made when opened in the editor and there is none | `regress::settings_json_edge_cases` |
+| weft started on a settings.json with a value not of its kind: fixed under Advanced, all of the fixed file is used and saved (hosts, theme kept); not taken for valid by a look at it | `regress::a_settings_json_fixed_under_advanced_keeps_all_of_it` |
+| A host kept while settings.json was not valid (its tab open) is not lost when the file is fixed without it | `regress::a_host_kept_while_settings_json_was_broken_stays` |
+| Hosts added at once outside and in weft are both kept (merged one by one); an old settings.json with a value not of its kind still brings its tabs back | `regress::hosts_merge_one_by_one` |
+| The same setting changed in weft and in settings.json before weft read it: the later one wins, either way | `regress::the_later_change_of_a_setting_wins` |
+| settings.json held open by a program that lets others write but not move it over: saved in place, the old file kept as settings.json.prev (Windows) | `regress::settings_json_held_open_is_saved_in_place` |
+| weft run more than once: a window each in state.json; one closed while another runs is gone, the last stays; ended at once, all come back (or the last, or none, by the setting); a restart keeps its window for the new weft; a state.json of one window (0.12.2) is that window | `regress::each_weft_is_a_window` |
+| A process of this id running now: this one is, one that ended is not (a restart's window left to its new weft only while that runs) | `pty::alive_tests::a_process_running_or_not` |
+| The tabs live in state.json: an old settings.json's move there (settings.json.bak kept); settings.json not valid at the start, the tabs still come back and the file is not written over | `regress::the_tabs_live_in_state_json` |
 | A tooltip waits for the pointer to rest (0.8 s), on each thing anew: passing over Files' rows shows none | `regress::a_tooltip_waits_for_the_pointer_to_rest` |
 | A character weft's fonts lack (kana, Thai, …) is found in a font the system has installed and drawn with it; one no font has stays a box, asked for once | `fallback::tests::a_character_the_fonts_lack_is_found_in_the_systems`, `regress::a_character_weft_lacks_is_drawn_with_an_installed_font` |
 | Deleting to the trash: freedesktop.org's (files/, a .trashinfo with the path percent-encoded and the date, name.2 for a second), macOS' ~/.Trash, the agent's the same | `host::tests::deleting_to_the_trash_keeps_where_it_was` |
@@ -327,6 +341,7 @@ What the numbers don't show:
 | Images, PDF pages | `media::tests::*` |
 | Mermaid; where mermaid-cli is found on Windows | `mermaid::tests::*`, `mermaid::win::*` |
 | A table selection stays with its table when another scrolls out of view | `regress::a_table_selection_stays_with_its_table` |
+| A selection dragged over a table while editing: the table stays rendered until the button is let go (it opened as source under the pointer, moved the lines and closed again, at every frame) | `regress::a_drag_over_a_table_does_not_flicker` |
 | Table cells: letters, a cell, a block; Ctrl+C; the menu | `ui_panels::tests::a_table_selection_copies_letters_a_cell_or_a_block`, `regress::table_cells_select_and_copy` |
 | Closing an unsaved file asks: save, drop, cancel, off | `regress::closing_an_unsaved_file_asks` |
 | Saving then closing asks about what changed meanwhile; Cancel closes nothing later | `regress::saving_then_closing_asks_about_what_changed_meanwhile` |

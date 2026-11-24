@@ -56,25 +56,27 @@ impl App {
             // weft.bat: it rebuilds, and shows the build in its own console.
             Some(bat) => {
                 let mut c = std::process::Command::new("cmd");
-                c.arg("/c").arg(&bat);
+                c.arg("/c").arg(&bat).env("WEFT_WINDOW", &self.window_id);
                 #[cfg(windows)]
                 {
                     use std::os::windows::process::CommandExt;
                     const CREATE_NEW_CONSOLE: u32 = 0x10;
                     c.creation_flags(CREATE_NEW_CONSOLE);
                 }
-                c.spawn().map(|_| bat.display().to_string())
+                c.spawn().map(|ch| (bat.display().to_string(), ch.id()))
             }
             None => {
                 let exe = update_source().or_else(|| std::env::current_exe().ok());
                 match exe {
-                    Some(exe) => std::process::Command::new(&exe).spawn().map(|_| exe.display().to_string()),
+                    Some(exe) => std::process::Command::new(&exe).arg("--window").arg(&self.window_id).spawn().map(|ch| (exe.display().to_string(), ch.id())),
                     None => Err(std::io::Error::other("no weft to start")),
                 }
             }
         };
         match started {
-            Ok(what) => {
+            // The new weft is this window: it is kept for it as this closes.
+            Ok((what, pid)) => {
+                self.handing_over = Some(pid);
                 self.data.log(&format!("restart: started {what}; closing"));
                 self.quit_confirmed = true;
                 self.ctx.send_viewport_cmd(egui::ViewportCommand::Close);

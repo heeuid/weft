@@ -64,6 +64,7 @@ pub(crate) enum Cmd {
     ThemePicker,
     Hidden,
     Settings,
+    SettingsWindow,
     /// "Python on remote hosts…": the Pythons tried there.
     RemotePython,
     /// "Shells…": what weft has in each shell, and the ones to use.
@@ -182,7 +183,8 @@ const COMMANDS: &[(Cmd, &str, &str, &[&str])] = &[
     (Cmd::Trace, "record_terminal", "Record this terminal: what the program sends, what you type, where the cursor is drawn (to a file in data/logs; again to stop)", &[]),
     (Cmd::ConfirmUnsaved, "confirm_unsaved", "Ask before closing unsaved files: on / off", &[]),
     (Cmd::ConfirmRunning, "confirm_running", "Ask before ending running commands: on / off", &[]),
-    (Cmd::Settings, "settings_file", "Open settings.json", &[]),
+    (Cmd::SettingsWindow, "settings", "Settings… (look, terminal, files, help, hosts kept; settings.json)", &[]),
+    (Cmd::Settings, "settings_file", "Open settings.json in the editor (saved, it is applied)", &[]),
     (Cmd::RemotePython, "remote_python", "Python on remote hosts… (the names and paths tried for the Files agent and serial consoles)", &[]),
     (Cmd::Shells, "shells", "Shells… (what weft supports in each shell; the shell to use here and on this host)", &[]),
     (Cmd::AgentLog, "agent_log", "Open agent log for this host", &[]),
@@ -302,7 +304,7 @@ impl App {
         self.run_cmd(c);
     }
 
-    fn run_cmd(&mut self, c: Cmd) {
+    pub(crate) fn run_cmd(&mut self, c: Cmd) {
         let pane = self.active_pane_id();
         match c {
             Cmd::NewTab => {
@@ -474,7 +476,12 @@ impl App {
             }
             Cmd::RemotePython => self.python_window = Some(self.settings.remote_python.join("\n")),
             Cmd::Shells => self.open_shells_window(),
+            Cmd::SettingsWindow => self.open_settings_window(crate::settings_ui::Page::General),
             Cmd::Settings => {
+                // None yet (nothing changed since weft was installed): made.
+                if !self.data.path("settings.json").exists() && self.settings_bad.is_none() {
+                    self.settings_take_over();
+                }
                 self.save_settings();
                 let p = self.data.path("settings.json").display().to_string().replace('\\', "/");
                 self.open_file("local", &p, 1);
@@ -4831,7 +4838,7 @@ fn group(c: Cmd) -> &'static str {
         | Cmd::Theme(_)
         | Cmd::Fonts
         | Cmd::MarkdownBreaks => GROUPS[3],
-        Cmd::Records | Cmd::Settings | Cmd::RemotePython | Cmd::Shells | Cmd::Graphics | Cmd::AgentLog | Cmd::Keys | Cmd::Restart | Cmd::ConfirmUnsaved | Cmd::ConfirmRunning => GROUPS[4],
+        Cmd::Records | Cmd::Settings | Cmd::SettingsWindow | Cmd::RemotePython | Cmd::Shells | Cmd::Graphics | Cmd::AgentLog | Cmd::Keys | Cmd::Restart | Cmd::ConfirmUnsaved | Cmd::ConfirmRunning => GROUPS[4],
         Cmd::Help | Cmd::Features | Cmd::Palette | Cmd::About | Cmd::DisplayTest | Cmd::Trace => GROUPS[5],
     }
 }
@@ -4926,6 +4933,23 @@ fn markdown_body(ui: &mut Ui, f: &mut crate::app::EditorFile, edit_id: Id, size:
         TextEdit::load_state(&ctx, edit_id).and_then(|s| s.cursor.char_range()).map(|r| md::line_of_char(&f.text, r.primary.index))
     } else {
         None
+    };
+    // While the button is held (a selection dragged) the line shown as
+    // markup stays the one it was: a drag over a table opened its source,
+    // which moved the lines under the pointer, which closed it again, at
+    // every frame.
+    let held_id = edit_id.with("md-line-held");
+    let cursor_line = if ctx.input(|i| i.pointer.primary_down()) {
+        match ctx.memory(|m| m.data.get_temp::<Option<usize>>(held_id)) {
+            Some(held) => held,
+            None => {
+                ctx.memory_mut(|m| m.data.insert_temp(held_id, cursor_line));
+                cursor_line
+            }
+        }
+    } else {
+        ctx.memory_mut(|m| m.data.remove::<Option<usize>>(held_id));
+        cursor_line
     };
     let cache_id = edit_id.with("md");
     let (marks, mark_cur) = (f.marks.clone(), f.mark_cur);

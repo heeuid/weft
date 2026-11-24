@@ -695,6 +695,8 @@ fn a_running_commands_time_shows_when_its_badge_cannot() {
     assert!(h.wait_for(90.0, |h| h.app.panes[&id].term.integrated && h.app.panes[&id].term.at_prompt()), "at the prompt");
     h.frames(5);
     h.type_text(&format!("{} -u \"{}\"", crate::testkit::py(), script.display().to_string().replace('\\', "/")));
+    // (Typed in full before Enter: a busy machine's shell takes a moment.)
+    assert!(h.wait_for(20.0, |h| h.texts.iter().any(|t| t.0.contains("weft-fullrow"))), "typed");
     h.key(Key::Enter, Modifiers::NONE);
     assert!(h.wait_for(30.0, |h| h.app.panes[&id].running_hidden.is_some()), "the badge had no room");
     assert!(h.wait_for(5.0, |h| h.texts.iter().any(|t| t.0.trim().starts_with("\u{25cf} running"))), "its time in the status bar");
@@ -968,21 +970,614 @@ fn the_editor_lays_a_file_out_once() {
     }
 }
 
-/// The timed save writes settings.json only when something changed (it
+/// The Settings window (palette: Settings…): a checkbox is applied and
+/// saved at once; a host kept is forgotten on a second press; Advanced
+/// applies settings.json's text, says where it is not valid, and names a
+/// setting weft does not know.
+#[test]
+fn the_settings_window_changes_settings() {
+    let serial = "me@box:/dev/ttyUSB0";
+    let mut h = Harness::new(json!({"profiles": [
+        {"name": "me@box", "kind": "ssh", "target": "me@box"},
+        {"name": serial, "kind": "serial", "via": "me@box", "port": "/dev/ttyUSB0", "baud": 115200}
+    ]}));
+    let file = h.dir.join("settings.json");
+    let on_disk = |k: &str| -> serde_json::Value { serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(&file).unwrap()).unwrap()[k].clone() };
+    h.command("settings");
+    h.frames(3);
+    assert!(!h.app.settings.show_hidden);
+    h.click_text("Show hidden files");
+    h.frames(2);
+    assert!(h.app.settings.show_hidden, "applied");
+    assert_eq!(on_disk("show_hidden"), json!(true), "and saved");
+    // Hosts: Forget, then Forget again.
+    h.click_text("Hosts");
+    h.frames(2);
+    let row = h.find("serial console /dev/ttyUSB0").expect("the serial console listed");
+    let forget = |h: &Harness| h.texts.iter().filter(|(t, _)| t.starts_with("Forget")).map(|(_, r)| r.center()).min_by(|a, b| (a.y - row.center().y).abs().total_cmp(&(b.y - row.center().y).abs())).unwrap();
+    h.click(forget(&h));
+    h.frames(2);
+    assert_eq!(h.app.settings.profiles.len(), 2, "once: asked again");
+    assert!(h.has("Forget? again"));
+    h.click(forget(&h));
+    h.frames(2);
+    assert_eq!(h.app.settings.profiles.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["me@box"], "forgotten");
+    assert_eq!(on_disk("profiles").as_array().map(|a| a.len()), Some(1), "and saved");
+    // Advanced: settings.json's text, applied.
+    h.click_text("Advanced (settings.json)");
+    h.frames(2);
+    let set = |h: &mut Harness, text: String| h.app.settings_window.as_mut().unwrap().text = text;
+    let text = h.app.settings_window.as_ref().unwrap().text.clone();
+    assert!(!text.contains("\"session\""), "the session is not shown");
+    let mut v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    v["font_size"] = json!(20.0);
+    set(&mut h, serde_json::to_string_pretty(&v).unwrap());
+    h.frames(1);
+    h.click(h.at_exact("Apply"));
+    h.frames(2);
+    assert_eq!(h.app.settings.font_size, 20.0, "applied");
+    assert_eq!(on_disk("font_size"), json!(20.0), "and saved");
+    assert!(on_disk("session").is_null(), "the tabs are state.json's");
+    set(&mut h, "{ \"font_size\": ".into());
+    h.frames(1);
+    h.click(h.at_exact("Apply"));
+    h.frames(2);
+    assert!(h.app.settings_window.as_ref().unwrap().error.as_deref().is_some_and(|e| e.contains("line")), "where it is not valid");
+    assert_eq!(h.app.settings.font_size, 20.0, "nothing applied");
+    set(&mut h, "{ \"font_size\": 16, \"fnot_size\": 3 }".into());
+    h.frames(1);
+    h.click(h.at_exact("Apply"));
+    h.frames(2);
+    assert_eq!(h.app.settings.font_size, 16.0);
+    assert!(h.app.settings_window.as_ref().unwrap().notes.iter().any(|n| n.contains("fnot_size")), "an unknown name said");
+}
+
+/// settings.json changed outside weft (another editor) is read within a
+/// second and applied, not written over; weft's own part is not in it
+/// (state.json). Not valid (being edited), weft writes nothing to it and
+/// says so once; valid again, it is taken.
+#[test]
+fn settings_json_changed_outside_is_taken() {
+    let mut h = Harness::new(json!({}));
+    let file = h.dir.join("settings.json");
+    h.app.save_settings();
+    let mut v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert!(v.get("session").is_none(), "the tabs are not in settings.json");
+    v["font_size"] = json!(18.0);
+    v["show_hidden"] = json!(true);
+    let edited = serde_json::to_string_pretty(&v).unwrap();
+    std::fs::write(&file, &edited).unwrap();
+    h.app.poll_prefs_now();
+    assert_eq!((h.app.settings.font_size, h.app.settings.show_hidden), (18.0, true), "taken");
+    h.command("new_tab");
+    h.app.autosave_settings();
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), edited, "not written over (a new tab is state.json's)");
+    assert_eq!(tabs_in_state(&h.dir), Some(2), "the tabs in state.json");
+    // Being edited: not valid for a while.
+    std::fs::write(&file, "{ \"font_size\": ").unwrap();
+    h.app.poll_prefs_now();
+    assert!(h.app.settings_bad.is_none(), "once: maybe an editor saving it");
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    h.app.poll_prefs_now();
+    assert!(h.app.settings_bad.is_some(), "the same a second later: known");
+    // Undone back to what weft had: valid again.
+    std::fs::write(&file, &edited).unwrap();
+    h.app.poll_prefs_now();
+    assert!(h.app.settings_bad.is_none(), "undone: valid again");
+    std::fs::write(&file, "{ \"font_size\": ").unwrap();
+    h.app.poll_prefs_now();
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    h.app.poll_prefs_now();
+    assert!(h.app.settings_bad.is_some());
+    assert_eq!(h.app.settings.font_size, 18.0, "the settings kept");
+    h.app.settings.ui_scale = 1.5;
+    h.app.save_settings();
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "{ \"font_size\": ", "nothing written to it");
+    // Valid again.
+    std::fs::write(&file, "{ \"font_size\": 13 }").unwrap();
+    h.app.poll_prefs_now();
+    assert!(h.app.settings_bad.is_none());
+    assert_eq!(h.app.settings.font_size, 13.0, "taken");
+}
+
+/// A setting set back to empty (the login shell again) leaves the file
+/// too (an empty one is not written, so it was kept as it was); an editor
+/// saving settings.json, read empty for a moment, is not taken for the
+/// defaults; settings.json to open in the editor, made if there is none.
+#[test]
+fn settings_json_edge_cases() {
+    let mut h = Harness::new(json!({}));
+    let file = h.dir.join("settings.json");
+    let on_disk = |f: &std::path::Path| -> serde_json::Value { serde_json::from_str(&std::fs::read_to_string(f).unwrap()).unwrap() };
+    h.app.settings.unix_shell = "zsh".into();
+    h.app.save_settings();
+    assert_eq!(on_disk(&file)["unix_shell"], json!("zsh"));
+    h.app.settings.unix_shell.clear();
+    h.app.save_settings();
+    assert!(on_disk(&file).get("unix_shell").is_none(), "gone from the file too");
+    // An editor saving: empty for a moment.
+    h.app.settings.font_size = 17.0;
+    h.app.save_settings();
+    std::fs::write(&file, "").unwrap();
+    h.app.poll_prefs_now();
+    assert_eq!(h.app.settings.font_size, 17.0, "not the defaults");
+    let v = json!({"font_size": 22.0});
+    std::fs::write(&file, v.to_string()).unwrap();
+    h.app.poll_prefs_now();
+    assert_eq!(h.app.settings.font_size, 22.0, "then what it saved");
+    // A value not of its kind: said, not applied, nothing written over it.
+    std::fs::write(&file, "{ \"font_size\": \"big\" }").unwrap();
+    h.app.poll_prefs_now();
+    assert!(h.app.settings_bad.is_some(), "said");
+    assert_eq!(h.app.settings.font_size, 22.0, "not applied");
+    h.app.settings.ui_scale = 1.2;
+    h.app.save_settings();
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "{ \"font_size\": \"big\" }", "nothing written over it");
+    std::fs::write(&file, "{ \"font_size\": 23 }").unwrap();
+    h.app.poll_prefs_now();
+    assert_eq!((h.app.settings_bad.is_none(), h.app.settings.font_size), (true, 23.0), "fixed: taken");
+    // None: made to open.
+    std::fs::remove_file(&file).unwrap();
+    h.command("settings_file");
+    assert!(file.exists(), "made");
+    assert!(h.wait_for(20.0, |h| h.app.editor.files.iter().any(|f| f.path.ends_with("settings.json") && !f.loading)), "opened");
+}
+
+/// A setting changed outside and another in weft before weft read the
+/// file: each kept, neither lost; then quiet (nothing read or written
+/// again). A file with a BOM, compact, is read.
+#[test]
+fn settings_json_and_weft_both_changed_keep_both() {
+    let mut h = Harness::new(json!({}));
+    let file = h.dir.join("settings.json");
+    h.app.save_settings();
+    let mut v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    v["show_hidden"] = json!(true);
+    std::fs::write(&file, format!("\u{feff}{}", serde_json::to_string(&v).unwrap())).unwrap();
+    // weft's own change, the file not read yet.
+    h.app.settings.font_size = 21.0;
+    h.app.save_settings();
+    assert_eq!((h.app.settings.show_hidden, h.app.settings.font_size), (true, 21.0), "both");
+    let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!((saved["show_hidden"].clone(), saved["font_size"].clone()), (json!(true), json!(21.0)), "both saved");
+    let written = std::fs::read_to_string(&file).unwrap();
+    h.app.poll_prefs_now();
+    h.app.autosave_settings();
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), written, "quiet after");
+    assert_eq!(h.app.settings.font_size, 21.0);
+}
+
+/// settings.json changed outside to a number weft holds as f32 (1.3 for
+/// the window scale): taken; Advanced's Apply puts over only what its text
+/// changed (a host kept meanwhile stays).
+#[test]
+fn settings_merges_go_by_what_changed() {
+    let mut h = Harness::new(json!({}));
+    let file = h.dir.join("settings.json");
+    h.app.settings.ui_scale = 1.1;
+    h.app.save_settings();
+    let mut v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    v["ui_scale"] = json!(1.3);
+    std::fs::write(&file, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    h.app.poll_prefs_now();
+    h.app.save_settings();
+    assert!((h.app.settings.ui_scale - 1.3).abs() < 1e-6, "taken: {}", h.app.settings.ui_scale);
+    // Advanced: the text edited; a host kept meanwhile.
+    h.command("settings");
+    h.frames(2);
+    h.click_text("Advanced (settings.json)");
+    h.frames(2);
+    let text = h.app.settings_window.as_ref().unwrap().text.clone();
+    let mut t: serde_json::Value = serde_json::from_str(&text).unwrap();
+    t["font_size"] = json!(19.0);
+    h.app.settings_window.as_mut().unwrap().text = serde_json::to_string_pretty(&t).unwrap();
+    h.app.settings.profiles.push(crate::host::Profile { name: "kept@meanwhile".into(), kind: crate::host::HostKind::Ssh { target: "kept@meanwhile".into(), args: Vec::new(), shell: Default::default(), plain: false, x11: false } });
+    h.frames(1);
+    h.click(h.at_exact("Apply"));
+    h.frames(2);
+    assert_eq!(h.app.settings.font_size, 19.0, "the edit");
+    assert!(h.app.settings.profiles.iter().any(|p| p.name == "kept@meanwhile"), "the host kept meanwhile stays");
+    let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(saved["font_size"], json!(19.0), "saved");
+}
+
+/// The Settings window's changes need more than the value: Files told to
+/// follow or not, keys bound; a host a tab uses is not forgotten.
+#[test]
+fn the_settings_window_takes_effect() {
+    let mut h = Harness::new(json!({"profiles": [{"name": "t2", "kind": "custom", "pty": [crate::testkit::py(), "-c", "import time; time.sleep(60)"], "agent": [crate::testkit::py(), "-c", "0"]}]}));
+    h.app.new_tab("t2", None);
+    h.frames(2);
+    h.command("settings");
+    h.frames(3);
+    let follow = h.app.side.follow;
+    h.click_text("Files follows the terminal's folder");
+    h.frames(2);
+    assert_eq!((h.app.settings.follow_cwd, h.app.side.follow), (!follow, !follow), "Files told");
+    h.click_text("Hosts");
+    h.frames(2);
+    let forget = h.texts.iter().find(|(t, _)| t == "Forget").map(|(_, r)| r.center()).expect("Forget");
+    h.click(forget);
+    h.frames(2);
+    h.click(forget);
+    h.frames(2);
+    assert!(h.app.settings.profiles.iter().any(|p| p.name == "t2"), "a tab uses it: kept");
+}
+
+/// How many tabs state.json keeps for its window (one window here).
+fn tabs_in_state(dir: &std::path::Path) -> Option<usize> {
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("state.json")).ok()?).ok()?;
+    v["windows"].as_object()?.values().next()?["session"].as_array().map(|s| s.len())
+}
+
+/// weft run more than once on one data folder (two Apps here, each with
+/// its window's lock as a weft process has it): each its own window in
+/// state.json; one closed while another runs is gone, the last one stays;
+/// ended at once (a crash, a shutdown), they all come back — this weft
+/// the most recent, the others for main to open — or the last one, or
+/// none, by the setting; a restart keeps its window for the new weft; a
+/// state.json of one window (0.12.2) is that window.
+#[test]
+fn each_weft_is_a_window() {
+    use crate::app::App;
+    use crate::host::DataDir;
+    let dir = std::env::temp_dir().join(format!("weft-windows-{}", std::process::id()));
+    let fresh = |restore: &str| {
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        if !restore.is_empty() {
+            std::fs::write(dir.join("settings.json"), json!({"restore_windows": restore}).to_string()).unwrap();
+        }
+    };
+    let open = |wanted: Option<&str>| App::new_in_window(egui::Context::default(), DataDir::at(&dir), wanted, false);
+    let windows = || -> serde_json::Map<String, serde_json::Value> {
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("state.json")).unwrap_or_default()).unwrap_or_default();
+        v["windows"].as_object().cloned().unwrap_or_default()
+    };
+    let end = |mut a: App| a.window_lock = None;
+    // As the window's × does (frame.rs): saved, left, its lock let go.
+    let close = |a: &mut App| {
+        a.save_settings();
+        crate::instances::leave(&a.data, &a.window_id, a.handing_over, &mut a.window_lock);
+    };
+
+    // Two at once: a window each; one closed while the other runs, gone.
+    fresh("");
+    let mut a = open(None);
+    a.new_tab("local", None);
+    a.save_settings();
+    let mut b = open(None);
+    assert_ne!(a.window_id, b.window_id, "a window each");
+    assert_eq!(b.tabs.len(), 1, "a new window, not a's");
+    b.save_settings();
+    assert_eq!(windows().len(), 2);
+    close(&mut b);
+    end(b);
+    assert_eq!(windows().len(), 1, "closed while a runs: gone");
+    let a_id = a.window_id.clone();
+    close(&mut a);
+    end(a);
+    assert_eq!(windows().len(), 1, "the last one stays");
+    let c = open(None);
+    assert_eq!((c.window_id.clone(), c.tabs.len()), (a_id, 2), "and comes back");
+    end(c);
+
+    // Ended at once: all of them come back.
+    fresh("");
+    let mut a = open(None);
+    a.new_tab("local", None);
+    a.save_settings();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let mut b = open(None);
+    b.save_settings();
+    let (a_id, b_id) = (a.window_id.clone(), b.window_id.clone());
+    end(a);
+    end(b);
+    let c = open(None);
+    assert_eq!(c.window_id, b_id, "the most recent here");
+    assert_eq!(c.windows_to_open, vec![a_id.clone()], "the other for main to open");
+    // Left to the weft started for it: another starting now does not take it.
+    let e = open(None);
+    assert!(e.window_id != a_id && e.windows_to_open.is_empty(), "not taken by another");
+    end(e);
+    end(c);
+    let d = open(Some(&a_id));
+    assert_eq!((d.window_id.clone(), d.tabs.len()), (a_id, 2), "opened as that window");
+    end(d);
+
+    // The last one only, or none.
+    for (restore, left) in [("last", 1), ("none", 0)] {
+        fresh(restore);
+        let mut a = open(None);
+        a.save_settings();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let mut b = open(None);
+        b.save_settings();
+        let b_id = b.window_id.clone();
+        end(a);
+        end(b);
+        let c = open(None);
+        assert!(c.windows_to_open.is_empty(), "{restore}: none to open besides");
+        assert_eq!(windows().len(), left, "{restore}: the others gone");
+        if restore == "last" {
+            assert_eq!(c.window_id, b_id);
+        }
+        end(c);
+    }
+
+    // A restart keeps its window (another weft running or not), and the
+    // new weft takes it.
+    fresh("");
+    let mut a = open(None);
+    a.new_tab("local", None);
+    let other = open(None);
+    a.handing_over = Some(std::process::id());
+    let a_id = a.window_id.clone();
+    close(&mut a);
+    end(a);
+    assert!(windows().contains_key(&a_id), "kept for the new weft");
+    // Another weft started meanwhile does not take it.
+    let f = open(None);
+    assert_ne!(f.window_id, a_id, "left to the new weft");
+    end(f);
+    let n = open(Some(&a_id));
+    assert_eq!(n.tabs.len(), 2, "the new weft is that window");
+    end(n);
+    end(other);
+
+    // A restart whose new weft never came (a launcher's build failed: its
+    // process ended): the window is free at once, not ten minutes later.
+    fresh("");
+    let mut a = open(None);
+    a.new_tab("local", None);
+    let gone = std::process::Command::new(crate::testkit::py()).args(["-c", "0"]).spawn().map(|mut c| {
+        let id = c.id();
+        let _ = c.wait();
+        id
+    });
+    a.handing_over = gone.ok();
+    let a_id = a.window_id.clone();
+    close(&mut a);
+    end(a);
+    let f = open(None);
+    assert_eq!((f.window_id.clone(), f.tabs.len()), (a_id, 2), "taken: the one to take it over is gone");
+    end(f);
+
+    // state.json of one window, from 0.12.2.
+    fresh("");
+    let here = dir.display().to_string().replace('\\', "/");
+    std::fs::write(dir.join("state.json"), json!({"session": [{"t": "Pane", "host": "local", "cwd": here}, {"t": "Pane", "host": "local", "cwd": here}]}).to_string()).unwrap();
+    let c = open(None);
+    assert_eq!(c.tabs.len(), 2, "its tabs");
+    assert_eq!(windows().len(), 1, "written as one window at once (not a second one later)");
+    let mut c = c;
+    c.save_settings();
+    assert_eq!(windows().len(), 1, "still one");
+    end(c);
+
+    // state.json not JSON: kept as state.json.bad, a new window.
+    fresh("");
+    std::fs::write(dir.join("state.json"), "{ not json").unwrap();
+    let c = open(None);
+    assert_eq!(c.tabs.len(), 1, "a new window");
+    assert!(dir.join("state.json.bad").exists(), "the file kept");
+    end(c);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// settings.json from before state.json (the tabs in it): they come back,
+/// move to state.json, and the old file is kept as settings.json.bak.
+/// settings.json not valid as weft starts: the tabs come back all the
+/// same (from state.json), and the file is not written over.
+#[test]
+fn the_tabs_live_in_state_json() {
+    let dir = std::env::temp_dir().join(format!("weft-statejson-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let here = dir.display().to_string().replace('\\', "/");
+    let old = json!({"font_size": 15.0, "session": [{"t": "Pane", "host": "local", "cwd": here}, {"t": "Pane", "host": "local", "cwd": here}]});
+    std::fs::write(dir.join("settings.json"), serde_json::to_string_pretty(&old).unwrap()).unwrap();
+    let app = crate::app::App::new_in(egui::Context::default(), crate::host::DataDir::at(dir.clone()));
+    assert_eq!((app.tabs.len(), app.settings.font_size), (2, 15.0), "as before");
+    let prefs: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("settings.json")).unwrap()).unwrap();
+    assert!(prefs.get("session").is_none() && prefs["font_size"] == json!(15.0), "settings.json: the settings");
+    assert_eq!(tabs_in_state(&dir), Some(2), "state.json: the tabs");
+    assert!(dir.join("settings.json.bak").exists(), "the old file kept");
+    drop(app);
+    // settings.json broken: the tabs still come back.
+    std::fs::write(dir.join("settings.json"), "{ \"font_size\": 20, }").unwrap();
+    let mut app = crate::app::App::new_in(egui::Context::default(), crate::host::DataDir::at(dir.clone()));
+    assert!(app.settings_bad.is_some(), "known not valid");
+    assert_eq!(app.tabs.len(), 2, "the tabs from state.json");
+    app.save_settings();
+    assert_eq!(std::fs::read_to_string(dir.join("settings.json")).unwrap(), "{ \"font_size\": 20, }", "left as it is");
+    drop(app);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// weft started on a settings.json with a value not of its kind: fixed
+/// under Advanced, the whole file as fixed is used and saved (its hosts
+/// and theme kept, not the defaults weft ran on); not said to be valid
+/// before it is.
+#[test]
+fn a_settings_json_fixed_under_advanced_keeps_all_of_it() {
+    let dir = std::env::temp_dir().join(format!("weft-advfix-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("settings.json");
+    let broken = json!({"font_size": "14", "theme": "nord", "profiles": [{"name": "me@box", "kind": "ssh", "target": "me@box"}]});
+    std::fs::write(&file, serde_json::to_string_pretty(&broken).unwrap()).unwrap();
+    let mut app = crate::app::App::new_in(egui::Context::default(), crate::host::DataDir::at(dir.clone()));
+    assert!(app.settings_bad.is_some(), "known");
+    app.poll_prefs_now();
+    assert!(app.settings_bad.is_some(), "not taken for valid by a look at it");
+    // Fixed under Advanced.
+    app.open_settings_window(crate::settings_ui::Page::Advanced);
+    let text = app.settings_window.as_ref().unwrap().text.clone();
+    assert!(text.contains("me@box"), "the file as it is shown");
+    let fixed = text.replace("\"14\"", "14");
+    let applied = app.apply_settings_text(&fixed);
+    assert!(applied.is_ok(), "{applied:?}");
+    app.settings_take_over();
+    let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!((saved["font_size"].clone(), saved["theme"].clone()), (json!(14.0), json!("nord")), "all of it");
+    assert_eq!(saved["profiles"].as_array().map(|p| p.len()), Some(1), "its hosts kept");
+    assert!(dir.join("settings.json.bak").exists(), "the file as it was kept beside");
+    drop(app);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A host kept while settings.json was not valid (connected meanwhile,
+/// its tab open) is not lost when the file is fixed without it.
+#[test]
+fn a_host_kept_while_settings_json_was_broken_stays() {
+    let mut h = Harness::new(json!({}));
+    let file = h.dir.join("settings.json");
+    h.app.save_settings();
+    std::fs::write(&file, "{ \"font_size\": ").unwrap();
+    h.app.poll_prefs_now();
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    h.app.poll_prefs_now();
+    assert!(h.app.settings_bad.is_some());
+    // Kept meanwhile, with a tab on it.
+    h.app.settings.profiles.push(crate::host::Profile { name: "t3".into(), kind: crate::host::HostKind::Custom { pty: vec![crate::testkit::py().into(), "-c".into(), "import time; time.sleep(60)".into()], agent: vec![crate::testkit::py().into(), "-c".into(), "0".into()], shell: Default::default(), plain: false } });
+    h.app.new_tab("t3", None);
+    h.frames(2);
+    // Fixed outside, without it.
+    std::fs::write(&file, "{ \"font_size\": 15 }").unwrap();
+    h.app.poll_prefs_now();
+    assert_eq!(h.app.settings.font_size, 15.0, "the fix taken");
+    assert!(h.app.settings.profiles.iter().any(|p| p.name == "t3"), "the host a tab uses kept");
+    assert!(std::fs::read_to_string(&file).unwrap().contains("\"t3\""), "and saved");
+}
+
+/// The same setting changed in weft and in the file before weft read it:
+/// the later one wins, whichever that is.
+#[test]
+fn the_later_change_of_a_setting_wins() {
+    let mut h = Harness::new(json!({}));
+    let file = h.dir.join("settings.json");
+    h.app.settings.font_size = 14.0;
+    h.app.save_settings();
+    let write_font = |n: f64| {
+        let mut v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        v["font_size"] = json!(n);
+        std::fs::write(&file, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    };
+    // Here first, then the file: the file's.
+    h.app.settings.font_size = 18.0;
+    h.app.poll_prefs_now();
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    write_font(16.0);
+    h.app.poll_prefs_now();
+    h.app.save_settings();
+    assert_eq!(h.app.settings.font_size, 16.0, "the file's, later");
+    // The file first, then here: weft's.
+    write_font(20.0);
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    h.app.settings.font_size = 22.0;
+    h.app.save_settings();
+    assert_eq!(h.app.settings.font_size, 22.0, "weft's, later");
+    let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(saved["font_size"], json!(22.0), "and saved");
+}
+
+/// settings.json held open by a program that lets others write but not
+/// move it over (C's fopen, Python's open): saved all the same, written
+/// where it is, the file as it was kept as settings.json.prev.
+#[cfg(windows)]
+#[test]
+fn settings_json_held_open_is_saved_in_place() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let mut h = Harness::new(json!({}));
+    let file = h.dir.join("settings.json");
+    h.app.save_settings();
+    // FILE_SHARE_READ | FILE_SHARE_WRITE, not FILE_SHARE_DELETE.
+    let held = std::fs::OpenOptions::new().read(true).share_mode(0x1 | 0x2).open(&file).unwrap();
+    h.app.settings.font_size = 19.0;
+    h.app.save_settings();
+    let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(saved["font_size"], json!(19.0), "saved where it is");
+    assert!(h.dir.join("settings.json.prev").exists(), "the file as it was kept");
+    drop(held);
+}
+
+/// Hosts added at once in two places (outside, or by another weft, and in
+/// this one before it read the file): both kept, one by one, not one list
+/// over the other. A settings.json from before state.json with a value not
+/// of its kind: its tabs still come back.
+#[test]
+fn hosts_merge_one_by_one() {
+    let mut h = Harness::new(json!({}));
+    let file = h.dir.join("settings.json");
+    let host = |n: &str| json!({"name": n, "kind": "ssh", "target": n});
+    h.app.save_settings();
+    let mut v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    v["profiles"].as_array_mut().unwrap().push(host("x@outside"));
+    std::fs::write(&file, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    // This weft keeps another before it reads the file.
+    h.app.settings.profiles.push(serde_json::from_value(host("y@here")).unwrap());
+    h.app.save_settings();
+    let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    let names: Vec<&str> = saved["profiles"].as_array().unwrap().iter().filter_map(|p| p["name"].as_str()).collect();
+    assert!(names.contains(&"x@outside") && names.contains(&"y@here"), "both: {names:?}");
+    assert!(h.app.settings.profiles.iter().any(|p| p.name == "x@outside"), "and taken here");
+    // Shells for hosts, none before: one set outside, one here, at once.
+    let mut v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    v["remote_shells"] = json!({"x@outside": "zsh"});
+    std::fs::write(&file, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    h.app.settings.remote_shells.insert("y@here".into(), "fish".into());
+    h.app.save_settings();
+    let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(saved["remote_shells"], json!({"x@outside": "zsh", "y@here": "fish"}), "both shells");
+    // Advanced being edited while a host is added outside: kept.
+    h.command("settings");
+    h.frames(2);
+    h.click_text("Advanced (settings.json)");
+    h.frames(2);
+    let mut v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    v["profiles"].as_array_mut().unwrap().push(host("z@meanwhile"));
+    std::fs::write(&file, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    let text = h.app.settings_window.as_ref().unwrap().text.clone();
+    let mut t: serde_json::Value = serde_json::from_str(&text).unwrap();
+    t["font_size"] = json!(18.0);
+    h.app.settings_window.as_mut().unwrap().text = serde_json::to_string_pretty(&t).unwrap();
+    h.frames(1);
+    h.click(h.at_exact("Apply"));
+    h.frames(2);
+    assert_eq!(h.app.settings.font_size, 18.0, "the edit");
+    assert!(h.app.settings.profiles.iter().any(|p| p.name == "z@meanwhile"), "the host added outside kept");
+    assert!(std::fs::read_to_string(&file).unwrap().contains("z@meanwhile"), "and in the file");
+    drop(h);
+    // From before state.json, a value not of its kind.
+    let dir = std::env::temp_dir().join(format!("weft-oldbroken-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let here = dir.display().to_string().replace('\\', "/");
+    let old = json!({"font_size": "14", "session": [{"t": "Pane", "host": "local", "cwd": here}, {"t": "Pane", "host": "local", "cwd": here}]});
+    std::fs::write(dir.join("settings.json"), serde_json::to_string_pretty(&old).unwrap()).unwrap();
+    let app = crate::app::App::new_in(egui::Context::default(), crate::host::DataDir::at(dir.clone()));
+    assert!(app.settings_bad.is_some());
+    assert_eq!(app.tabs.len(), 2, "its tabs come back");
+    assert!(dir.join("settings.json.bak").exists(), "kept beside");
+    drop(app);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The timed save writes state.json only when something changed (it
 /// wrote it every ten seconds regardless, inside a frame); an asked-for
 /// save always writes.
 #[test]
 fn the_timed_save_writes_only_changes() {
     let mut h = Harness::new(json!({}));
-    let file = h.dir.join("settings.json");
+    let file = h.dir.join("state.json");
     h.app.save_settings();
     std::fs::remove_file(&file).unwrap();
     h.app.autosave_settings();
     assert!(!file.exists(), "nothing changed: nothing written");
     h.command("new_tab");
     h.app.autosave_settings();
-    let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).expect("the new tab was written")).unwrap();
-    assert_eq!(saved["session"].as_array().map(|s| s.len()), Some(2));
+    assert_eq!(tabs_in_state(&h.dir), Some(2), "the new tab was written");
     std::fs::remove_file(&file).unwrap();
     h.app.save_settings();
     assert!(file.exists(), "asked for: written");
@@ -1257,6 +1852,45 @@ fn a_table_selection_stays_with_its_table() {
     assert!(h.wait_for(20.0, |h| h.has("b3") && !h.has("a3")), "the first table is out of view, the second still there");
     h.frame(vec![Event::Copy]);
     assert_eq!(h.copied.take().as_deref(), Some("b3"), "still the second table's cell");
+}
+
+/// A selection dragged over a table while editing: the table stays as it
+/// was until the button is let go (opened as source under the pointer, it
+/// moved the lines, closed again, and flickered at every frame).
+#[test]
+fn a_drag_over_a_table_does_not_flicker() {
+    let mut h = Harness::new(json!({}));
+    h.size = egui::vec2(1200.0, 900.0);
+    let file = h.dir.join("drag.md");
+    std::fs::write(&file, "intro line here\n\n| a1 | a2 |\n|---|---|\n| a3 | a4 |\n| a5 | a6 |\n\nafter the table\n\nlast line\n").unwrap();
+    let path = file.display().to_string().replace('\\', "/");
+    h.app.open_file("local", &path, 1);
+    assert!(h.wait_for(20.0, |h| h.has("a3") && h.app.editor.files.iter().all(|f| !f.loading)), "opened");
+    let i = h.app.editor.files.iter().position(|f| f.path == path).unwrap();
+    assert!(!h.app.editor.files[i].read, "editing, not read mode");
+    let raw = |h: &Harness| !h.texts.iter().any(|(t, _)| t == "a3");
+    // The document's text (one piece): its first line, and below the table.
+    let doc = h.texts.iter().find(|(t, _)| t.starts_with("intro line")).map(|(_, r)| *r).unwrap();
+    let from = doc.left_top() + egui::vec2(30.0, 6.0);
+    h.click(from);
+    h.frames(2);
+    assert!(!raw(&h), "the table rendered while the cursor is above it");
+    // Press, and move down over the table and below it, slowly.
+    let doc = h.texts.iter().find(|(t, _)| t.starts_with("intro line")).map(|(_, r)| *r).unwrap();
+    let to = doc.left_bottom() + egui::vec2(30.0, -30.0);
+    h.now += 1.0;
+    h.frame(vec![Event::PointerMoved(from)]);
+    h.frame(vec![h.button(from, egui::PointerButton::Primary, true)]);
+    let mut seen = Vec::new();
+    for k in 1..=24 {
+        h.frame(vec![Event::PointerMoved(from + (to - from) * k as f32 / 24.0)]);
+        seen.push(raw(&h));
+    }
+    assert!(seen.iter().all(|r| !r), "the table never opened while dragging: {seen:?}");
+    h.frame(vec![h.button(to, egui::PointerButton::Primary, false)]);
+    h.frames(2);
+    let sel = egui::TextEdit::load_state(&h.ctx, egui::Id::new(("editor", i, path.clone()))).and_then(|s| s.cursor.char_range()).map(|r| (r.primary.index.min(r.secondary.index), r.primary.index.max(r.secondary.index)));
+    assert!(sel.is_some_and(|(a, b)| b > a + 20), "a selection made over it: {sel:?}");
 }
 
 /// The editor keeps a few laid-out files, not every one ever opened.
@@ -3482,7 +4116,9 @@ fn a_host_without_python_says_so_where_the_gui_needs_it() {
 #[test]
 fn connect_keeps_a_profile_once_it_connects() {
     let mut h = Harness::new(json!({}));
-    let on_disk = |h: &Harness| std::fs::read_to_string(h.app.data.path("settings.json")).unwrap_or_default();
+    // settings.json and state.json (the tabs) together.
+    let on_disk = |h: &Harness| ["settings.json", "state.json"].iter().map(|f| std::fs::read_to_string(h.app.data.path(f)).unwrap_or_default()).collect::<Vec<_>>().join("
+");
     let connect = |h: &mut Harness, target: &str| {
         h.app.connect = Some(crate::app::ConnectState { target: target.into(), split: false, password: String::new() });
         h.frames(2);

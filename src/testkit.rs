@@ -96,6 +96,8 @@ impl Harness {
         // As the window's × does: weft saves on its way out, by itself.
         self.close_window();
         assert!(!self.window.iter().any(|c| matches!(c, egui::ViewportCommand::CancelClose)), "weft closes without a question");
+        // The old weft gone (its process ended: its window's lock let go).
+        self.app.window_lock = None;
         self.app = App::new_in(self.ctx.clone(), crate::host::DataDir::at(&self.dir));
         self.app.apply_fonts();
         self.frames(3);
@@ -190,7 +192,7 @@ impl Harness {
         self.find(needle).unwrap_or_else(|| panic!("\"{needle}\" is not on screen; shown: {:?}", self.texts.iter().map(|t| &t.0).collect::<Vec<_>>())).center()
     }
 
-    fn button(&self, pos: Pos2, button: egui::PointerButton, pressed: bool) -> Event {
+    pub fn button(&self, pos: Pos2, button: egui::PointerButton, pressed: bool) -> Event {
         Event::PointerButton { pos, button, pressed, modifiers: self.held }
     }
 

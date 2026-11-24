@@ -47,6 +47,7 @@ impl App {
         self.ui_memo_picker(ctx);
         self.ui_keys_window(ctx);
         self.ui_serial_dialog(ctx);
+        self.ui_settings_window(ctx);
         self.ui_file_op(ctx);
         self.ui_confirm(ctx);
         self.ui_host_key(ctx);
@@ -68,6 +69,9 @@ impl App {
             if self.may_quit(false) {
                 self.flush_memos();
                 self.save_settings();
+                // (Its window's lock let go of at once, closing takes a
+                // moment more: another weft closing now sees this one gone.)
+                crate::instances::leave(&self.data, &self.window_id, self.handing_over, &mut self.window_lock);
             } else {
                 // Unsaved files or running commands: asked first; the answer
                 // closes the window.

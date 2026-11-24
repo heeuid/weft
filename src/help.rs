@@ -102,6 +102,15 @@ const FEATURES_KO: &[(&str, &str)] = &[
          지금 폰트로 그린 시험 화면(무엇을 봐야 하는지 적혀 있음).",
     ),
     (
+        "설정",
+        "팔레트(Ctrl+Shift+P)나 ☰ 메뉴의 Settings…: General에서 테마·글꼴·글자 크기·커서·셸·숨김 파일 같은 설정을 바꾸면 바로 적용되고 \
+         저장됩니다. Hosts에는 weft가 기억하는 호스트(접속한 ssh, 연 시리얼 콘솔)가 있고 Forget을 두 번 누르면 지웁니다. Advanced는 \
+         settings.json을 직접 고치는 곳입니다(Apply로 적용, 틀린 곳은 줄·칸으로 알려 줌). settings.json을 다른 에디터로 고쳐 저장하면 \
+         1초 안에 적용되고, JSON이 틀린 동안에는 weft가 그 파일에 아무것도 쓰지 않습니다. 열린 탭 같은 weft의 기억은 state.json에 따로 있습니다. \
+         weft를 여러 개 띄우면 각자 창이고, 다른 weft가 떠 있을 때 닫은 창은 잊고 마지막 창은 다음에 열립니다. 한꺼번에 꺼지면(컴퓨터 끄기) \
+         모두 다시 열립니다(General > Windows에서 마지막 하나 / 안 함으로 바꿀 수 있음).",
+    ),
+    (
         "파일 전송 (로컬 ↔ 원격, 원격 ↔ 원격)",
         "Files의 파일·폴더를 끌어 다른 사이드 패널의 Files, 폴더, 터미널(그 셸의 폴더) 위에 놓으면 복사합니다. 우클릭 Download = \
          이 PC의 다운로드 폴더(시스템이 정한 곳)로, Send to = 다른 패널·터미널의 폴더로. 탐색기에서 끌어 놓아도 됩니다. 사이드 패널을 나눠 머리의 호스트 이름(▾)에서 \
@@ -200,6 +209,16 @@ const FEATURES_EN: &[(&str, &str)] = &[
          at closing are there again next time. The version is at the top of this window, in the palette's 'About weft' and from weft --version. \
          Beside it, Display test = test screens of block characters, colours, column alignment and box lines in the font in use (with what to \
          look for).",
+    ),
+    (
+        "Settings",
+        "Settings… in the palette (Ctrl+Shift+P) or the ☰ menu: in General, a theme, font, text size, cursor, shell, hidden files and the like \
+         are applied and saved as they are changed. Hosts lists the hosts weft keeps (ssh hosts connected to, serial consoles opened); Forget \
+         pressed twice takes one off. Advanced is settings.json to edit by hand (Apply uses it, and says the line and column where it is not \
+         valid). settings.json saved in another editor is applied within a second; while it is not valid JSON weft writes nothing to it. What \
+         weft keeps on its own (the tabs open) is in state.json. weft run more than once is a window each; one closed while another runs \
+         is forgotten and the last one opens again next time; ended at once (the system shut down), they all open again (or the last one, \
+         or none: General > Windows).",
     ),
     (
         "Copying files (local ↔ remote, remote ↔ remote)",

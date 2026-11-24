@@ -17,6 +17,32 @@ static CLOSING: Mutex<Vec<thread::JoinHandle<()>>> = Mutex::new(Vec::new());
 /// host whose pseudo console was never closed stays behind for good and
 /// keeps a core busy (weft left one per closed window; after a day of
 /// tests there were 270, using a third of the machine).
+/// Whether a process of this id is running now.
+pub fn process_alive(pid: u32) -> bool {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+        use windows_sys::Win32::System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+        // SAFETY: a handle opened here, read and closed here.
+        unsafe {
+            let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if h.is_null() {
+                return false;
+            }
+            let mut code = 0u32;
+            let read = GetExitCodeProcess(h, &mut code) != 0;
+            CloseHandle(h);
+            read && code == STILL_ACTIVE as u32
+        }
+    }
+    #[cfg(unix)]
+    {
+        // SAFETY: signal 0 only asks whether the process is there.
+        let r = unsafe { libc::kill(pid as libc::pid_t, 0) };
+        r == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
+}
+
 pub fn finish_closing(limit: Duration) -> usize {
     let end = Instant::now() + limit;
     loop {
@@ -876,6 +902,21 @@ pub(crate) mod tests {
         assert!(has_cursor_report(b"ls\r\x1b[24;80Rmore"));
         for other in [&b"\x1b[A"[..], b"\x1b[1;5R\x1b"[..0].as_ref(), b"R", b"\x1b[;1R", b"\x1b[1;R", b"\x1b[12R", b"\x1b[1;1H", b""] {
             assert!(!has_cursor_report(other), "{other:?}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod alive_tests {
+    /// A process of this id running now: this one is, one that ended is not.
+    #[test]
+    fn a_process_running_or_not() {
+        assert!(super::process_alive(std::process::id()));
+        let py = if cfg!(windows) { "python" } else { "python3" };
+        if let Ok(mut c) = std::process::Command::new(py).args(["-c", "0"]).spawn() {
+            let id = c.id();
+            let _ = c.wait();
+            assert!(!super::process_alive(id), "ended");
         }
     }
 }

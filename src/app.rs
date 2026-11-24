@@ -579,6 +579,14 @@ pub struct Settings {
     /// The help's language: "ko", "en", or "" for the system's.
     #[serde(default)]
     pub help_language: String,
+    /// As weft starts, the windows left open when weft last closed (all at
+    /// once: shut down, crashed): "all" of them, the "last" one, or "none".
+    #[serde(default = "d_restore")]
+    pub restore_windows: String,
+}
+
+fn d_restore() -> String {
+    "all".into()
 }
 
 fn d_pythons() -> Vec<String> {
@@ -655,7 +663,7 @@ impl Default for Settings {
                 },
             });
         }
-        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, layout: Layout::default(), show_hidden: false, show_ignored: true, find_mode: Default::default(), palette_mode: d_palette_mode(), cursor_style: Default::default(), local_shell: Default::default(), mermaid: Default::default(), follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, term_font: d_font_file(), icon_font: d_icon_font(), records: Default::default(), passwords: Default::default(), keys: Default::default(), session: Vec::new(), side_tabs: Default::default(), open: Default::default(), confirm_unsaved: true, confirm_running: true, console_host: String::new(), renderer: String::new(), search: Default::default(), remote_python: d_pythons(), remote_shells: Default::default(), unix_shell: String::new(), guess_blocks: false, help_language: String::new() }
+        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, layout: Layout::default(), show_hidden: false, show_ignored: true, find_mode: Default::default(), palette_mode: d_palette_mode(), cursor_style: Default::default(), local_shell: Default::default(), mermaid: Default::default(), follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, term_font: d_font_file(), icon_font: d_icon_font(), records: Default::default(), passwords: Default::default(), keys: Default::default(), session: Vec::new(), side_tabs: Default::default(), open: Default::default(), confirm_unsaved: true, confirm_running: true, console_host: String::new(), renderer: String::new(), search: Default::default(), remote_python: d_pythons(), remote_shells: Default::default(), unix_shell: String::new(), guess_blocks: false, help_language: String::new(), restore_windows: d_restore() }
     }
 }
 
@@ -1807,6 +1815,38 @@ pub struct App {
     pub update_checked: Instant,
     /// The "Serial console…" dialog, while open.
     pub serial_dialog: Option<crate::serial_ui::SerialDialog>,
+    /// The Settings window.
+    pub settings_window: Option<crate::settings_ui::SettingsWindow>,
+    /// settings.json as found when it was not valid: not written over
+    /// until it is fixed (it was overwritten with the defaults).
+    pub settings_bad: Option<String>,
+    /// settings.json as weft last read or wrote it (its text, its settings
+    /// as weft reads them, when it was changed and its size), and when
+    /// weft last looked at it (store.rs).
+    pub prefs_written: String,
+    pub prefs_seen: Option<serde_json::Map<String, serde_json::Value>>,
+    pub prefs_stamp: Option<(std::time::SystemTime, u64)>,
+    pub prefs_checked: Instant,
+    /// This window's place in state.json as weft last wrote it.
+    pub state_written: String,
+    /// The window this weft is (instances.rs): its name, its lock held
+    /// while weft runs, the windows to open besides (main starts them),
+    /// and the process a restart started to take it over (kept for it as
+    /// weft closes).
+    pub window_id: String,
+    pub window_lock: Option<std::fs::File>,
+    pub windows_to_open: Vec<String>,
+    pub handing_over: Option<u32>,
+    /// The window asked for (--window) was taken by another weft.
+    pub window_missed: bool,
+    /// settings.json read empty or not valid once: believed when it reads
+    /// the same a second later (an editor may be saving it).
+    pub prefs_unsure: Option<(String, Instant)>,
+    /// The last failure to save settings.json, said once.
+    pub prefs_failed: Option<String>,
+    /// When each setting weft changed and has not saved yet was changed
+    /// (store.rs: the later of it and the file's change wins).
+    pub changed_here: HashMap<String, std::time::SystemTime>,
     /// Profiles made in Connect that have not connected yet: used, not
     /// kept in settings (nor their tabs in the session) until they do.
     pub trial_profiles: Vec<Profile>,
@@ -1885,9 +1925,6 @@ pub struct App {
     pub actions: Vec<Action>,
     agent_retried: HashSet<String>,
     last_save: Instant,
-    /// settings.json as it was last written (the timed save writes only
-    /// what differs).
-    settings_written: String,
     /// Records for the History panel, loaded when it is first shown.
     pub records: Option<Vec<crate::records::Record>>,
     pub records_query: String,
@@ -1937,16 +1974,25 @@ pub fn parent(path: &str) -> String {
 }
 
 impl App {
-    pub fn new(ctx: egui::Context) -> App {
-        App::new_in(ctx, DataDir::locate())
+    /// weft started as a window it is told (a restart's, or one main opens
+    /// to bring it back).
+    pub fn new_window(ctx: egui::Context, wanted: Option<String>, reopen: bool) -> App {
+        App::new_in_window(ctx, DataDir::locate(), wanted.as_deref(), reopen)
     }
 
     /// weft on this data folder (settings, memos, logs).
+    #[cfg(test)]
     pub fn new_in(ctx: egui::Context, data: DataDir) -> App {
-        let mut settings: Settings = std::fs::read_to_string(data.path("settings.json"))
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
+        App::new_in_window(ctx, data, None, false)
+    }
+
+    pub fn new_in_window(ctx: egui::Context, data: DataDir, wanted: Option<&str>, reopen: bool) -> App {
+        // settings.json (what a person sets) and state.json (what weft
+        // keeps on its own, a place per window); see store.rs, instances.rs.
+        let mut loaded = crate::store::load(&data, wanted, reopen);
+        let data_prefs = data.path("settings.json");
+        let settings_bad = loaded.bad.clone();
+        let mut settings: Settings = loaded.settings.clone();
         // D2Coding became the default after JetBrains Mono. Settings still on
         // the old default for both fonts were never changed by hand: move them on.
         if settings.term_font == "builtin:jetbrains-mono" && settings.icon_font == "builtin:jetbrains-mono" {
@@ -2029,6 +2075,21 @@ impl App {
             update_ready: false,
             update_checked: Instant::now(),
             serial_dialog: None,
+            settings_window: None,
+            settings_bad: None,
+            prefs_written: loaded.prefs_text.clone(),
+            prefs_seen: loaded.prefs_seen.clone(),
+            prefs_stamp: std::fs::metadata(data_prefs.clone()).ok().and_then(|m| Some((m.modified().ok()?, m.len()))),
+            prefs_checked: Instant::now(),
+            state_written: String::new(),
+            window_id: loaded.window.id.clone(),
+            window_lock: loaded.window.lock.take(),
+            windows_to_open: loaded.window.others.clone(),
+            handing_over: None,
+            window_missed: loaded.window.missed,
+            prefs_unsure: None,
+            prefs_failed: None,
+            changed_here: HashMap::new(),
             trial_profiles: Vec::new(),
             shells_tried: HashMap::new(),
             console_host,
@@ -2059,7 +2120,6 @@ impl App {
             secrets: crate::secret::Vault::new(settings_passwords),
             auth_prompted: HashSet::new(),
             last_save: Instant::now(),
-            settings_written: String::new(),
             records: None,
             records_query: String::new(),
             records_in_output: false,
@@ -2095,6 +2155,16 @@ impl App {
             app.new_tab("local", None);
         }
         app.restore_open();
+        // settings.json not valid: the defaults for now (the tabs come back
+        // all the same, from state.json), the file kept as it is.
+        if let Some((text, e)) = settings_bad {
+            app.toast(format!("settings.json has an error ({e}): weft runs on the defaults and saves nothing to it until it is fixed (Settings… > Advanced)"), ToastKind::Error);
+            app.settings_bad = Some(text);
+        }
+        // From before state.json: weft's part moved out of settings.json.
+        if loaded.to_move {
+            app.move_state_out();
+        }
         // A console host that was asked for and isn't there: said once.
         if let Some(problem) = app.console_host.problem.clone() {
             app.toast(problem, ToastKind::Error);
@@ -2407,12 +2477,10 @@ impl App {
             }
         }
         self.settings.open = open;
-        if let Ok(s) = serde_json::to_string_pretty(&self.settings) {
-            if always || s != self.settings_written {
-                let _ = std::fs::write(self.data.path("settings.json"), &s);
-                self.settings_written = s;
-            }
-        }
+        // What weft keeps on its own (state.json), and the settings a
+        // person sets that changed (settings.json): store.rs.
+        self.save_state(always);
+        self.save_prefs();
         self.last_save = Instant::now();
     }
 
@@ -3523,6 +3591,8 @@ impl App {
             self.request(&host, json!({"op": "sys", "path": cwd}), Pending::Sys);
         }
 
+        // settings.json changed on disk: read again (store.rs).
+        self.poll_prefs();
         if self.last_save.elapsed() > Duration::from_secs(10) {
             self.autosave_settings();
         }
@@ -3754,6 +3824,11 @@ impl App {
                 }
             }
             Pending::Save { path } => {
+                // settings.json saved in the editor: applied at once (the
+                // timed save reads it first).
+                if ok && host == "local" && path.replace('\\', "/") == self.data.path("settings.json").display().to_string().replace('\\', "/") {
+                    self.prefs_checked = Instant::now().checked_sub(Duration::from_secs(5)).unwrap_or(self.prefs_checked);
+                }
                 let Some(f) = self.editor.files.iter_mut().find(|f| f.host == host && f.path == path) else { return };
                 f.saving = false;
                 if !ok {

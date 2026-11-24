@@ -25,6 +25,9 @@ mod restart;
 #[cfg(test)]
 mod scenes;
 mod serial_ui;
+mod settings_ui;
+mod store;
+mod instances;
 #[cfg(test)]
 mod shot;
 mod transfer;
@@ -310,6 +313,10 @@ fn app_icon() -> egui::IconData {
 fn main() -> eframe::Result<()> {
     STARTED.get_or_init(Instant::now);
     let args: Vec<String> = std::env::args().collect();
+    // The window to be (a restart's, through the launcher), not handed on
+    // to what this weft starts (its shells, more wefts).
+    let window_env = std::env::var("WEFT_WINDOW").ok();
+    std::env::remove_var("WEFT_WINDOW");
     // `weft --version` (or -V): say which weft this is, and leave. Before
     // the console is let go of below, so a shell that started it sees it.
     if args.iter().skip(1).any(|a| a == "--version" || a == "-V") {
@@ -344,7 +351,23 @@ fn main() -> eframe::Result<()> {
             theme::apply(&cc.egui_ctx, 0);
             highlight::preload(&cc.egui_ctx);
             cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
-            let mut app = App::new(cc.egui_ctx.clone());
+            // The window to be (a restart's, or one opened to come back).
+            let wanted = args.iter().position(|a| a == "--window").and_then(|i| args.get(i + 1).cloned()).or(window_env.clone());
+            let reopening = args.iter().any(|a| a == "--reopen");
+            let mut app = App::new_window(cc.egui_ctx.clone(), wanted, reopening);
+            // Started to open a window another weft took meanwhile: not a
+            // new empty one, nothing.
+            if reopening && app.window_missed {
+                app.data.log("windows: the window to open was taken by another weft");
+                drop(app);
+                std::process::exit(0);
+            }
+            // The other windows that come back: a weft each.
+            if let Ok(me) = std::env::current_exe() {
+                for id in std::mem::take(&mut app.windows_to_open) {
+                    let _ = std::process::Command::new(&me).arg("--window").arg(&id).arg("--reopen").spawn();
+                }
+            }
             // Fonts come from the settings, which App::new reads.
             let before_fonts = since_start();
             app.apply_fonts();
@@ -361,7 +384,15 @@ fn main() -> eframe::Result<()> {
     if let Err(e) = &ran {
         if renderer == eframe::Renderer::Wgpu && std::env::var_os("WEFT_RENDERER_FELL_BACK").is_none() {
             host::DataDir::locate().log(&format!("graphics: wgpu failed ({e}); starting again on OpenGL"));
-            let again = std::env::current_exe().and_then(|me| std::process::Command::new(me).args(std::env::args_os().skip(1)).env("WEFT_RENDERER", "opengl").env("WEFT_RENDERER_FELL_BACK", "1").spawn());
+            // (The window asked for through the launcher, handed on too.)
+            let again = std::env::current_exe().and_then(|me| {
+                let mut c = std::process::Command::new(me);
+                c.args(std::env::args_os().skip(1)).env("WEFT_RENDERER", "opengl").env("WEFT_RENDERER_FELL_BACK", "1");
+                if let Some(w) = &window_env {
+                    c.env("WEFT_WINDOW", w);
+                }
+                c.spawn()
+            });
             if again.is_ok() {
                 return Ok(());
             }
