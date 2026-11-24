@@ -34,7 +34,7 @@ const KEYS_KO: &[(&str, &str)] = &[
     ("Ctrl+C", "선택한 글자 복사 (선택이 없으면 ^C로 중단)"),
     ("Ctrl+V", "붙여넣기 (bracketed paste)"),
     ("Ctrl+S", "에디터: 파일 저장"),
-    ("Ctrl+F / Ctrl+H", "에디터: 찾기 / 바꾸기 (text·fuzzy·glob·regex, Aa 대소문자, Enter·F3 다음, Shift+Enter·Shift+F3 이전, Replace 하나 / All 전부, Esc 닫기)"),
+    ("Ctrl+F / Ctrl+H", "에디터: 찾기 / 바꾸기 (text·fuzzy·glob·regex, 바꾸기는 text·regex, Aa 대소문자, Enter·F3 다음, Shift+Enter·Shift+F3 이전, Replace 하나 / All 전부, Esc 닫기)"),
     ("Ctrl+클릭", "경로(src/main.rs:12 포함)는 에디터로, URL은 브라우저로"),
     ("드래그", "글자 단위로 선택"),
     ("더블클릭 (+드래그)", "단어 단위로 선택"),
@@ -52,7 +52,7 @@ const KEYS_EN: &[(&str, &str)] = &[
     ("Ctrl+C", "copy the selected text (with nothing selected, ^C: interrupt)"),
     ("Ctrl+V", "paste (bracketed paste)"),
     ("Ctrl+S", "editor: save the file"),
-    ("Ctrl+F / Ctrl+H", "editor: find / replace (text·fuzzy·glob·regex, Aa for case, Enter·F3 next, Shift+Enter·Shift+F3 previous, Replace one / All, Esc closes)"),
+    ("Ctrl+F / Ctrl+H", "editor: find / replace (text·fuzzy·glob·regex, replace in text·regex, Aa for case, Enter·F3 next, Shift+Enter·Shift+F3 previous, Replace one / All, Esc closes)"),
     ("Ctrl+click", "a path (src/main.rs:12 too) opens in the editor, a URL in the browser"),
     ("drag", "select by characters"),
     ("double-click (+drag)", "select by words"),
@@ -81,7 +81,7 @@ const FEATURES_KO: &[(&str, &str)] = &[
     (
         "찾기: 스크롤백, History, 파일, grep",
         "Ctrl+Shift+F = 지금 페인의 스크롤백에서 찾기. History 탭(Ctrl+Shift+H) = 모든 호스트·날짜의 명령 기록에서 \
-         명령(fuzzy / glob / regex)과 출력을 찾기. Files 탭의 필터 = 루트 아래 파일 이름. Search 탭 = 파일 내용(grep).",
+         명령(text / fuzzy / glob / regex)과 출력을 찾기. Files 탭의 필터 = 루트 아래 파일 이름. Search 탭 = 파일 내용(grep).",
     ),
     (
         "사이드 패널 (Ctrl+Shift+B)",
@@ -186,7 +186,7 @@ const FEATURES_EN: &[(&str, &str)] = &[
     ),
     (
         "Finding: scrollback, History, files, grep",
-        "Ctrl+Shift+F = find in this pane's scrollback. The History tab (Ctrl+Shift+H) = find commands (fuzzy / glob / regex) and their output \
+        "Ctrl+Shift+F = find in this pane's scrollback. The History tab (Ctrl+Shift+H) = find commands (text / fuzzy / glob / regex) and their output \
          in the record of every host and day. The Files tab's filter = file names under its root. The Search tab = file contents (grep).",
     ),
     (

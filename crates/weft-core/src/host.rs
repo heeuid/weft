@@ -1529,7 +1529,16 @@ fn local_op(req: &Value) -> Value {
         }
         "grep" => {
             let flag = |k: &str| req.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
-            local_grep(&s("path"), &s("pattern"), flag("icase"), flag("regex"), flag("hidden"))
+            let num = |k: &str, d: u64| req.get(k).and_then(|v| v.as_u64()).unwrap_or(d) as usize;
+            // Here the matcher itself decides (weft's own; a remote host's grep
+            // only narrows the lines down).
+            // (Glob and fuzzy only: text and regex are what grep finds, an
+            // empty match too: ^$ finds the blank lines.)
+            let exact = req.get("match").and_then(|m| {
+                let mode: crate::find::MatchMode = serde_json::from_value(m["mode"].clone()).ok()?;
+                crate::find::Matcher::build(mode, m["query"].as_str()?, crate::find::Target::Line, m["case"].as_bool()).ok()
+            }).filter(|m| m.exact_on_grep());
+            local_grep(&s("path"), &s("pattern"), flag("icase"), flag("regex"), flag("hidden"), exact.as_ref(), num("limit", 500), num("line_max", 400))
         }
         "tree" => Ok(local_tree(&s("path"), req.get("hidden").and_then(|v| v.as_bool()).unwrap_or(false), req.get("max").and_then(|v| v.as_u64()).unwrap_or(20000) as usize)),
         // File transfer: the same ops as agent.py (see there).
@@ -1908,7 +1917,10 @@ fn local_tree(root: &str, hidden: bool, limit: usize) -> Value {
 
 /// Search file contents under `root`: the text as typed, or with `regex` a
 /// regular expression (the extended syntax the agent's `grep -E` takes).
-fn local_grep(root: &str, pattern: &str, icase: bool, regex: bool, hidden: bool) -> Result<Value, String> {
+/// Lines under `root` that `pattern` finds (as grep -E), each decided by
+/// `exact` when given; `limit` of them, each at most `line_max` characters.
+#[allow(clippy::too_many_arguments)]
+fn local_grep(root: &str, pattern: &str, icase: bool, regex: bool, hidden: bool, exact: Option<&crate::find::Matcher>, limit: usize, line_max: usize) -> Result<Value, String> {
     let pat = if regex { pattern.to_string() } else { regex::escape(pattern) };
     let re = regex::RegexBuilder::new(&pat).case_insensitive(icase).build().map_err(|e| format!("bad regex: {e}"))?;
     let mut hits = Vec::new();
@@ -1937,10 +1949,10 @@ fn local_grep(root: &str, pattern: &str, icase: bool, regex: bool, hidden: bool)
             }
             let text = String::from_utf8_lossy(&bytes);
             for (i, line) in text.lines().enumerate() {
-                if re.is_match(line) {
-                    let t: String = line.chars().take(400).collect();
+                if re.is_match(line) && exact.filter(|m| m.exact_on_grep()).is_none_or(|m| !m.find_in(line).is_empty()) {
+                    let t: String = line.chars().take(line_max).collect();
                     hits.push(json!([p.display().to_string().replace('\\', "/"), i + 1, t]));
-                    if hits.len() >= 500 {
+                    if hits.len() >= limit {
                         return Ok(json!({"root": root, "pattern": pattern, "hits": hits, "truncated": true}));
                     }
                 }
@@ -2022,26 +2034,30 @@ XDG_DOWNLOAD_DIR=\"$HOME/다운로드\"
 
     #[test]
     fn local_grep_modes_and_hidden() {
-        use crate::editfind::{to_regex, MatchMode};
+        use crate::find::{MatchMode, Matcher, Target};
         let d = std::env::temp_dir().join(format!("weft-grep-modes-{}", std::process::id()));
         std::fs::create_dir_all(d.join(".hid")).unwrap();
-        std::fs::write(d.join("a.txt"), "git status\nvoid Start(int x);\nstash it\n").unwrap();
+        std::fs::write(d.join("a.txt"), "git status\nvoid Start(int x);\n\nstash it\n").unwrap();
         std::fs::write(d.join(".env"), "git status hidden\n").unwrap();
         std::fs::write(d.join(".hid").join("b.txt"), "git status in hidden dir\n").unwrap();
         let root = d.display().to_string();
-        // As the Search tab sends it: fuzzy and glob as extended regex.
-        let search = |mode: MatchMode, q: &str, icase, hidden| -> Vec<String> {
-            let regex = mode != MatchMode::Text;
-            let p = if regex { to_regex(mode, q, false) } else { q.to_string() };
-            let v = local_grep(&root, &p, icase, regex, hidden).unwrap();
+        // As the Search tab does it: grep asked for what may match, the
+        // matcher deciding (glob and fuzzy).
+        let search = |mode: MatchMode, q: &str, icase: bool, hidden| -> Vec<String> {
+            let m = Matcher::build(mode, q, Target::Line, Some(!icase)).unwrap();
+            let (p, regex, icase) = m.grep();
+            let v = local_grep(&root, &p, icase, regex, hidden, Some(&m), 500, 400).unwrap();
             let mut l: Vec<String> = v["hits"].as_array().unwrap().iter().map(|h| h[2].as_str().unwrap().to_string()).collect();
             l.sort();
             l
         };
         assert_eq!(search(MatchMode::Fuzzy, "gst", true, false), ["git status"]);
-        assert_eq!(search(MatchMode::Glob, "Start*(int", false, false), ["void Start(int x);"]);
-        assert_eq!(search(MatchMode::Glob, "st?sh", false, false), ["stash it"]);
+        assert_eq!(search(MatchMode::Glob, "*Start*(int*", false, false), ["void Start(int x);"], "a glob: the whole line");
+        assert_eq!(search(MatchMode::Glob, "st?sh*", false, false), ["stash it"]);
+        assert!(search(MatchMode::Glob, "st?sh", false, false).is_empty(), "not a part of a line");
+        assert_eq!(search(MatchMode::Glob, "stash", false, false), ["stash it"], "no wildcard: anywhere");
         assert_eq!(search(MatchMode::Regex, r"^(git|stash) ", false, false), ["git status", "stash it"]);
+        assert_eq!(search(MatchMode::Regex, r"^$", false, false), [""], "an empty match: the blank line");
         assert_eq!(search(MatchMode::Text, "GIT", true, false), ["git status"], "ignore case on");
         assert!(search(MatchMode::Text, "GIT", false, false).is_empty(), "ignore case off");
         assert_eq!(search(MatchMode::Text, "git status", false, true), ["git status", "git status hidden", "git status in hidden dir"], "hidden on");
@@ -2055,7 +2071,7 @@ XDG_DOWNLOAD_DIR=\"$HOME/다운로드\"
         std::fs::write(d.join("a.c"), "void Start(int x);\nStart here\nrestart(\n").unwrap();
         let root = d.display().to_string();
         let lines = |p: &str, icase, rx| -> Result<Vec<String>, String> {
-            let v = local_grep(&root, p, icase, rx, false)?;
+            let v = local_grep(&root, p, icase, rx, false, None, 500, 400)?;
             Ok(v["hits"].as_array().unwrap().iter().map(|h| h[2].as_str().unwrap().to_string()).collect())
         };
         assert_eq!(lines("Start(", false, false).unwrap(), ["void Start(int x);"], "text: ( is a character");

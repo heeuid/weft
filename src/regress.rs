@@ -1932,6 +1932,19 @@ fn the_editor_says_when_its_file_changed_on_disk() {
     assert!(h.wait_for(10.0, |h| h.shows("Deleted on disk")), "said");
 }
 
+/// A new weft's searches start as they always did: the Files filter and
+/// the palette fuzzy (one mode type for every search, whose own default is
+/// text, must not make them text).
+#[test]
+fn a_new_wefts_searches_start_fuzzy() {
+    let s = crate::app::Settings::default();
+    assert_eq!((s.find_mode, s.palette_mode), (crate::find::MatchMode::Fuzzy, crate::find::MatchMode::Fuzzy));
+    let s: crate::app::Settings = serde_json::from_value(json!({})).unwrap();
+    assert_eq!((s.find_mode, s.palette_mode), (crate::find::MatchMode::Fuzzy, crate::find::MatchMode::Fuzzy));
+    let s: crate::app::Settings = serde_json::from_value(json!({"find_mode": "Glob"})).unwrap();
+    assert_eq!(s.find_mode, crate::find::MatchMode::Glob, "an older settings.json's word");
+}
+
 /// The editor keeps a few laid-out files, not every one ever opened.
 #[test]
 fn laid_out_files_are_not_kept_for_ever() {
@@ -2904,7 +2917,7 @@ fn the_files_filter_finds_names() {
     h.click(mode);
     let regex = h.at_exact("regex");
     h.click(regex);
-    assert_eq!(h.app.settings.find_mode, crate::find::FindMode::Regex);
+    assert_eq!(h.app.settings.find_mode, crate::find::MatchMode::Regex);
     h.click(field);
     retype(&mut h, "(");
     assert!(!h.shows("matches") && !h.shows("1 match"), "no count for a pattern that can't be read");

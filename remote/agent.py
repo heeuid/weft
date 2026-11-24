@@ -525,7 +525,7 @@ def op_sys(req):
     return res
 
 
-def _grep_python(root, pattern, icase, hidden, limit):
+def _grep_python(root, pattern, icase, hidden, limit, line_max=400):
     """grep -rnIE in Python, where there is no grep (a Windows host): the
     same folders left out, binary files skipped, the pattern as Python's re
     reads it (the extended syntax grep -E has, near enough)."""
@@ -548,7 +548,7 @@ def _grep_python(root, pattern, icase, hidden, limit):
                 continue
             for num, line in enumerate(data.decode("utf-8", "replace").splitlines(), 1):
                 if rx.search(line):
-                    hits.append([path, num, line[:400]])
+                    hits.append([path, num, line[:line_max]])
                     if len(hits) >= limit:
                         return hits
     return hits
@@ -557,14 +557,17 @@ def _grep_python(root, pattern, icase, hidden, limit):
 def op_grep(req):
     pattern = req["pattern"]
     root = _path(req.get("path"))
-    limit = int(req.get("limit", 500))
+    # How many lines and how long each: a glob or fuzzy search asks for more
+    # ("scan"), weft deciding which of them match.
+    limit = int(req.get("scan", req.get("limit", 500)))
+    line_max = int(req.get("line_max", 400))
     if not req.get("regex"):
         literal = "".join("\\" + c if c in ".[]()*+?{}|^$\\" else c for c in pattern)
     else:
         literal = pattern
     import shutil
     if not shutil.which("grep"):
-        hits = _grep_python(root, literal, bool(req.get("icase")), bool(req.get("hidden")), limit)
+        hits = _grep_python(root, literal, bool(req.get("icase")), bool(req.get("hidden")), limit, line_max)
         return {"root": root, "pattern": literal, "hits": hits, "truncated": len(hits) >= limit}
     cmd = ["grep", "-rnIH", "--exclude-dir=.git", "--exclude-dir=node_modules", "--exclude-dir=target"]
     if req.get("icase"):
@@ -591,11 +594,11 @@ def op_grep(req):
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
     hits = []
     for raw in proc.stdout:
-        line = raw.decode("utf-8", "replace").rstrip("\n")
+        line = raw.decode("utf-8", "replace").rstrip("\n").rstrip("\r")
         path, _, rest = line.partition(":")
         num, _, text = rest.partition(":")
         if num.isdigit():
-            hits.append([os.path.join(root, path) if cwd else path, int(num), text[:400]])
+            hits.append([os.path.join(root, path) if cwd else path, int(num), text[:line_max]])
         if len(hits) >= limit:
             proc.kill()
             break
@@ -607,7 +610,7 @@ def op_grep(req):
         # A grep without these options (not GNU's or a BSD's): text as typed
         # is searched here instead.
         if not req.get("regex"):
-            hits = _grep_python(root, literal, bool(req.get("icase")), bool(req.get("hidden")), limit)
+            hits = _grep_python(root, literal, bool(req.get("icase")), bool(req.get("hidden")), limit, line_max)
             return {"root": root, "pattern": literal, "hits": hits, "truncated": len(hits) >= limit}
         raise ValueError(err.splitlines()[0] if err else "grep failed")
     return {"root": root, "pattern": pattern, "hits": hits, "truncated": len(hits) >= limit}

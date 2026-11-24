@@ -490,9 +490,9 @@ pub struct Settings {
     /// Terminal cursor: block (default), bar or underline.
     #[serde(default)]
     pub cursor_style: CursorStyle,
-    /// File panel filter: fuzzy, glob or regex.
-    #[serde(default)]
-    pub find_mode: crate::find::FindMode,
+    /// File panel filter: fuzzy unless changed to text, glob or regex.
+    #[serde(default = "d_palette_mode")]
+    pub find_mode: crate::find::MatchMode,
     /// How the command palette reads what is typed: fuzzy (letters in
     /// order) unless changed to text, glob or regex.
     #[serde(default = "d_palette_mode")]
@@ -663,7 +663,7 @@ impl Default for Settings {
                 },
             });
         }
-        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, layout: Layout::default(), show_hidden: false, show_ignored: true, find_mode: Default::default(), palette_mode: d_palette_mode(), cursor_style: Default::default(), local_shell: Default::default(), mermaid: Default::default(), follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, term_font: d_font_file(), icon_font: d_icon_font(), records: Default::default(), passwords: Default::default(), keys: Default::default(), session: Vec::new(), side_tabs: Default::default(), open: Default::default(), confirm_unsaved: true, confirm_running: true, console_host: String::new(), renderer: String::new(), search: Default::default(), remote_python: d_pythons(), remote_shells: Default::default(), unix_shell: String::new(), guess_blocks: false, help_language: String::new(), restore_windows: d_restore() }
+        Settings { font_size: d_font(), ui_scale: 1.0, profiles, sidebar: true, layout: Layout::default(), show_hidden: false, show_ignored: true, find_mode: d_palette_mode(), palette_mode: d_palette_mode(), cursor_style: Default::default(), local_shell: Default::default(), mermaid: Default::default(), follow_cwd: true, theme: d_theme(), theme_dark: d_theme_dark(), theme_light: d_theme_light(), markdown_breaks: false, term_font: d_font_file(), icon_font: d_icon_font(), records: Default::default(), passwords: Default::default(), keys: Default::default(), session: Vec::new(), side_tabs: Default::default(), open: Default::default(), confirm_unsaved: true, confirm_running: true, console_host: String::new(), renderer: String::new(), search: Default::default(), remote_python: d_pythons(), remote_shells: Default::default(), unix_shell: String::new(), guess_blocks: false, help_language: String::new(), restore_windows: d_restore() }
     }
 }
 
@@ -1401,6 +1401,8 @@ pub struct SideState {
     pub grep_hidden: bool,
     /// What the shown results were searched with (mode, query, ignore case), to mark them.
     pub grep_ran: Option<(crate::editfind::MatchMode, String, bool)>,
+    /// The search's matcher, made once (its results decided and marked by it).
+    pub grep_matcher: Option<std::sync::Arc<crate::find::Matcher>>,
     pub grep_busy: bool,
     pub grep: Option<Value>,
     pub procs: Option<Result<Vec<Value>, String>>,
@@ -1642,6 +1644,11 @@ impl Drop for App {
     }
 }
 
+/// Search tab: the lines shown at most, and the lines a remote grep may
+/// return for a glob or fuzzy search (weft decides which match).
+pub const GREP_SHOWN: usize = 500;
+pub const GREP_SCAN: usize = 5000;
+
 /// A text's hash, to tell whether it is still the one that was saved.
 pub fn text_hash(text: &str) -> u64 {
     use std::hash::{Hash, Hasher};
@@ -1723,7 +1730,7 @@ mod close_tests {
 
 /// The last filter run: its inputs and the hits (entry index, matched chars).
 pub struct FindResult {
-    pub key: (String, String, String, crate::find::FindMode, u64),
+    pub key: (String, String, String, crate::find::MatchMode, u64),
     pub hits: Vec<(usize, Vec<usize>)>,
     pub total: usize,
     pub error: Option<String>,
@@ -2050,6 +2057,7 @@ impl App {
                 grep_mode: searched.files_mode,
                 grep_hidden: searched.files_hidden,
                 grep_ran: None,
+                grep_matcher: None,
                 grep_busy: false,
                 grep: None,
                 procs: None,
@@ -3942,6 +3950,33 @@ impl App {
             Pending::Grep => {
                 self.side.grep_busy = false;
                 if ok {
+                    // Glob and fuzzy: grep found the lines that may match;
+                    // each is matched here.
+                    let mut r = r;
+                    if let (Some(m), Some(hits)) = (self.side.grep_matcher.clone().filter(|m| m.exact_on_grep()), r["hits"].as_array_mut()) {
+                        // A line as long as a host cuts it may go on past what
+                        // came: kept (its end can't be told).
+                        hits.retain(|h| {
+                            let t = h[2].as_str().unwrap_or("");
+                            let t = t.strip_suffix('\r').unwrap_or(t);
+                            t.chars().count() >= 4000 || !m.find_in(t).is_empty()
+                        });
+                        if hits.len() > GREP_SHOWN {
+                            hits.truncate(GREP_SHOWN);
+                            r["truncated"] = json!(true);
+                        }
+                    }
+                    // Each line's marks, found once (not at every frame).
+                    if let (Some(m), Some(hits)) = (self.side.grep_matcher.clone(), r["hits"].as_array_mut()) {
+                        for h in hits.iter_mut() {
+                            let t = h[2].as_str().unwrap_or("");
+                            let t = t.strip_suffix('\r').unwrap_or(t);
+                            let marks: Vec<[usize; 2]> = m.find_in(t).into_iter().map(|(a, b)| [a, b]).collect();
+                            if let Some(a) = h.as_array_mut() {
+                                a.push(json!(marks));
+                            }
+                        }
+                    }
                     self.side.grep = Some(r);
                 } else {
                     self.toast(format!("search failed: {err}"), ToastKind::Error);
@@ -4118,16 +4153,29 @@ impl App {
                     if self.side.grep_q.is_empty() {
                         continue;
                     }
+                    // The host's grep is asked for the lines that may match;
+                    // the matcher decides (crate::find), as everywhere.
+                    let mode = self.side.grep_mode;
+                    let m = match crate::find::Matcher::build(mode, &self.side.grep_q, crate::find::Target::Line, Some(!self.side.grep_icase)) {
+                        Ok(m) => m,
+                        Err(e) => {
+                            self.toast(format!("search: {e}"), ToastKind::Error);
+                            continue;
+                        }
+                    };
                     self.side.grep_busy = true;
                     self.side.grep = None;
-                    // Fuzzy and glob go as the extended regex they mean, so a
-                    // remote grep -E and the local search agree.
-                    let mode = self.side.grep_mode;
                     self.side.grep_ran = Some((mode, self.side.grep_q.clone(), self.side.grep_icase));
-                    let regex = mode != crate::editfind::MatchMode::Text;
-                    let pattern = if regex { crate::editfind::to_regex(mode, &self.side.grep_q, false) } else { self.side.grep_q.clone() };
+                    let (pattern, regex, icase) = m.grep();
+                    // Glob and fuzzy: a remote grep returns more lines, and
+                    // whole ones, for weft to decide (this PC's decides itself:
+                    // "match").
+                    let wide = m.exact_on_grep();
                     let req = json!({"op": "grep", "pattern": pattern, "path": root,
-                                     "icase": self.side.grep_icase, "regex": regex, "hidden": self.side.grep_hidden});
+                                     "icase": icase, "regex": regex, "hidden": self.side.grep_hidden,
+                                     "limit": GREP_SHOWN, "scan": if wide { GREP_SCAN } else { GREP_SHOWN }, "line_max": if wide { 4000 } else { 400 },
+                                     "match": {"mode": mode, "query": self.side.grep_q, "case": !self.side.grep_icase}});
+                    self.side.grep_matcher = Some(std::sync::Arc::new(m));
                     self.request(&host, req, Pending::Grep);
                 }
                 Action::Procs => {

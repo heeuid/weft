@@ -479,25 +479,21 @@ impl Term {
         if query.is_empty() {
             return out;
         }
-        let q: Vec<char> = if icase { query.to_lowercase().chars().collect() } else { query.chars().collect() };
+        // The text mode of weft's one matcher (crate::find).
+        let filter = crate::find::TextFilter::with_case(query, !icase);
         for abs in self.first_line()..self.end_line() {
             let Some(row) = self.line(abs) else { continue };
             let chars = row.chars_with_cols();
-            let hay: Vec<char> = chars
-                .iter()
-                .map(|&(c, _)| if icase { c.to_lowercase().next().unwrap_or(c) } else { c })
-                .collect();
-            if hay.len() < q.len() {
-                continue;
-            }
-            let mut i = 0;
-            while i + q.len() <= hay.len() {
-                if hay[i..i + q.len()] == q[..] {
-                    let end = chars[i + q.len() - 1].1 + 1;
-                    out.push((abs, chars[i].1, end));
-                    i += q.len();
-                } else {
-                    i += 1;
+            let text: String = chars.iter().map(|&(c, _)| c).collect();
+            // A byte offset in `text` is which char of the row.
+            let starts: Vec<usize> = text.char_indices().map(|(b, _)| b).collect();
+            let at = |b: usize| starts.partition_point(|&s| s < b);
+            for (a, b) in filter.find_in(&text) {
+                let (first, last) = (at(a), at(b) - 1);
+                if let (Some(f), Some(l)) = (chars.get(first), chars.get(last)) {
+                    // A wide character last: both its cells.
+                    let wide = row.cells.get(l.1).is_some_and(|c| c.wide == WIDE_LEAD);
+                    out.push((abs, f.1, l.1 + 1 + usize::from(wide)));
                 }
             }
         }

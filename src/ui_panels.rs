@@ -2,7 +2,7 @@
 //! command palette, connect dialog, toasts and global shortcuts.
 
 use crate::app::*;
-use crate::find::{self, FindMode};
+use crate::find::{self, MatchMode};
 use crate::editfind;
 use crate::highlight;
 use crate::md;
@@ -1517,12 +1517,12 @@ impl App {
                 .selected_text(RichText::new(before.label()).size(11.5))
                 .width(64.0)
                 .show_ui(ui, |ui| {
-                    for m in FindMode::ALL {
-                        ui.selectable_value(&mut self.settings.find_mode, m, m.label()).on_hover_text(m.hint());
+                    for m in MatchMode::ALL {
+                        ui.selectable_value(&mut self.settings.find_mode, m, m.label()).on_hover_text(m.about());
                     }
                 })
                 .response
-                .on_hover_text(before.hint());
+                .on_hover_text(before.about());
         });
         ui.add_space(2.0);
         if !self.side.filter.trim().is_empty() {
@@ -1542,8 +1542,8 @@ impl App {
         }
         let mut rows: Vec<TRow> = Vec::new();
         let mut want: Vec<String> = Vec::new();
-        let filter = self.side.filter.to_lowercase();
-        fn walk(app: &App, host: &str, dir: &str, depth: usize, filter: &str, rows: &mut Vec<TRow>, want: &mut Vec<String>) {
+        let filter = find::TextFilter::new(&self.side.filter);
+        fn walk(app: &App, host: &str, dir: &str, depth: usize, filter: &find::TextFilter, rows: &mut Vec<TRow>, want: &mut Vec<String>) {
             let key = (host.to_string(), dir.to_string());
             match app.dir_cache.get(&key) {
                 None => want.push(dir.to_string()),
@@ -1554,7 +1554,7 @@ impl App {
                     for e in &l.entries {
                         let path = join(dir, &e.name);
                         let open = e.dir && app.side.expanded.contains(&(host.to_string(), path.clone()));
-                        let matches = filter.is_empty() || e.name.to_lowercase().contains(filter);
+                        let matches = filter.hit(&e.name);
                         if matches || open {
                             rows.push(TRow { depth, name: e.name.clone(), path: path.clone(), dir: e.dir, link: e.link, size: e.size, open });
                         }
@@ -1595,7 +1595,7 @@ impl App {
             // Download, Send to, Copy paths, Delete take. None: the one
             // selected.
             let here = (host.clone(), root.clone());
-            let settled = filter.is_empty() && !rows.is_empty() && !self.inflight.iter().any(|(h, _)| *h == host);
+            let settled = self.side.filter.is_empty() && !rows.is_empty() && !self.inflight.iter().any(|(h, _)| *h == host);
             if self.side.picked_in == here && settled && !self.side.picked.is_empty() {
                 let shown: std::collections::HashSet<&str> = order.iter().map(|s| s.as_str()).collect();
                 self.side.picked.retain(|p| shown.contains(p.as_str()));
@@ -1895,8 +1895,8 @@ impl App {
                 .width(58.0)
                 .selected_text(RichText::new(self.settings.find_mode.label()).size(12.0))
                 .show_ui(ui, |ui| {
-                    for m in FindMode::ALL {
-                        ui.selectable_value(&mut self.settings.find_mode, m, m.label()).on_hover_text(m.hint());
+                    for m in MatchMode::ALL {
+                        ui.selectable_value(&mut self.settings.find_mode, m, m.label()).on_hover_text(m.about());
                     }
                 });
             if icons::button(ui, Icon::Refresh, "read the records again").clicked() {
@@ -2053,7 +2053,8 @@ impl App {
             });
             ui.separator();
             let q = h.query.to_lowercase();
-            let hit = |texts: &[&str]| q.is_empty() || texts.iter().any(|t| t.to_lowercase().contains(&q));
+            let tf = find::TextFilter::new(&h.query);
+            let hit = |texts: &[&str]| q.is_empty() || texts.iter().any(|t| tf.hit(t));
             ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 if h.features {
                     for (title, text) in crate::help::features(ko) {
@@ -2156,6 +2157,7 @@ impl App {
         let mut change: Option<(&'static str, Option<Vec<String>>)> = None;
         let mut reset_all = false;
         let q = w.query.to_lowercase();
+        let tf = find::TextFilter::new(&w.query);
         let clashing = |keys: &[String], label: &str| keys.iter().any(|k| uses.get(k).is_some_and(|v| v.iter().any(|x| *x != label)));
         let changed_n = self.settings.keys.len();
         let clash_n = COMMANDS.iter().filter(|c| clashing(&self.keymap_labels(c.0), c.2)).count();
@@ -2183,7 +2185,7 @@ impl App {
                     let rows: Vec<_> = COMMANDS
                         .iter()
                         .filter(|c| group(c.0) == g)
-                        .filter(|c| q.is_empty() || c.2.to_lowercase().contains(&q) || c.1.contains(&q) || self.keys_label(c.0).to_lowercase().contains(&q))
+                        .filter(|c| q.is_empty() || tf.hit(c.2) || tf.hit(c.1) || tf.hit(&self.keys_label(c.0)))
                         .filter(|c| !w.changed_only || self.settings.keys.contains_key(c.1))
                         .filter(|c| !w.clashes_only || clashing(&self.keymap_labels(c.0), c.2))
                         .collect();
@@ -2274,7 +2276,8 @@ impl App {
             ui.add(TextEdit::singleline(&mut self.memo_query).hint_text("search memos…").desired_width(f32::INFINITY));
         }
         let q = self.memo_query.to_lowercase();
-        let memos: Vec<MemoInfo> = self.memos().into_iter().filter(|m| q.is_empty() || m.title.to_lowercase().contains(&q) || m.preview.to_lowercase().contains(&q)).take(max).collect();
+        let tf = find::TextFilter::new(&self.memo_query);
+        let memos: Vec<MemoInfo> = self.memos().into_iter().filter(|m| tf.hit(&m.title) || tf.hit(&m.preview)).take(max).collect();
         if memos.is_empty() {
             let msg = if q.is_empty() { "no memos yet" } else { "no memo matches" };
             ui.label(RichText::new(msg).size(12.0).color(theme::text_faint()));
@@ -2803,7 +2806,7 @@ impl App {
         ui.horizontal_wrapped(|ui| {
             egui::ComboBox::from_id_salt("grep-mode").width(62.0).selected_text(RichText::new(self.side.grep_mode.label()).size(12.0)).show_ui(ui, |ui| {
                 for m in editfind::MatchMode::ALL {
-                    ui.selectable_value(&mut self.side.grep_mode, m, m.label()).on_hover_text(m.hint());
+                    ui.selectable_value(&mut self.side.grep_mode, m, m.label()).on_hover_text(m.about());
                 }
             });
             ui.checkbox(&mut self.side.grep_icase, RichText::new("ignore case").size(12.0));
@@ -2822,7 +2825,6 @@ impl App {
         let Some(res) = self.side.grep.clone() else { return };
         let hits = res["hits"].as_array().cloned().unwrap_or_default();
         // The matched part of each line gets the find background.
-        let marker = self.side.grep_ran.as_ref().and_then(|(m, q, icase)| editfind::line_matcher(*m, q, *icase));
         let base = res["root"].as_str().unwrap_or("").replace('\\', "/");
         ui.label(RichText::new(format!("{} matches{}", hits.len(), if res["truncated"].as_bool().unwrap_or(false) { " (truncated)" } else { "" })).size(11.5).color(theme::text_dim()));
         // The active terminal can be sent to a result's folder when it is on
@@ -2834,7 +2836,12 @@ impl App {
             for h in hits {
                 let path = h[0].as_str().unwrap_or("").replace('\\', "/");
                 let line = h[1].as_u64().unwrap_or(1) as usize;
-                let text = h[2].as_str().unwrap_or("").trim();
+                let raw = h[2].as_str().unwrap_or("");
+                let raw = raw.strip_suffix('\r').unwrap_or(raw);
+                let text = raw.trim();
+                // Marked on the whole line (a glob is all of it), shown
+                // without its indent and cut.
+                let lead = raw.len() - raw.trim_start().len();
                 if path != last_file {
                     ui.add_space(4.0);
                     let rel = path.strip_prefix(&base).unwrap_or(&path).trim_start_matches('/');
@@ -2853,7 +2860,13 @@ impl App {
                 let mut job = LayoutJob::default();
                 job.append(&format!("{line:>5}  "), 0.0, egui::TextFormat { color: theme::text_faint(), ..plain.clone() });
                 let mut at = 0;
-                for (a, b) in marker.as_ref().map(|re| editfind::line_marks(re, &shown)).unwrap_or_default() {
+                // (Found when the results came: their fourth field.)
+                let found: Vec<(usize, usize)> = h[3].as_array().map(|v| v.iter().filter_map(|p| Some((p[0].as_u64()? as usize, p[1].as_u64()? as usize))).collect()).unwrap_or_default();
+                let marks = found.into_iter().filter(|&(a, b)| a < b && b <= raw.len() && raw.is_char_boundary(a) && raw.is_char_boundary(b)).filter_map(|(a, b)| {
+                    let (a, b) = (a.saturating_sub(lead), b.saturating_sub(lead).min(shown.len()));
+                    (a < b).then_some((a, b))
+                });
+                for (a, b) in marks {
                     job.append(&shown[at..a], 0.0, plain.clone());
                     job.append(&shown[a..b], 0.0, egui::TextFormat { color: theme::text(), background: theme::search_hit(), ..plain.clone() });
                     at = b;
@@ -2915,8 +2928,8 @@ impl App {
             }
             Some(Ok(r)) => r.clone(),
         };
-        let f = self.side.procs_filter.to_lowercase();
-        let mut rows: Vec<_> = rows.into_iter().filter(|r| f.is_empty() || r.to_string().to_lowercase().contains(&f)).collect();
+        let tf = find::TextFilter::new(&self.side.procs_filter);
+        let mut rows: Vec<_> = rows.into_iter().filter(|r| tf.hit(&r.to_string())).collect();
         let (sc, asc) = self.side.procs_sort;
         rows.sort_by(|a, b| {
             let o = match (a[sc].as_f64(), b[sc].as_f64()) {
@@ -3863,7 +3876,7 @@ impl App {
         let mut find_error: Option<String> = None;
         if let Some(mut bar) = self.editor.find.take() {
             let f = &mut self.editor.files[idx];
-            let ms = bar.matches(&f.text);
+            let ms = bar.matches_cached(&f.text);
             let count = ms.as_ref().map(|m| m.len()).unwrap_or(0);
             bar.cur = if count == 0 { 0 } else { bar.cur.min(count - 1) };
             let mut nav: i32 = 0;
@@ -3916,7 +3929,7 @@ impl App {
                 let before = bar.mode;
                 let r = egui::ComboBox::from_id_salt("editor-find-mode").width(62.0).selected_text(RichText::new(bar.mode.label()).size(12.0)).show_ui(ui, |ui| {
                     for m in editfind::MatchMode::ALL {
-                        ui.selectable_value(&mut bar.mode, m, m.label()).on_hover_text(m.hint());
+                        ui.selectable_value(&mut bar.mode, m, m.label()).on_hover_text(m.about());
                     }
                 });
                 took(&r.response);
@@ -3958,12 +3971,13 @@ impl App {
             });
             if bar.replacing {
                 ui.horizontal_wrapped(|ui| {
-                    let hint = if bar.mode == editfind::MatchMode::Regex { "replace with… ($1, $2: groups)" } else { "replace with…" };
+                    let can = bar.can_replace();
+                    let hint = if !can { "replacing works in text and regex modes" } else if bar.mode == editfind::MatchMode::Regex { "replace with… ($1, $2: groups)" } else { "replace with…" };
                     ui.add(TextEdit::singleline(&mut bar.replace).id(Id::new("editor-find-r")).hint_text(hint).desired_width((ui.available_width() - 300.0).clamp(100.0, 220.0)));
-                    if ui.add_enabled(count > 0 && !f.loading, egui::Button::new("Replace")).on_hover_text("this match, then on to the next").clicked() {
+                    if ui.add_enabled(can && count > 0 && !f.loading, egui::Button::new("Replace")).on_hover_text("this match, then on to the next").on_disabled_hover_text(hint).clicked() {
                         rep_one = true;
                     }
-                    if ui.add_enabled(count > 0 && !f.loading, egui::Button::new("All")).on_hover_text("every match").clicked() {
+                    if ui.add_enabled(can && count > 0 && !f.loading, egui::Button::new("All")).on_hover_text("every match").on_disabled_hover_text(hint).clicked() {
                         rep_all = true;
                     }
                 });
@@ -3993,7 +4007,9 @@ impl App {
                 }
             }
             // Go to a match: select it (shown once the editor has the keyboard) and scroll to it.
-            let ms = if replaced.is_some() { bar.matches(&f.text).unwrap_or_default() } else { ms };
+            // As the bar is now when a replace, or the query, mode or Aa
+            // changed this frame (the text hashed again only then).
+            let ms = if replaced.is_some() || nav == 2 { bar.matches_cached(&f.text).unwrap_or_default() } else { ms };
             if nav != 0 && !ms.is_empty() {
                 let n = ms.len();
                 bar.cur = match nav {
@@ -4510,8 +4526,8 @@ impl App {
             });
             ui.label(RichText::new(format!("now: {}", theme::font_label(&current))).size(11.5).color(theme::text_faint()));
             ui.add(TextEdit::singleline(&mut m.query).hint_text("filter fonts…").desired_width(f32::INFINITY));
-            let q = m.query.to_lowercase();
-            let shown = |name: &str| q.is_empty() || name.to_lowercase().contains(&q);
+            let tf = find::TextFilter::new(&m.query);
+            let shown = |name: &str| tf.hit(name);
             let row = |ui: &mut Ui, name: &str, spec: &str, chosen: &mut Option<String>| {
                 let sel = spec == current;
                 if ui.selectable_label(sel, RichText::new(name).size(13.0)).on_hover_text(spec).clicked() && !sel {
@@ -4696,23 +4712,20 @@ struct MdCache {
 /// History search: indices into `all`, newest first. The command is matched
 /// whole with the filter's mode; with `in_output`, output is searched for the
 /// text as typed (any case), or with the regex in regex mode.
-fn history_matches(all: &[crate::records::Record], q: &str, mode: FindMode, in_output: bool, host: Option<&str>) -> Result<Vec<usize>, String> {
+fn history_matches(all: &[crate::records::Record], q: &str, mode: MatchMode, in_output: bool, host: Option<&str>) -> Result<Vec<usize>, String> {
     let host_ok = |r: &crate::records::Record| host.map(|h| r.host == h).unwrap_or(true);
     if q.is_empty() {
         return Ok((0..all.len()).rev().filter(|&i| host_ok(&all[i])).collect());
     }
     let m = find::Matcher::for_lines(mode, q)?;
-    let out_re = if in_output {
-        let (pat, icase) = if mode == FindMode::Regex { (q.to_string(), !q.chars().any(char::is_uppercase)) } else { (regex::escape(q), true) };
-        Some(regex::RegexBuilder::new(&pat).case_insensitive(icase).build().map_err(|e| e.to_string())?)
-    } else {
-        None
-    };
+    // The output: the text as typed, or the regex (a glob or fuzzy over a
+    // whole output means nothing).
+    let out = if in_output { Some(find::Matcher::for_lines(if mode == MatchMode::Regex { MatchMode::Regex } else { MatchMode::Text }, q)?) } else { None };
     Ok((0..all.len())
         .rev()
         .filter(|&i| {
             let r = &all[i];
-            host_ok(r) && (m.matches(&r.cmd).is_some() || out_re.as_ref().map(|re| re.is_match(&r.out)).unwrap_or(false))
+            host_ok(r) && (m.matches(&r.cmd).is_some() || out.as_ref().is_some_and(|o| o.matches(&r.out).is_some()))
         })
         .collect())
 }
@@ -5375,25 +5388,21 @@ fn table_sel_text(cells: &[Vec<String>], s: &TableSel) -> String {
 }
 
 /// The palette's rows for what is typed: which labels, in which order.
-/// Fuzzy (letters in order, the best match first) unless the mode is text,
-/// glob or regex, which keep the list's order. Nothing typed is everything;
-/// a pattern that can't be read matches nothing.
+/// Matched as everywhere (crate::find): fuzzy is fzf's, the best match
+/// first; text, glob and regex keep the list's order (a glob is the whole
+/// label, glob text with no wildcard is found anywhere in it). Nothing typed
+/// is everything; a pattern that can't be read matches nothing.
 pub fn palette_matches(mode: crate::editfind::MatchMode, query: &str, labels: &[String]) -> Vec<usize> {
-    use crate::editfind::MatchMode;
     let q = query.trim();
     if q.is_empty() {
         return (0..labels.len()).collect();
     }
-    if mode == MatchMode::Fuzzy {
-        let Ok(m) = crate::find::Matcher::new(crate::find::FindMode::Fuzzy, q) else { return Vec::new() };
-        let mut hits: Vec<(i64, usize)> = labels.iter().enumerate().filter_map(|(i, l)| m.matches(l).map(|(score, _)| (score, i))).collect();
+    let Ok(m) = crate::find::Matcher::for_lines(mode, q) else { return Vec::new() };
+    let mut hits: Vec<(i64, usize)> = labels.iter().enumerate().filter_map(|(i, l)| m.matches(l).map(|(score, _)| (score, i))).collect();
+    if m.ranked() {
         hits.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-        return hits.into_iter().map(|h| h.1).collect();
     }
-    match crate::editfind::line_matcher(mode, q, true) {
-        Some(re) => labels.iter().enumerate().filter(|(_, l)| re.is_match(l)).map(|(i, _)| i).collect(),
-        None => Vec::new(),
-    }
+    hits.into_iter().map(|h| h.1).collect()
 }
 
 fn replace_leaf(n: Node, target: usize, new_id: usize) -> Node {
@@ -5448,6 +5457,16 @@ mod tests {
         assert_eq!(found(MatchMode::Regex, "^go to tab [1-3]$"), ["Go to tab 1", "Go to tab 2", "Go to tab 3"]);
         // A pattern that can't be read: nothing, and no panic.
         assert!(found(MatchMode::Regex, "(").is_empty());
+        // Glob as Files and History have it (globset): {a,b}; a pattern is
+        // the whole label; no wildcard is found anywhere in it.
+        let mut both = found(MatchMode::Glob, "{split down,command palette}");
+        both.sort();
+        assert_eq!(both, ["Command palette", "Split down"]);
+        assert!(found(MatchMode::Glob, "split*").contains(&"Split down"));
+        assert!(found(MatchMode::Glob, "*down").contains(&"Split down"));
+        assert!(!found(MatchMode::Glob, "split").is_empty() && !found(MatchMode::Glob, "split?").contains(&"Split down"));
+        // Regex as there too: smart case.
+        assert!(found(MatchMode::Regex, "Split").contains(&"Split down") && found(MatchMode::Regex, "SPLIT").is_empty());
     }
 
     #[test]
@@ -5468,7 +5487,7 @@ mod tests {
         assert_eq!(table_sel_text(&cells, &sel((0, 0, 0), (0, 1, 0), false)), "name\tsize");
     }
 
-    use super::{history_matches, FindMode};
+    use super::{history_matches, MatchMode};
     use crate::app::memo_title;
     use crate::records::Record;
 
@@ -5513,17 +5532,17 @@ mod tests {
         let all = [rec("local", "git status", "On branch main"), rec("srv", "cargo build --release", "error[E0425]: not found"), rec("srv", "ls /var/log", "syslog")];
         let find = |q: &str, mode, out, host| history_matches(&all, q, mode, out, host).unwrap();
         // Newest first; everything for an empty query.
-        assert_eq!(find("", FindMode::Fuzzy, false, None), [2, 1, 0]);
-        assert_eq!(find("", FindMode::Fuzzy, false, Some("srv")), [2, 1]);
-        assert_eq!(find("gst", FindMode::Fuzzy, false, None), [0]);
+        assert_eq!(find("", MatchMode::Fuzzy, false, None), [2, 1, 0]);
+        assert_eq!(find("", MatchMode::Fuzzy, false, Some("srv")), [2, 1]);
+        assert_eq!(find("gst", MatchMode::Fuzzy, false, None), [0]);
         // Glob over the whole command, slashes and all.
-        assert_eq!(find("ls /var/*", FindMode::Glob, false, None), [2]);
-        assert_eq!(find("^cargo .*release$", FindMode::Regex, false, None), [1]);
+        assert_eq!(find("ls /var/*", MatchMode::Glob, false, None), [2]);
+        assert_eq!(find("^cargo .*release$", MatchMode::Regex, false, None), [1]);
         // Output: only when asked, as typed in any case, or by regex.
-        assert!(find("E0425", FindMode::Fuzzy, false, None).is_empty());
-        assert_eq!(find("e0425", FindMode::Fuzzy, true, None), [1]);
-        assert_eq!(find(r"E\d{4}", FindMode::Regex, true, None), [1]);
-        assert!(history_matches(&all, "(", FindMode::Regex, false, None).is_err());
+        assert!(find("E0425", MatchMode::Fuzzy, false, None).is_empty());
+        assert_eq!(find("e0425", MatchMode::Fuzzy, true, None), [1]);
+        assert_eq!(find(r"E\d{4}", MatchMode::Regex, true, None), [1]);
+        assert!(history_matches(&all, "(", MatchMode::Regex, false, None).is_err());
     }
 
     #[test]

@@ -5,6 +5,34 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.12.4
+
+Changed
+- **One way of matching, everywhere.** Files' filter, the palette,
+  History, the editor's Find bar, the Search tab (and the serial log)
+  each had a matcher of their own: the same mode could find different
+  things in different places (the palette's glob had no {a,b}, and its *
+  matched inside a label where Files' had to match the whole name). They
+  all use one now (weft_core::find), each mode by a library made for it:
+  text as typed; fuzzy fzf's (nucleo); glob ripgrep's (globset): a
+  pattern is the whole name or line (*TODO* finds it inside a line), and
+  text with no wildcard is found anywhere; regex the regex crate, any
+  case unless it has a capital letter (or as Aa says).
+- Text in lines (the Find bar, the Search tab) is matched line by line
+  with that matcher. On this PC the Search tab's lines are decided by it
+  as they are read; a remote host's grep -E finds the lines that may
+  match (up to 5,000, whole, for a glob or fuzzy search) and weft
+  decides, saying "truncated" when there may be more. Replacing works in
+  text and regex modes (a glob is whole lines, fuzzy letters apart).
+- The Search tab marks on the whole line (a glob is all of it), shown
+  without its indent; the Find bar does not search a long file again
+  each frame.
+- Files and History offer text too; the modes' hints are short enough
+  for a narrow field, their full words on hover.
+- The terminal's find (Ctrl+Shift+F) and the filter fields of Help, the
+  keys, memos, processes and fonts find text by that matcher too (each
+  had its own).
+
 ## 0.12.3
 
 Added
