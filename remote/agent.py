@@ -618,14 +618,19 @@ TREE_SKIP = {".git", "node_modules", "target", "__pycache__", ".venv", "venv", "
 
 
 def op_tree(req):
-    # Every name under a folder, for the file panel filter (matching is local).
+    # Every name under a folder, for the file panel filter (matching is local):
+    # the nearest first, a folder at a time by depth (at the limit the deepest
+    # is cut, not a folder next to the root a big one crowded out); a link to
+    # a folder gone into, each real folder once.
+    import collections
     root = _path(req.get("path"))
     hidden = bool(req.get("hidden"))
     limit = int(req.get("max", 20000))
     out = []
-    stack = [""]
-    while stack:
-        rel = stack.pop()
+    queue = collections.deque([""])
+    seen = {os.path.realpath(root)}
+    while queue:
+        rel = queue.popleft()
         try:
             it = os.scandir(os.path.join(root, rel) if rel else root)
         except OSError:
@@ -635,7 +640,7 @@ def op_tree(req):
                 if not hidden and e.name.startswith("."):
                     continue
                 try:
-                    isdir = e.is_dir(follow_symlinks=False)
+                    isdir = e.is_dir()
                 except OSError:
                     isdir = False
                 r = rel + "/" + e.name if rel else e.name
@@ -643,7 +648,10 @@ def op_tree(req):
                 if len(out) >= limit:
                     return {"root": root, "entries": out, "truncated": True}
                 if isdir and e.name not in TREE_SKIP:
-                    stack.append(r)
+                    real = os.path.realpath(e.path)
+                    if real not in seen:
+                        seen.add(real)
+                        queue.append(r)
     return {"root": root, "entries": out, "truncated": False}
 
 

@@ -304,6 +304,7 @@ What the numbers don't show:
 | Glob: text with no wildcard is found anywhere in the name (or a command); a pattern is the whole name | `find::tests::glob_without_a_wildcard_is_contained` |
 | Grep modes (local and agent) | `host::tests::local_grep_modes_and_hidden`, `local_grep_text_or_regex` |
 | Tree like the agent | `host::tests::tree_lists_names_like_the_agent` |
+| The filter's name list, nearest first: at the limit a folder next to the root is kept however big a deep one is; a link to a folder is gone into, a link back up not gone round; local and agent alike | `host::tests::tree_lists_the_nearest_first_and_through_links` |
 | Transfer ops; any host to any host; no overwrite | `host::tests::transfer_ops_copy_a_folder_in_chunks`, `transfer::tests::*` |
 | History search | `ui_panels::tests::history_search` |
 | The Files filter: fuzzy and regex (said when it can't be read), a click selects, a double click or Enter opens, the menu copies the path and shows the file in the tree | `regress::the_files_filter_finds_names` |
@@ -342,6 +343,7 @@ What the numbers don't show:
 | Mermaid; where mermaid-cli is found on Windows | `mermaid::tests::*`, `mermaid::win::*` |
 | A table selection stays with its table when another scrolls out of view | `regress::a_table_selection_stays_with_its_table` |
 | A selection dragged over a table while editing: the table stays rendered until the button is let go (it opened as source under the pointer, moved the lines and closed again, at every frame) | `regress::a_drag_over_a_table_does_not_flicker` |
+| A file open in the editor changed by another program is said above it (and in its tab), Reload reads it again and the note goes; its own save is no change; deleted, said too | `regress::the_editor_says_when_its_file_changed_on_disk` |
 | Table cells: letters, a cell, a block; Ctrl+C; the menu | `ui_panels::tests::a_table_selection_copies_letters_a_cell_or_a_block`, `regress::table_cells_select_and_copy` |
 | Closing an unsaved file asks: save, drop, cancel, off | `regress::closing_an_unsaved_file_asks` |
 | Saving then closing asks about what changed meanwhile; Cancel closes nothing later | `regress::saving_then_closing_asks_about_what_changed_meanwhile` |

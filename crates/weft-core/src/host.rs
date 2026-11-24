@@ -1871,10 +1871,19 @@ fn local_walk(path: &str) -> Result<Value, String> {
 const TREE_SKIP: &[&str] = &[".git", "node_modules", "target", "__pycache__", ".venv", "venv", ".cache", ".tox", "dist", "build"];
 
 /// Every name under `root` as [relative path, is dir], for the file filter.
+/// Every name under `root`, the nearest first (a folder at a time, by
+/// depth: at the limit what is cut is the deepest, not a folder next to
+/// the root that a big one listed before it crowded out); a link to a
+/// folder is gone into (~/work → /mnt/…), each real folder once (a link
+/// back up goes nowhere).
 fn local_tree(root: &str, hidden: bool, limit: usize) -> Value {
     let mut out = Vec::new();
-    let mut stack = vec![String::new()];
-    while let Some(rel) = stack.pop() {
+    let mut queue = std::collections::VecDeque::from([String::new()]);
+    let mut seen = std::collections::HashSet::new();
+    if let Ok(real) = std::fs::canonicalize(root) {
+        seen.insert(real);
+    }
+    while let Some(rel) = queue.pop_front() {
         let dir = if rel.is_empty() { PathBuf::from(root) } else { Path::new(root).join(&rel) };
         let Ok(rd) = std::fs::read_dir(&dir) else { continue };
         for e in rd.flatten() {
@@ -1882,14 +1891,15 @@ fn local_tree(root: &str, hidden: bool, limit: usize) -> Value {
             if is_hidden(&e, &name, hidden) {
                 continue;
             }
-            let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            let link = e.file_type().map(|t| t.is_symlink()).unwrap_or(false);
+            let is_dir = if link { std::fs::metadata(e.path()).map(|m| m.is_dir()).unwrap_or(false) } else { e.file_type().map(|t| t.is_dir()).unwrap_or(false) };
             let r = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
             out.push(json!([r, is_dir]));
             if out.len() >= limit {
                 return json!({"root": root, "entries": out, "truncated": true});
             }
-            if is_dir && !TREE_SKIP.contains(&name.as_str()) {
-                stack.push(r);
+            if is_dir && !TREE_SKIP.contains(&name.as_str()) && std::fs::canonicalize(e.path()).map(|p| seen.insert(p)).unwrap_or(!link) {
+                queue.push_back(r);
             }
         }
     }
@@ -2604,6 +2614,59 @@ print(json.dumps(out))
                 let v: Value = serde_json::from_slice(&out.stdout).unwrap();
                 assert_eq!(names(&v), local, "agent.py op_tree");
             }
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The nearest names first: at the limit a folder next to the root is
+    /// there however big a deep one is (all of one folder was listed
+    /// before the next: works/abc was not found); a link to a folder is
+    /// gone into, a link back up is not gone round. Local and agent alike.
+    #[test]
+    fn tree_lists_the_nearest_first_and_through_links() {
+        let dir = std::env::temp_dir().join(format!("weft-tree2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("aaa/b/c/d")).unwrap();
+        std::fs::create_dir_all(dir.join("works/abc")).unwrap();
+        for n in 0..40 {
+            std::fs::write(dir.join(format!("aaa/b/c/d/f{n}.txt")), "x").unwrap();
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(dir.join("works"), dir.join("linked")).unwrap();
+            std::os::unix::fs::symlink(&dir, dir.join("works/up")).unwrap();
+        }
+        let root = dir.display().to_string().replace('\\', "/");
+        let names = |v: &Value| v["entries"].as_array().unwrap().iter().map(|e| e[0].as_str().unwrap().to_string()).collect::<Vec<_>>();
+        let script = format!("import json,sys\nsrc=open(r'{}/remote/agent.py',encoding='utf-8').read().split('\\ndef main')[0]\nexec(src)\nprint(json.dumps(op_tree({{'path': sys.argv[1], 'max': int(sys.argv[2])}})))", concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
+        let agent = |max: usize| -> Option<Value> {
+            let out = std::process::Command::new(crate::pty::tests::python()).arg("-c").arg(&script).arg(&root).arg(max.to_string()).output().ok()?;
+            out.status.success().then(|| serde_json::from_slice(&out.stdout).unwrap())
+        };
+        for (who, v) in [("local", Some(local_op(&json!({"op": "tree", "path": root, "max": 12})))), ("agent", agent(12))] {
+            let Some(v) = v else { continue };
+            assert!(v["truncated"].as_bool().unwrap(), "{who}: cut");
+            // (Through the link to it, on Unix, if that came first: one real
+            // folder is listed once.)
+            let n = names(&v);
+            assert!(n.contains(&"works/abc".to_string()) || n.contains(&"linked/abc".to_string()), "{who}: the near folder kept: {n:?}");
+            // Whatever order the folders are read in: every name nearer
+            // than the deepest one kept is kept.
+            let all = if who == "local" { names(&local_op(&json!({"op": "tree", "path": root}))) } else { agent(20000).map(|v| names(&v)).unwrap_or_default() };
+            let depth = |p: &str| p.matches('/').count();
+            let deepest = n.iter().map(|p| depth(p)).max().unwrap_or(0);
+            for p in all.iter().filter(|p| depth(p) < deepest) {
+                assert!(n.contains(p), "{who}: {p} is nearer than what was kept: {n:?}");
+            }
+        }
+        #[cfg(unix)]
+        for (who, v) in [("local", Some(local_op(&json!({"op": "tree", "path": root})))), ("agent", agent(20000))] {
+            let Some(v) = v else { continue };
+            let n = names(&v);
+            // (One real folder listed once: through the link or not.)
+            assert!(n.contains(&"linked/abc".to_string()) || n.contains(&"works/abc".to_string()), "{who}: {n:?}");
+            assert!(n.contains(&"linked".to_string()) && (n.contains(&"works/up".to_string()) || n.contains(&"linked/up".to_string())), "{who}: the links themselves listed: {n:?}");
+            assert!(!v["truncated"].as_bool().unwrap() && n.len() < 100, "{who}: the link back up not gone round: {}", n.len());
         }
         std::fs::remove_dir_all(&dir).unwrap();
     }

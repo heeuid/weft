@@ -1428,6 +1428,13 @@ pub struct EditorFile {
     pub text: String,
     pub dirty: bool,
     pub mtime: Option<f64>,
+    /// Changed or gone on disk since it was opened or saved (asked every
+    /// couple of seconds while shown: check_editor_on_disk).
+    pub outdated: Option<Outdated>,
+    /// When its file on disk was last asked about; which read or save it
+    /// was asked after (an answer from before one is not about it).
+    pub disk_asked: Option<Instant>,
+    pub disk_gen: u64,
     pub binary: bool,
     pub scratch: bool,
     pub loading: bool,
@@ -1453,6 +1460,13 @@ pub struct EditorFile {
     pub bytes: Option<std::sync::Arc<Vec<u8>>>,
     pub image: crate::media::ImageState,
     pub pdf: crate::media::PdfState,
+}
+
+/// How a file open in the editor differs from its file on disk.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Outdated {
+    Changed,
+    Gone,
 }
 
 pub struct EditorState {
@@ -1637,6 +1651,8 @@ pub fn text_hash(text: &str) -> u64 {
 }
 
 pub enum Pending {
+    /// An editor file's time on disk (is it still the one opened?).
+    EditorStat { path: String, generation: u64 },
     List { path: String },
     /// A Files widget's folder (wls), listed for it.
     WidgetFiles { pane: usize, id: String },
@@ -2999,6 +3015,9 @@ impl App {
             text: String::new(),
             dirty: false,
             mtime: None,
+            outdated: None,
+            disk_asked: None,
+            disk_gen: 0,
             binary: false,
             scratch: false,
             loading: true,
@@ -3028,6 +3047,9 @@ impl App {
             text,
             dirty: false,
             mtime: None,
+            outdated: None,
+            disk_asked: None,
+            disk_gen: 0,
             binary: false,
             scratch: true,
             loading: false,
@@ -3131,6 +3153,9 @@ impl App {
             text: String::new(),
             dirty: false,
             mtime: None,
+            outdated: None,
+            disk_asked: None,
+            disk_gen: 0,
             binary: false,
             scratch: false,
             loading: false,
@@ -3270,8 +3295,30 @@ impl App {
         }
         f.loading = true;
         f.conflict = false;
+        f.disk_gen += 1;
         let (host, path) = (f.host.clone(), f.path.clone());
         self.request(&host, json!({"op": "read", "path": path, "max": crate::media::read_limit(&path)}), Pending::Open { path, line: 0 });
+    }
+
+    /// The file shown in the editor, asked about on disk every two seconds
+    /// while the window is looked at (changed or deleted by another program:
+    /// said above it). None of it while weft is not looked at.
+    fn check_editor_on_disk(&mut self) {
+        const EVERY: Duration = Duration::from_secs(2);
+        if !self.editor.visible || !self.ctx.input(|i| i.focused) {
+            return;
+        }
+        let Some(f) = self.editor.files.get_mut(self.editor.active) else { return };
+        if f.scratch || f.loading || f.saving || f.mtime.is_none() {
+            return;
+        }
+        self.ctx.request_repaint_after(EVERY);
+        if f.disk_asked.is_some_and(|t| t.elapsed() < EVERY) {
+            return;
+        }
+        f.disk_asked = Some(Instant::now());
+        let (host, path, generation) = (f.host.clone(), f.path.clone(), f.disk_gen);
+        self.request(&host, json!({"op": "stat", "path": path}), Pending::EditorStat { path, generation });
     }
 
     pub fn toast(&mut self, text: impl Into<String>, kind: ToastKind) {
@@ -3593,6 +3640,7 @@ impl App {
 
         // settings.json changed on disk: read again (store.rs).
         self.poll_prefs();
+        self.check_editor_on_disk();
         if self.last_save.elapsed() > Duration::from_secs(10) {
             self.autosave_settings();
         }
@@ -3788,10 +3836,27 @@ impl App {
                 entries.sort_by(|a, b| b.dir.cmp(&a.dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
                 self.dir_cache.insert((host.into(), path), DirListing { entries, at: Instant::now(), error: None });
             }
+            Pending::EditorStat { path, generation } => {
+                let Some(f) = self.editor.files.iter_mut().find(|f| f.host == host && f.path == path) else { return };
+                // Asked before a read or a save of its own: not about it.
+                if !ok || generation != f.disk_gen || f.loading || f.saving {
+                    return;
+                }
+                f.outdated = if !r["exists"].as_bool().unwrap_or(true) {
+                    Some(Outdated::Gone)
+                } else {
+                    match (r["mtime"].as_f64(), f.mtime) {
+                        (Some(disk), Some(mine)) if (disk - mine).abs() > 0.001 => Some(Outdated::Changed),
+                        _ => None,
+                    }
+                };
+            }
             Pending::Open { path, line } => {
                 let Some(i) = self.editor.files.iter().position(|f| f.host == host && f.path == path) else { return };
                 let f = &mut self.editor.files[i];
                 f.loading = false;
+                f.outdated = None;
+                f.disk_gen += 1;
                 // A folder, told so by the agent: shown in Files.
                 let is_dir = r.get("is_dir").and_then(|v| v.as_bool()).unwrap_or(false);
                 if !ok || is_dir {
@@ -3842,6 +3907,8 @@ impl App {
                     let same = f.saving_of.take().is_none_or(|sent| sent == text_hash(&f.text));
                     f.dirty = !same;
                     f.mtime = r["mtime"].as_f64();
+                    f.outdated = None;
+                    f.disk_gen += 1;
                     // Said quietly in the editor's toolbar ("✓ saved"), not a toast.
                     if same {
                         f.saved_at = Some(Instant::now());

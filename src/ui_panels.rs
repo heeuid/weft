@@ -3611,7 +3611,7 @@ impl App {
                     let sel = i == self.editor.active;
                     // Memos save themselves, so no unsaved dot for them.
                     let name = weft_core::shown(&name).into_owned();
-                    let label = RichText::new(if f.dirty && !memo { format!("● {name}") } else { name }).size(12.5).color(if sel { theme::text() } else { theme::text_dim() });
+                    let label = RichText::new(if f.dirty && !memo { format!("● {name}") } else { name }).size(12.5).color(if f.outdated.is_some() { theme::warn() } else if sel { theme::text() } else { theme::text_dim() });
                     let label = if memo { label.italics() } else { label };
                     let r = ui.selectable_label(sel, label).on_hover_text(format!("{}:{}", f.host, f.path));
                     if r.clicked() {
@@ -3780,6 +3780,24 @@ impl App {
                             force = true;
                         }
                         if ui.button("Reload").clicked() {
+                            reload = true;
+                        }
+                    });
+                });
+            }
+            // Changed or deleted on disk by another program since it was
+            // opened or saved (the save's own check says "changed on the
+            // host" above when it comes to that).
+            if let (false, Some(o)) = (f.conflict, f.outdated) {
+                egui::Frame::new().fill(theme::tint(theme::warn(), 28)).corner_radius(CornerRadius::same(5)).inner_margin(6.0).show(ui, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        let text = match (o, f.dirty && !f.scratch) {
+                            (crate::app::Outdated::Gone, _) => "Deleted on disk (or moved) since it was opened. Save writes it again.",
+                            (crate::app::Outdated::Changed, false) => "Changed on disk since it was opened.",
+                            (crate::app::Outdated::Changed, true) => "Changed on disk since it was opened, and your edits here are not saved: Reload drops them, Save asks first.",
+                        };
+                        ui.label(RichText::new(text).color(theme::warn()));
+                        if o == crate::app::Outdated::Changed && ui.button("Reload").on_hover_text("read it again from disk").clicked() {
                             reload = true;
                         }
                     });
@@ -4683,10 +4701,7 @@ fn history_matches(all: &[crate::records::Record], q: &str, mode: FindMode, in_o
     if q.is_empty() {
         return Ok((0..all.len()).rev().filter(|&i| host_ok(&all[i])).collect());
     }
-    let m = match find::Matcher::new(mode, q)? {
-        find::Matcher::Pattern { re, .. } => find::Matcher::Pattern { re, full_path: true },
-        m => m,
-    };
+    let m = find::Matcher::for_lines(mode, q)?;
     let out_re = if in_output {
         let (pat, icase) = if mode == FindMode::Regex { (q.to_string(), !q.chars().any(char::is_uppercase)) } else { (regex::escape(q), true) };
         Some(regex::RegexBuilder::new(&pat).case_insensitive(icase).build().map_err(|e| e.to_string())?)

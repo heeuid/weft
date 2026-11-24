@@ -5,6 +5,32 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.12.3
+
+Added
+- **The editor says when its file changed on disk.** While it is shown
+  (and the window looked at), the file is asked about every two seconds,
+  here or on a remote host: changed by another program, a note above it
+  says so with Reload (and that your unsaved edits would go), and its
+  tab turns amber; deleted or moved, the note says Save writes it again.
+  Its own saves are no change.
+
+Changed
+- **Fuzzy matching is fzf's** (the nucleo matcher, as the Helix editor
+  has it) in Files' filter, the palette and History, not one of weft's
+  own: better ranking, and words typed apart are each found anywhere
+  ("view main" → src/ui/main_view.rs). **Glob is ripgrep's** (globset)
+  there, not a translation of weft's own; in History a * crosses / (a
+  command is matched whole).
+
+Fixed
+- **Files' filter found nothing in a folder next to the root** when a big
+  folder came first (works/abc): the names under the root were listed a
+  folder all the way down at a time, and the 20,000 were used up before
+  it. The nearest are listed first now, a level at a time. A link to a
+  folder (~/works → /mnt/…) is gone into (it was not), each real folder
+  once.
+
 ## 0.12.2
 
 Added

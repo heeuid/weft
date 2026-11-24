@@ -1893,6 +1893,45 @@ fn a_drag_over_a_table_does_not_flicker() {
     assert!(sel.is_some_and(|(a, b)| b > a + 20), "a selection made over it: {sel:?}");
 }
 
+/// A file open in the editor changed by another program: said above it
+/// (and its tab), Reload reads it again and the note goes; saved here, no
+/// note (its own write is not "changed"); deleted, said too.
+#[test]
+fn the_editor_says_when_its_file_changed_on_disk() {
+    let mut h = Harness::new(json!({}));
+    let file = h.dir.join("notes.txt");
+    std::fs::write(&file, "one\n").unwrap();
+    let path = file.display().to_string().replace('\\', "/");
+    h.app.open_file("local", &path, 1);
+    assert!(h.wait_for(20.0, |h| h.app.editor.files.iter().all(|f| !f.loading) && h.app.editor.files.iter().any(|f| f.text == "one
+")), "opened");
+    let i = h.app.editor.files.iter().position(|f| f.path == path).unwrap();
+    h.frames(3);
+    assert!(h.app.editor.files[i].outdated.is_none() && !h.shows("Changed on disk"));
+    // Another program writes it (a later time on disk).
+    std::fs::write(&file, "two\n").unwrap();
+    let f = std::fs::OpenOptions::new().write(true).open(&file).unwrap();
+    f.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5)).unwrap();
+    drop(f);
+    assert!(h.wait_for(10.0, |h| h.shows("Changed on disk since it was opened.")), "said");
+    h.click(h.at_exact("Reload"));
+    assert!(h.wait_for(10.0, |h| !h.shows("Changed on disk") && h.app.editor.files[i].text == "two\n"), "read again, the note gone");
+    // Saved here: no note.
+    h.app.editor.files[i].text = "three\n".into();
+    h.app.editor.files[i].dirty = true;
+    h.app.save_file(i, false);
+    assert!(h.wait_for(10.0, |h| !h.app.editor.files[i].dirty && !h.app.editor.files[i].saving), "saved");
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < end {
+        h.frames(1);
+        assert!(!h.shows("Changed on disk"), "its own save is no change");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    // Deleted.
+    std::fs::remove_file(&file).unwrap();
+    assert!(h.wait_for(10.0, |h| h.shows("Deleted on disk")), "said");
+}
+
 /// The editor keeps a few laid-out files, not every one ever opened.
 #[test]
 fn laid_out_files_are_not_kept_for_ever() {

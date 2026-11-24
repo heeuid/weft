@@ -6,6 +6,11 @@ edition = "2021"
 description = "weft without its window: the terminal grid and parser, ptys, hosts and their agents, search, records, secrets"
 
 [dependencies]
+# The fuzzy matching of Files, the palette and History: fzf's algorithm (as
+# Helix has it), not one of our own.
+nucleo-matcher = { version = "0.3.1", default-features = false, features = ["unicode-normalization", "unicode-casefold"] }
+# And their glob: ripgrep's.
+globset = "0.4.16"
 vte = "0.15"
 portable-pty = "0.9.0"
 serde = { version = "1.0", features = ["derive"] }
