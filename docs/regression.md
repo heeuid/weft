@@ -263,6 +263,7 @@ What the numbers don't show:
 | The same setting changed in weft and in settings.json before weft read it: the later one wins, either way | `regress::the_later_change_of_a_setting_wins` |
 | settings.json held open by a program that lets others write but not move it over: saved in place, the old file kept as settings.json.prev (Windows) | `regress::settings_json_held_open_is_saved_in_place` |
 | weft run more than once: a window each in state.json; one closed while another runs is gone, the last stays; ended at once, all come back (or the last, or none, by the setting); a restart keeps its window for the new weft; a state.json of one window (0.12.2) is that window | `regress::each_weft_is_a_window` |
+| A window whose lock looks held for a moment (a program being started holds a copy of it) is still taken: opened again, or with restore "none" let go of, not left behind | `instances::tests::a_window_held_for_a_moment_is_still_taken` |
 | A process of this id running now: this one is, one that ended is not (a restart's window left to its new weft only while that runs) | `pty::alive_tests::a_process_running_or_not` |
 | The tabs live in state.json: an old settings.json's move there (settings.json.bak kept); settings.json not valid at the start, the tabs still come back and the file is not written over | `regress::the_tabs_live_in_state_json` |
 | A tooltip waits for the pointer to rest (0.8 s), on each thing anew: passing over Files' rows shows none | `regress::a_tooltip_waits_for_the_pointer_to_rest` |

@@ -5,6 +5,16 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.13.2
+
+Fixed
+- **A weft started as another one closed could miss one of the windows
+  left**: on Linux and macOS a program being started anywhere holds a
+  copy of a window's lock for a moment, and that window was taken for
+  one still open (not restored, or left behind with restore "none"). A
+  window that looks held is asked again for a moment (0.15 s at most),
+  not only when none was free.
+
 ## 0.13.1
 
 Fixed

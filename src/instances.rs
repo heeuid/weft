@@ -204,21 +204,25 @@ pub fn claim(data: &DataDir, wanted: Option<&str>, reopen: bool, restore: &str) 
         let by = v.get("opening_pid").and_then(|p| p.as_u64()).map(|p| weft_core::pty::process_alive(p as u32));
         until && by.unwrap_or(true)
     };
-    let take_free = || -> Vec<(String, f64, File)> {
-        windows
-            .iter()
-            .filter(|(_, v)| !opening(v))
-            .filter_map(|(id, v)| take(data, id).map(|f| (id.clone(), v.get("at").and_then(|a| a.as_f64()).unwrap_or(0.0), f)))
-            .collect()
-    };
-    let mut free = take_free();
-    // None free: one let go of a moment ago may still look held (a process
-    // being started holds a copy of its lock until it runs its program):
-    // asked again for a moment before a new window is made.
-    let until = std::time::Instant::now() + Duration::from_millis(200);
-    while free.is_empty() && windows.values().any(|v| !opening(v)) && std::time::Instant::now() < until {
-        std::thread::sleep(Duration::from_millis(20));
-        free = take_free();
+    let at = |id: &str| windows.get(id).and_then(|v| v.get("at")).and_then(|a| a.as_f64()).unwrap_or(0.0);
+    let candidates: Vec<String> = windows.iter().filter(|(_, v)| !opening(v)).map(|(id, _)| id.clone()).collect();
+    let mut free: Vec<(String, f64, File)> = candidates.iter().filter_map(|id| take(data, id).map(|f| (id.clone(), at(id), f))).collect();
+    // One let go of a moment ago may still look held (a process being
+    // started anywhere holds a copy of its lock until it runs its program):
+    // those asked again for a moment (one another weft has open stays held:
+    // this weft starts that much later, no more).
+    let until = std::time::Instant::now() + Duration::from_millis(150);
+    loop {
+        let held: Vec<&String> = candidates.iter().filter(|id| !free.iter().any(|f| &f.0 == *id)).collect();
+        if held.is_empty() || std::time::Instant::now() >= until {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(15));
+        for id in held {
+            if let Some(f) = take(data, id) {
+                free.push((id.clone(), at(id), f));
+            }
+        }
     }
     free.sort_by(|a, b| b.1.total_cmp(&a.1));
     let mut mine: Option<(String, File)> = None;
@@ -329,5 +333,47 @@ fn decide(data: &DataDir, id: &str, handing_over: Option<u32>) {
     }
     if windows.remove(id).is_some() {
         let _ = write(data, &windows);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A window whose lock looks held for a moment (a process being started
+    /// anywhere holds a copy of it until it runs its program) is still taken:
+    /// opened again, or with "none" let go of; not left behind as one
+    /// another weft has open. (It happened only when another test started a
+    /// program just then; here the lock is held on purpose.)
+    #[test]
+    fn a_window_held_for_a_moment_is_still_taken() {
+        for restore in ["all", "none"] {
+            let dir = std::env::temp_dir().join(format!("weft-claim-{}-{restore}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let data = DataDir::at(dir.clone());
+            let mut w = Windows::new();
+            for (id, at) in [("aaa", 1.0), ("bbb", 2.0)] {
+                w.insert(id.into(), serde_json::json!({"at": at}));
+            }
+            write(&data, &w).unwrap();
+            // The most recent one's lock, held 50 ms by someone else.
+            let held = take(&data, "bbb").expect("its lock");
+            let other = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(50));
+                drop(held);
+            });
+            let c = claim(&data, None, false, restore);
+            other.join().unwrap();
+            let (left, _, _) = read(&data).unwrap();
+            if restore == "all" {
+                assert_eq!(c.id, "bbb", "the most recent, though held a moment");
+                assert_eq!(c.others, ["aaa"], "the other opened too");
+            } else {
+                assert!(left.is_empty(), "none: both let go of, not one left behind: {left:?}");
+            }
+            drop(c);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 }
