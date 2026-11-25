@@ -1176,6 +1176,9 @@ pub struct Pane {
     /// used (a forced command's tmux, a plain shell) is not one of those.
     pub started_at: Instant,
     pub lines_sent: u32,
+    /// What was sent to it (tests read it).
+    #[cfg(test)]
+    pub sent_log: Vec<u8>,
     /// What ran weft's command said it does not know `exec`: cmd and
     /// PowerShell name it in quotes, the language's own ("'exec' is not
     /// recognized", "'exec'은(는) …", "Der Befehl "exec" …"; see
@@ -1247,6 +1250,8 @@ impl Pane {
             boot_ran: false,
             started_at: Instant::now(),
             lines_sent: 0,
+            #[cfg(test)]
+            sent_log: Vec::new(),
             booted: None,
             clear_with_esc: false,
             clear_key: false,
@@ -1322,6 +1327,8 @@ impl Pane {
     }
 
     pub fn send(&mut self, bytes: &[u8]) {
+        #[cfg(test)]
+        self.sent_log.extend_from_slice(bytes);
         // A run's command waiting after its Esc: keys typed meanwhile go
         // after it, at its time (sent at once, they were put before it,
         // "x" and "ls": xls; or took it with them, and Esc with it).

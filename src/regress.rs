@@ -1945,6 +1945,40 @@ fn a_new_wefts_searches_start_fuzzy() {
     assert_eq!(s.find_mode, crate::find::MatchMode::Glob, "an older settings.json's word");
 }
 
+/// Ctrl+V in a full-screen program (vim, nano) is its key: ^V goes to it
+/// (vim's block selection, its literal next key), not a paste;
+/// Ctrl+Shift+V and Shift+Insert paste there. At a prompt Ctrl+V pastes.
+#[test]
+fn ctrl_v_is_a_full_screen_programs_own() {
+    let mut h = Harness::new(json!({}));
+    h.frames(3);
+    let id = h.app.active_pane_id().unwrap();
+    let p = h.app.panes.get_mut(&id).unwrap();
+    p.term.feed(&mut p.parser, b"\x1b[?1049h");
+    assert!(p.term.alt_active, "a full-screen program's screen");
+    p.sent_log.clear();
+    let paste = |s: &str| Event::Paste(s.into());
+    h.frame_held(vec![paste("pasted")], Modifiers::CTRL);
+    h.frames(1);
+    let sent = std::mem::take(&mut h.app.panes.get_mut(&id).unwrap().sent_log);
+    assert!(sent.contains(&0x16) && !String::from_utf8_lossy(&sent).contains("pasted"), "Ctrl+V: ^V to it: {sent:?}");
+    h.frame_held(vec![paste("pasted")], Modifiers::CTRL | Modifiers::SHIFT);
+    h.frames(1);
+    let sent = std::mem::take(&mut h.app.panes.get_mut(&id).unwrap().sent_log);
+    assert!(String::from_utf8_lossy(&sent).contains("pasted") && !sent.contains(&0x16), "Ctrl+Shift+V pastes: {sent:?}");
+    h.frame_held(vec![paste("shift insert")], Modifiers::SHIFT);
+    h.frames(1);
+    let sent = std::mem::take(&mut h.app.panes.get_mut(&id).unwrap().sent_log);
+    assert!(String::from_utf8_lossy(&sent).contains("shift insert"), "Shift+Insert pastes");
+    // Back at the prompt: Ctrl+V pastes.
+    let p = h.app.panes.get_mut(&id).unwrap();
+    p.term.feed(&mut p.parser, b"\x1b[?1049l");
+    h.frame_held(vec![paste("at the prompt")], Modifiers::CTRL);
+    h.frames(1);
+    let sent = std::mem::take(&mut h.app.panes.get_mut(&id).unwrap().sent_log);
+    assert!(String::from_utf8_lossy(&sent).contains("at the prompt") && !sent.contains(&0x16), "Ctrl+V pastes at a prompt: {sent:?}");
+}
+
 /// The editor keeps a few laid-out files, not every one ever opened.
 #[test]
 fn laid_out_files_are_not_kept_for_ever() {

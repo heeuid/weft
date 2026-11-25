@@ -305,7 +305,7 @@ Windows에서 OpenGL로 그리면 절전·잠금을 몇 번 거친 뒤 다시 �
 | 드래그 / 더블클릭 / 세 번 클릭 / `Alt+드래그` | 글자 / 단어 / 줄 / 사각형(열) 단위 선택 (더블·세 번 클릭 후 드래그하면 그 단위로 늘어남; 마우스를 쓰는 앱 안에서는 Shift와 함께) |
 | `Ctrl+Shift+X` | **복사 모드**(WezTerm처럼): `hjkl` `w b e` `0 ^ $` `gg G` `H M L` `Ctrl+u/d/b/f`로 이동, `v` 글자 / `V` 줄 / `Ctrl+v` 사각형 선택, `o` 반대쪽 끝, `y`·`Enter` 복사(선택 없으면 그 줄), `Esc`·`q` 나가기. 스크롤백과 nvim 같은 전체 화면 앱 화면 모두 |
 | `Ctrl+C` | 선택 영역 있으면 복사, 없으면 `^C` |
-| `Ctrl+V` | 붙여넣기 (bracketed paste) |
+| `Ctrl+V` | 붙여넣기 (bracketed paste). vim·nano 같은 전체 화면 프로그램 안에서는 그 프로그램의 키(`^V`: vim의 블록 선택, 다음 키 그대로 넣기)로 가고, 그때 붙여넣기는 `Ctrl+Shift+V`나 `Shift+Insert` |
 | `Ctrl+= / Ctrl+-` | 글꼴 크기 |
 | `Ctrl+S` | (에디터) 저장 |
 | `Ctrl+F` / `Ctrl+H` | (에디터) 찾기 / 바꾸기: `text` / `fuzzy` / `glob` / `regex`(아래 "찾는 방식", 줄 단위; 바꾸기는 text와 regex만, 바꿀 말에 `$1`), 대소문자(`Aa`), 일치마다 배경·현재 위치는 진하게, 바꾸기는 `Ctrl+Z`로 되돌림, `Enter`·`F3` 다음, `Shift+Enter`·`Shift+F3` 이전, `Replace`(하나) / `All`(전부), `Esc` 닫기 |

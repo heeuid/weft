@@ -5,6 +5,14 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.13.1
+
+Fixed
+- **Ctrl+V in vim did not reach it** (its block selection, its literal
+  next key): weft pasted. In a full-screen program (vim, nano, less…)
+  Ctrl+V is that program's key now, ^V sent to it; paste there with
+  Ctrl+Shift+V or Shift+Insert. At a prompt Ctrl+V pastes as before.
+
 ## 0.13.0
 
 Added

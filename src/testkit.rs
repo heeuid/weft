@@ -104,6 +104,14 @@ impl Harness {
     }
 
     /// One frame with these events.
+    /// A frame with these keys held (a clipboard event says none itself).
+    pub fn frame_held(&mut self, events: Vec<Event>, held: Modifiers) {
+        let before = self.held;
+        self.held = held;
+        self.frame(events);
+        self.held = before;
+    }
+
     pub fn frame(&mut self, events: Vec<Event>) {
         let modifiers = events
             .iter()

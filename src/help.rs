@@ -32,7 +32,7 @@ pub fn features(ko: bool) -> &'static [(&'static str, &'static str)] {
 
 const KEYS_KO: &[(&str, &str)] = &[
     ("Ctrl+C", "선택한 글자 복사 (선택이 없으면 ^C로 중단)"),
-    ("Ctrl+V", "붙여넣기 (bracketed paste)"),
+    ("Ctrl+V", "붙여넣기 (bracketed paste). vim·nano 같은 전체 화면 프로그램 안에서는 그 프로그램의 키(^V)로 가고, 붙여넣기는 Ctrl+Shift+V나 Shift+Insert"),
     ("Ctrl+S", "에디터: 파일 저장"),
     ("Ctrl+F / Ctrl+H", "에디터: 찾기 / 바꾸기 (text·fuzzy·glob·regex, 바꾸기는 text·regex, Aa 대소문자, Enter·F3 다음, Shift+Enter·Shift+F3 이전, Replace 하나 / All 전부, Esc 닫기)"),
     ("Ctrl+클릭", "경로(src/main.rs:12 포함)는 에디터로, URL은 브라우저로"),
@@ -50,7 +50,7 @@ const KEYS_KO: &[(&str, &str)] = &[
 
 const KEYS_EN: &[(&str, &str)] = &[
     ("Ctrl+C", "copy the selected text (with nothing selected, ^C: interrupt)"),
-    ("Ctrl+V", "paste (bracketed paste)"),
+    ("Ctrl+V", "paste (bracketed paste). In a full-screen program (vim, nano) it is that program's key (^V); paste there with Ctrl+Shift+V or Shift+Insert"),
     ("Ctrl+S", "editor: save the file"),
     ("Ctrl+F / Ctrl+H", "editor: find / replace (text·fuzzy·glob·regex, replace in text·regex, Aa for case, Enter·F3 next, Shift+Enter·Shift+F3 previous, Replace one / All, Esc closes)"),
     ("Ctrl+click", "a path (src/main.rs:12 too) opens in the editor, a URL in the browser"),

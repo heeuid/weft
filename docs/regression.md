@@ -364,6 +364,7 @@ What the numbers don't show:
 | A selection dragged over a table while editing: the table stays rendered until the button is let go (it opened as source under the pointer, moved the lines and closed again, at every frame) | `regress::a_drag_over_a_table_does_not_flicker` |
 | A file open in the editor changed by another program is said above it (and in its tab), Reload reads it again and the note goes; its own save is no change; deleted, said too | `regress::the_editor_says_when_its_file_changed_on_disk` |
 | A new weft's Files filter and palette start fuzzy (a missing setting too); an older settings.json's mode is read | `regress::a_new_wefts_searches_start_fuzzy` |
+| Ctrl+V in a full-screen program (vim, nano) sends ^V to it, not a paste; Ctrl+Shift+V and Shift+Insert paste there; at a prompt Ctrl+V pastes | `regress::ctrl_v_is_a_full_screen_programs_own` |
 | Table cells: letters, a cell, a block; Ctrl+C; the menu | `ui_panels::tests::a_table_selection_copies_letters_a_cell_or_a_block`, `regress::table_cells_select_and_copy` |
 | Closing an unsaved file asks: save, drop, cancel, off | `regress::closing_an_unsaved_file_asks` |
 | Saving then closing asks about what changed meanwhile; Cancel closes nothing later | `regress::saving_then_closing_asks_about_what_changed_meanwhile` |

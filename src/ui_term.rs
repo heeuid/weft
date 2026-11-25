@@ -1191,6 +1191,10 @@ impl App {
                 }
                 for ev in &events {
                     match ev {
+                        // Ctrl+V in a full-screen program is its key (vim's
+                        // block selection, nano's next page); Ctrl+Shift+V and
+                        // Shift+Insert paste there, Ctrl+V at a prompt.
+                        Event::Paste(_) if p.term.alt_active && mods.ctrl && !mods.shift => out.push(0x16),
                         Event::Paste(s) => acts.push(Action::Paste(id, s.clone())),
                         Event::Copy => match p.sel {
                             Some(sel) => {
