@@ -135,6 +135,7 @@ What the numbers don't show:
 | Find in scrollback: the count, Enter and Shift+Enter step and wrap and bring the hit into view, the arrow, Aa for case, × closes | `regress::find_in_scrollback_steps_through_the_hits` |
 | Find: the first Enter after typing goes to the first hit (it went to the second) | `regress::find_in_scrollback_steps_through_the_hits` |
 | Serial console: bridge, command, missing port | `host::tests::serial_bridge_and_command`, `regress::serial_tab_explains_a_missing_port` |
+| A port of this PC its user may not open (Linux, macOS) opens through the bridge, which says why and asks to open it with sudo in the tab | `regress::a_port_you_may_not_open_asks_for_sudo` |
 | X11 forwarding (-Y, DISPLAY, old settings) | `x11::tests::*` |
 | Block characters drawn, not from the font (no black band) | `ui_term::tests::blocks_fill_their_cells`, `a_full_block_hides_its_background` |
 | Box drawing drawn, not from the font: frames and trees are whole (pixel) | `ui_term::tests::box_drawing_characters_have_their_arms`, `regress::box_drawing_lines_join` |

@@ -5,6 +5,18 @@ the palette's "About weft". Each release is tagged `v<version>` in git.
 The middle number goes up when something is added, the last one when
 things are only fixed.
 
+## 0.13.3
+
+Fixed
+- **A port of this PC you may not open can be opened with sudo** (Linux,
+  macOS: your user not in the port's group, dialout or uucp). It only
+  said so; now the bridge opens it here as on a remote host: it says why
+  and how to be let in for good, and asks "Open it with sudo now?" (the
+  password asked in the tab; weft keeps none, and the log keeps what was
+  typed only once the port is open). Windows: a port refused is still
+  said to be in use by another program, and that some need weft run as
+  administrator.
+
 ## 0.13.2
 
 Fixed

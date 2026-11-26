@@ -486,6 +486,10 @@ impl Pty {
 /// Refused: on Windows another program has it (one at a time there); on
 /// Linux and macOS the user may not open it (its group, dialout or uucp),
 /// which "in use" sent looking in the wrong place.
+/// What a port this user may not open says (Linux, macOS: not in its
+/// group): weft then opens it through the bridge, which asks for sudo.
+pub const SERIAL_DENIED: &str = "you may not open it";
+
 fn serial_open_error(port: &str, e: &serialport::Error) -> String {
     serial_open_error_listed(port, e, || serialport::available_ports().map(|v| v.into_iter().map(|p| p.port_name).collect()).unwrap_or_default())
 }
@@ -501,11 +505,11 @@ fn serial_open_error_listed(port: &str, e: &serialport::Error, listed: impl Fn()
         denied = true;
     }
     match e.kind() {
-        _ if denied && cfg!(windows) => format!("{port} is in use by another program (only one can have it open)"),
+        _ if denied && cfg!(windows) => format!("{port} is in use by another program (only one can have it open; if none has it, some ports need weft run as administrator)"),
         serialport::ErrorKind::NoDevice | serialport::ErrorKind::Io(std::io::ErrorKind::NotFound) => format!("{port}: no such port"),
         _ if denied => match port_group(port) {
-            Some(g) => format!("{port}: you may not open it: it is the group {g}'s, which your user is not in (add your user to {g}, then log in again)"),
-            None => format!("{port}: you may not open it: its group (ls -l {port}) is one your user is not in (add your user to it, then log in again)"),
+            Some(g) => format!("{port}: {SERIAL_DENIED}: it is the group {g}'s, which your user is not in (add your user to {g}, then log in again)"),
+            None => format!("{port}: {SERIAL_DENIED}: its group (ls -l {port}) is one your user is not in (add your user to it, then log in again)"),
         },
         _ => format!("{port}: {e}"),
     }
@@ -825,7 +829,7 @@ pub(crate) mod tests {
         let busy = serial_open_error_listed("com3", &Error::new(ErrorKind::NoDevice, "x"), listed);
         let gone = serial_open_error_listed("COM7", &Error::new(ErrorKind::NoDevice, "x"), listed);
         if cfg!(windows) {
-            assert_eq!(busy, "com3 is in use by another program (only one can have it open)");
+            assert_eq!(busy, "com3 is in use by another program (only one can have it open; if none has it, some ports need weft run as administrator)");
         }
         assert_eq!(gone, "COM7: no such port");
         assert_eq!(serial_open_error("/dev/ttyUSB9", &io(std::io::ErrorKind::NotFound)), "/dev/ttyUSB9: no such port");

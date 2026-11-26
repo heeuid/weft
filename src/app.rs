@@ -2794,14 +2794,27 @@ impl App {
         pane.judge_at = None;
         let result = if via == "local" {
             self.data.log(&format!("pane {} serial {port} at {baud}", pane.id));
-            Pty::serial(port, baud, self.wake_term()).map_err(|e| {
-                // Is it one of ours?
-                let ours = self.panes.values().find(|p| p.id != pane.id && p.host == pane.host && !p.exited).map(|p| p.title());
-                match ours {
-                    Some(t) => format!("{e} — open in this weft already, in the tab \"{t}\""),
-                    None => e,
+            match Pty::serial(port, baud, self.wake_term()) {
+                // Not this user's to open (Linux, macOS: not in its group):
+                // the bridge opens it here as on a remote host, says how to
+                // be let in for good, and asks to open it with sudo now (the
+                // password asked in the tab; weft keeps none). Its typing is
+                // logged once the port is open, as a remote one's.
+                Err(e) if cfg!(unix) && e.contains(weft_core::pty::SERIAL_DENIED) => {
+                    self.data.log(&format!("pane {} serial {port}: {e}; through the bridge, for sudo", pane.id));
+                    pane.serial_log = Some(weft_core::serial_log::Writer::after(self.data.path("logs"), &pane.host, &format!("\x1b[2m{}{port} at {baud}", host::SERIAL_READY)));
+                    let argv = vec!["sh".to_string(), "-c".to_string(), host::serial_command_of(port, baud, &self.settings.remote_python)];
+                    Pty::spawn(&argv, None, &[], pane.term.cols as u16, pane.term.rows as u16, self.wake_term())
                 }
-            })
+                r => r.map_err(|e| {
+                    // Is it one of ours?
+                    let ours = self.panes.values().find(|p| p.id != pane.id && p.host == pane.host && !p.exited).map(|p| p.title());
+                    match ours {
+                        Some(t) => format!("{e} — open in this weft already, in the tab \"{t}\""),
+                        None => e,
+                    }
+                }),
+            }
         } else {
             let through = self.profile(via);
             let secret = self.secrets.get(via);

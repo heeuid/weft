@@ -177,6 +177,30 @@ fn serial_tab_explains_a_missing_port() {
     assert!(h.app.settings.profiles.iter().any(|p| p.name == port), "kept as a host, for the session");
 }
 
+/// A port of this PC its user may not open (Linux, macOS: not in its
+/// group) is opened through the bridge, which says why and how to be let
+/// in for good, and asks to open it with sudo (the password asked in the
+/// tab). (A file nobody may read stands for the port; root may open
+/// anything, so not as root.)
+#[cfg(unix)]
+#[test]
+fn a_port_you_may_not_open_asks_for_sudo() {
+    let mut h = Harness::new(json!({}));
+    let port = h.dir.join("ttyWEFTDENIED");
+    std::fs::write(&port, "").unwrap();
+    std::fs::set_permissions(&port, std::os::unix::fs::PermissionsExt::from_mode(0o000)).unwrap();
+    if std::fs::OpenOptions::new().read(true).write(true).open(&port).is_ok() {
+        return; // root: it may open anything
+    }
+    let port = port.display().to_string();
+    h.app.open_serial("local", &port, 115_200);
+    let id = h.app.active_pane_id().unwrap();
+    let screen = |h: &Harness| h.app.panes.get(&id).map(|p| p.term.lines_text(p.term.first_line(), p.term.end_line())).unwrap_or_default();
+    assert!(h.wait_for(30.0, |h| screen(h).contains("Open it with sudo now?")), "asked: {:?} {}", h.app.panes[&id].spawn_error, screen(&h));
+    assert!(screen(&h).contains("cannot open"), "said why");
+    assert!(h.app.panes[&id].spawn_error.is_none(), "not an error: the bridge runs");
+}
+
 /// An image in a tab behind another gives its texture back.
 #[test]
 fn hidden_images_leave_the_gpu() {

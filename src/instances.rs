@@ -161,6 +161,15 @@ const OPENING: f64 = 30.0;
 /// ("all", "last" or "none"), else a new one. `missed`: the wanted one
 /// was not to be had.
 pub fn claim(data: &DataDir, wanted: Option<&str>, reopen: bool, restore: &str) -> Claim {
+    claim_waiting(data, wanted, reopen, restore, HELD_A_MOMENT)
+}
+
+/// How long a window that looks held is asked again (a process being
+/// started holds a copy of its lock for less).
+const HELD_A_MOMENT: Duration = Duration::from_millis(150);
+
+/// `claim`, a window that looks held asked again for `held_wait`.
+fn claim_waiting(data: &DataDir, wanted: Option<&str>, reopen: bool, restore: &str, held_wait: Duration) -> Claim {
     // Waited for without holding state.json (others go on saving meanwhile).
     let wanted_lock = wanted.and_then(|id| take_waiting(data, id, Duration::from_secs(10)).map(|f| (id.to_string(), f)));
     let missed = wanted.is_some() && wanted_lock.is_none();
@@ -211,7 +220,7 @@ pub fn claim(data: &DataDir, wanted: Option<&str>, reopen: bool, restore: &str) 
     // started anywhere holds a copy of its lock until it runs its program):
     // those asked again for a moment (one another weft has open stays held:
     // this weft starts that much later, no more).
-    let until = std::time::Instant::now() + Duration::from_millis(150);
+    let until = std::time::Instant::now() + held_wait;
     loop {
         let held: Vec<&String> = candidates.iter().filter(|id| !free.iter().any(|f| &f.0 == *id)).collect();
         if held.is_empty() || std::time::Instant::now() >= until {
@@ -363,7 +372,10 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(50));
                 drop(held);
             });
-            let c = claim(&data, None, false, restore);
+            // (Asked again for long enough here that a slow machine's
+            // thread lets go of it in time: what is tested is that it is
+            // asked again, not how fast.)
+            let c = claim_waiting(&data, None, false, restore, Duration::from_secs(5));
             other.join().unwrap();
             let (left, _, _) = read(&data).unwrap();
             if restore == "all" {
